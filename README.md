@@ -49,6 +49,15 @@ client for motion commands.
    `--marker-retry-attempts 20` (auto-enabled when using the live camera) to keep sampling frames until both
    ArUco markers are detected instead of exiting immediately. Use `--marker-preview` to view the live feed and
    press 'm' to lock a frame before detection, and inspect `data/marker_debug_frame.png` if detection still fails.
+   For a stable workspace-only run (no robot motion), this command has worked well in practice:
+   ```bash
+   python run_bootstrap_demo.py \
+     --board-size 9x6 \
+     --square-size-mm 2.3 \
+     --use-depthai-camera --camera-resolution 1920x1080 --camera-fps 30 \
+     --track-workspace --marker-preview \
+     --workspace-scale 0.97
+   ```
 
 ## Workspace markers
 Printable ArUco fiducials for the default `(1, 2)` marker IDs live under `data/markers/` (`aruco_4x4_id1.png` and `aruco_4x4_id2.png`). Use `data/markers/markers_40mm_sheet.pdf` (A4, 300 DPI) to print both markers on a single page—open it and print at 100% (“actual size”) to get 40 mm edges. Mount marker 1 so it defines the workspace origin and marker 2 at the opposite corner, both fully within the RGB frame.
