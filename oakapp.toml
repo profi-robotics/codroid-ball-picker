@@ -1,0 +1,12 @@
+identifier = "codroid.bootstrap"
+app_version = "0.1.0"
+
+prepare_container = [
+    { type = "RUN", command = "uv install" },
+]
+
+build_steps = []
+
+entrypoint = ["bash", "-c", "python run_bootstrap_demo.py --auto-calibrate --capture-count 10"]
+
+publish = false

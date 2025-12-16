@@ -146,9 +146,17 @@ def estimate_workspace_plane(depth_frame: np.ndarray, intrinsics: CameraCalibrat
     if depth_frame.ndim != 2:
         raise ValueError("Depth frame must be a single-channel array of depths in metres.")
 
-    rows, cols = depth_frame.shape
-    u = np.random.randint(0, cols, size=max_points)
-    v = np.random.randint(0, rows, size=max_points)
+    # Filter out invalid/zero depths.
+    valid_mask = np.isfinite(depth_frame) & (depth_frame > 0)
+    valid_indices = np.argwhere(valid_mask)
+    if valid_indices.size == 0:
+        raise RuntimeError("No valid depth pixels available for plane estimation.")
+
+    sample_count = min(max_points, len(valid_indices))
+    choice_idx = np.random.choice(len(valid_indices), size=sample_count, replace=False)
+    uv = valid_indices[choice_idx]
+    v = uv[:, 0]
+    u = uv[:, 1]
     z = depth_frame[v, u]
 
     fx = intrinsics.camera_matrix[0, 0]
@@ -181,6 +189,44 @@ def estimate_pixel_to_mm(marker_pixel_distance: float, marker_real_distance_mm: 
         raise ValueError("Marker real distance must be positive.")
 
     return marker_real_distance_mm / marker_pixel_distance
+
+
+def chessboard_pixel_scale(image_path: Path, board_size: Tuple[int, int], square_size_mm: float) -> float:
+    """
+    Estimate mm-per-pixel from a single chessboard image by averaging square edge lengths in pixels.
+    """
+
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise FileNotFoundError(f"Calibration image not found: {image_path}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray, board_size, None)
+    if not ret:
+        raise RuntimeError(f"Chessboard not detected in {image_path}")
+
+    # Use refined corners for more accurate spacing.
+    criteria = (cv2.TermCriteria_EPS + cv2.TermCriteria_MAX_ITER, 30, 0.001)
+    corners_subpix = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria).reshape(-1, 2)
+
+    # Compute average horizontal and vertical pixel spacing between adjacent corners.
+    cols = board_size[0]
+    rows = board_size[1]
+    horiz_distances = []
+    vert_distances = []
+    for r in range(rows):
+        for c in range(cols - 1):
+            idx = r * cols + c
+            horiz_distances.append(np.linalg.norm(corners_subpix[idx + 1] - corners_subpix[idx]))
+    for r in range(rows - 1):
+        for c in range(cols):
+            idx = r * cols + c
+            vert_distances.append(np.linalg.norm(corners_subpix[idx + cols] - corners_subpix[idx]))
+
+    pixel_per_square = float(np.mean(horiz_distances + vert_distances))
+    if pixel_per_square <= 0:
+        raise RuntimeError("Invalid chessboard pixel spacing computed.")
+
+    return square_size_mm / pixel_per_square
 
 
 def save_calibration(bundle: CalibrationBundle, output_path: Path) -> None:

@@ -7,7 +7,7 @@ import logging
 
 def _log_missing_dependency() -> None:
     logging.error(
-        "depthai is not installed. Install dependencies with `uv pip install -r requirements.txt` before running the camera check."
+        "depthai is not installed. Install dependencies with `uv install` (reads pyproject.toml) before running the camera check."
     )
 
 
@@ -33,7 +33,17 @@ def main() -> None:
 
     logging.info("Detected %d OAK-D device(s):", len(devices))
     for idx, device in enumerate(devices, start=1):
-        logging.info("%d) %s (%s)", idx, device.getMxId(), device.state)
+        mxid_fn = getattr(device, "getMxId", None)
+        device_id_fn = getattr(device, "getDeviceId", None)
+        name = None
+        if callable(mxid_fn):
+            name = mxid_fn()
+        elif callable(device_id_fn):
+            name = device_id_fn()
+        else:
+            name = str(device)
+        state = getattr(device, "state", None)
+        logging.info("%d) %s (%s)", idx, name, state)
 
 
 if __name__ == "__main__":

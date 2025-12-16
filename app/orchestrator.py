@@ -12,8 +12,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Iterable, Optional, Tuple
 
+import cv2
 import numpy as np
 
 from robot.websocket_client import CodroidWebSocketClient, MotionParameters
@@ -31,6 +32,9 @@ class DemoConfig:
     websocket_uri: str = "ws://192.168.0.10:9090/codroid/ws"
     approach_height_mm: float = 30.0
     drop_offset_mm: float = 0.0
+    board_size: Tuple[int, int] = (7, 6)
+    square_size_mm: float = 25.0
+    workspace_scale: float = 1.0
 
 
 class BootstrapDemo:
@@ -40,19 +44,32 @@ class BootstrapDemo:
         self.workspace: Optional[WorkspaceDefinition] = None
         self.robot: Optional[CodroidWebSocketClient] = None
 
-    def load_or_create_calibration(self, image_paths=None, board_size=(7, 6), square_size_mm=25.0, depth_frame=None) -> None:
+    def load_or_create_calibration(
+        self,
+        image_paths=None,
+        depth_frame=None,
+        force_rebuild: bool = False,
+    ) -> None:
         if self.config.calibration_path.exists():
             LOGGER.info("Loading calibration from %s", self.config.calibration_path)
-            self.calibration = calibration.load_calibration(self.config.calibration_path)
-            return
+            if not force_rebuild:
+                self.calibration = calibration.load_calibration(self.config.calibration_path)
+                return
+            LOGGER.info("Forcing recalibration with freshly captured data.")
 
         if image_paths is None or depth_frame is None:
             raise RuntimeError("Calibration data not found on disk; provide images and a depth frame to calibrate.")
 
-        cam = calibration.calibrate_camera(image_paths, board_size, square_size_mm)
+        cam = calibration.calibrate_camera(image_paths, self.config.board_size, self.config.square_size_mm)
+        # Estimate mm-per-pixel scale from the first calibration image to account for camera standoff.
+        try:
+            pixel_to_mm = calibration.chessboard_pixel_scale(
+                next(iter(image_paths)), self.config.board_size, self.config.square_size_mm
+            )
+        except Exception as exc:  # fallback to square size if detection fails
+            LOGGER.warning("Falling back to nominal pixel scale: %s", exc)
+            pixel_to_mm = self.config.square_size_mm
         plane = calibration.estimate_workspace_plane(depth_frame, cam)
-        # Pixel to mm scale is estimated from the chessboard square size.
-        pixel_to_mm = square_size_mm
         bundle = calibration.CalibrationBundle(camera=cam, workspace_plane=plane, pixel_to_mm=pixel_to_mm)
         calibration.save_calibration(bundle, self.config.calibration_path)
         self.calibration = bundle
@@ -67,6 +84,7 @@ class BootstrapDemo:
             self.calibration,
             marker_size_mm=self.config.marker_size_mm,
             camera_to_robot=camera_to_robot,
+            scale_multiplier=self.config.workspace_scale,
         )
         LOGGER.info(
             "Workspace detected: width=%.1fmm height=%.1fmm", self.workspace.width_mm, self.workspace.height_mm
@@ -114,6 +132,10 @@ async def run_demo_with_frame(
     config: DemoConfig,
     frame_provider: Callable[[], np.ndarray],
     camera_to_robot: RigidTransform,
+    calibration_capture_assets: Optional[Tuple[Iterable[Path], np.ndarray]] = None,
+    marker_retry_attempts: int = 0,
+    marker_debug_frame: Optional[Path] = None,
+    marker_preview: bool = False,
 ) -> None:
     """
     Execute the bootstrap demo using a provided camera frame callback.
@@ -121,15 +143,64 @@ async def run_demo_with_frame(
     The callback is used instead of directly acquiring frames to keep this module
     hardware-agnostic.
     """
+    def _next_frame() -> np.ndarray:
+        frame = frame_provider()
+        if frame is None or frame.size == 0:
+            raise RuntimeError(
+                "Frame provider returned an empty frame. Verify the camera is connected and functioning (use `python -m vision.camera_check`)."
+            )
+        return frame
 
     demo = BootstrapDemo(config)
-    frame = frame_provider()
-    if frame is None or frame.size == 0:
-        raise RuntimeError(
-            "Frame provider returned an empty frame. Verify the camera is connected and functioning (use `python -m vision.camera_check`)."
-        )
-    demo.load_or_create_calibration()
-    demo.detect_workspace(frame, camera_to_robot)
+    image_paths = None
+    depth_frame = None
+    force_rebuild = False
+    if calibration_capture_assets is not None:
+        image_paths, depth_frame = calibration_capture_assets
+        force_rebuild = True
+    demo.load_or_create_calibration(image_paths=image_paths, depth_frame=depth_frame, force_rebuild=force_rebuild)
+    frame = _next_frame()
+    if marker_preview:
+        LOGGER.info("Marker preview: press 'm' to lock the frame, 'q' to abort.")
+        window = "Marker Preview"
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+        try:
+            while True:
+                cv2.imshow(window, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("m") or key == ord(" "):
+                    break
+                if key == ord("q"):
+                    raise RuntimeError("Marker preview aborted by user.")
+                frame = _next_frame()
+        finally:
+            cv2.destroyWindow(window)
+    attempts_remaining = max(1, marker_retry_attempts + 1)
+    attempt = 1
+    last_exception: Optional[RuntimeError] = None
+    while attempt <= attempts_remaining:
+        try:
+            demo.detect_workspace(frame, camera_to_robot)
+            last_exception = None
+            break
+        except RuntimeError as exc:
+            last_exception = exc
+            if "No markers detected" not in str(exc) or attempt == attempts_remaining:
+                break
+            LOGGER.warning(
+                "Marker detection failed (attempt %d/%d). Adjust the markers/camera and retrying...",
+                attempt,
+                attempts_remaining,
+            )
+            frame = _next_frame()
+            attempt += 1
+
+    if last_exception is not None:
+        if marker_debug_frame is not None:
+            marker_debug_frame.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(marker_debug_frame), frame)
+            LOGGER.error("Saved last marker frame to %s for inspection.", marker_debug_frame)
+        raise last_exception
     await demo.run_motion_sequence()
 
 

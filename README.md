@@ -11,27 +11,47 @@ client for motion commands.
 - `app/` – orchestration logic that ties vision outputs to robot commands.
 - `run_bootstrap_demo.py` – entry point that runs the end-to-end flow using a
   frame provider stub.
-- `requirements.txt` – Python dependencies for the stack.
+- `pyproject.toml` – project metadata and dependency manifest used by `uv`.
+- `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves chessboard frames, and records a depth snapshot.
 
 ## Quickstart
-1. Install dependencies (Python 3.10+ recommended) using `uv`:
+1. Install dependencies (Python 3.10+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
    ```bash
-   uv pip install -r requirements.txt
+   uv install
    ```
 2. Capture calibration data (chessboard images + one depth frame) and place them
-   somewhere accessible to the Jetson.
+   somewhere accessible to the Jetson. The helper script can automate the capture.
+   For a 9x6 inner-corner chessboard with 2.3 mm squares you’d run:
+   ```bash
+   python scripts/capture_calibration_data.py \
+     --output-dir data/calibration \
+     --count 15 \
+     --preview
+   ```
 3. Update `DemoConfig` in `app/orchestrator.py` with your WebSocket URI and
    marker parameters.
 4. Verify your OAK-D is visible:
    ```bash
    python -m vision.camera_check
    ```
-5. Replace the `frame_provider_stub` in `run_bootstrap_demo.py` with an actual
-   OAK-D frame acquisition function.
-6. Run the demo:
+5. Provide a real camera feed. You can now launch the demo with `--use-depthai-camera`
+   (optionally overriding `--camera-resolution`/`--camera-fps`) to stream live RGB frames
+   from the attached OAK-D, or replace the `frame_provider_stub` with your own camera hook.
+6. Run the demo (customize the chessboard layout if needed, e.g.
+   `python run_bootstrap_demo.py --board-size 9x6 --square-size-mm 2.3`). To capture the calibration
+   data as part of this step, add `--auto-calibrate` (you can tweak resolution,
+   count, and preview mode):
    ```bash
-   python run_bootstrap_demo.py
+   python run_bootstrap_demo.py --auto-calibrate --capture-count 15 --capture-resolution 1920x1080 --capture-preview
    ```
+   Add `--use-depthai-camera --camera-resolution 1920x1080 --camera-fps 30` when you want the script
+   to grab an actual frame from the OAK-D before detecting the workspace markers. Include
+   `--marker-retry-attempts 20` (auto-enabled when using the live camera) to keep sampling frames until both
+   ArUco markers are detected instead of exiting immediately. Use `--marker-preview` to view the live feed and
+   press 'm' to lock a frame before detection, and inspect `data/marker_debug_frame.png` if detection still fails.
+
+## Workspace markers
+Printable ArUco fiducials for the default `(1, 2)` marker IDs live under `data/markers/` (`aruco_4x4_id1.png` and `aruco_4x4_id2.png`). Use `data/markers/markers_40mm_sheet.pdf` (A4, 300 DPI) to print both markers on a single page—open it and print at 100% (“actual size”) to get 40 mm edges. Mount marker 1 so it defines the workspace origin and marker 2 at the opposite corner, both fully within the RGB frame.
 
 The script will:
 1. Load calibration (or raise if missing),

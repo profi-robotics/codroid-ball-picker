@@ -17,6 +17,7 @@ import numpy as np
 
 from .calibration import CalibrationBundle
 from .markers import WorkspaceMarkers
+from .markers import MarkerDetection
 
 
 @dataclass
@@ -63,37 +64,83 @@ class WorkspaceDefinition:
         return robot_point_h[:3]
 
 
-def compute_workspace(markers: WorkspaceMarkers, calibration: CalibrationBundle, marker_size_mm: float, camera_to_robot: RigidTransform) -> WorkspaceDefinition:
+def compute_workspace(
+    markers: WorkspaceMarkers,
+    calibration: CalibrationBundle,
+    marker_size_mm: float,
+    camera_to_robot: RigidTransform,
+    scale_multiplier: float = 1.0,
+) -> WorkspaceDefinition:
     """
     Build a workspace representation given marker detections and calibration data.
 
-    The pixel distance between markers combined with the known physical marker
-    size approximates the metric scale along the table plane.
+    Scale is estimated from the detected marker edge length (more reliable than
+    a static pixel_to_mm when the camera standoff changes) and falls back to the
+    calibration bundle if marker-derived scale is unavailable.
     """
 
-    marker_a = markers.marker_a.center
-    marker_b = markers.marker_b.center
-    pixel_distance = np.linalg.norm(np.asarray(marker_b) - np.asarray(marker_a))
-    pixel_to_mm = calibration.pixel_to_mm
-    if pixel_to_mm == 0:
-        # Fallback to estimating scale from marker size if pixel_to_mm was not measured.
-        pixel_to_mm = marker_size_mm / np.linalg.norm(markers.marker_a.corners[1] - markers.marker_a.corners[0])
+    marker_a = markers.marker_a
+    marker_b = markers.marker_b
 
-    width_mm = (marker_b[0] - marker_a[0]) * pixel_to_mm
-    height_mm = (marker_b[1] - marker_a[1]) * pixel_to_mm
+    def _edge_scales(marker: MarkerDetection) -> Tuple[float, float]:
+        # Assume OpenCV ordering: corners[0]=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
+        x_len = np.linalg.norm(marker.corners[1] - marker.corners[0])
+        y_len = np.linalg.norm(marker.corners[2] - marker.corners[1])
+        x_scale = marker_size_mm / x_len if x_len > 0 else 0.0
+        y_scale = marker_size_mm / y_len if y_len > 0 else 0.0
+        return x_scale, y_scale
 
-    # Build camera-plane basis vectors.
-    x_dir = np.array([1.0, 0.0, 0.0]) * pixel_to_mm
-    y_dir = np.array([0.0, 1.0, 0.0]) * pixel_to_mm
-    origin = np.array([marker_a[0] * pixel_to_mm, marker_a[1] * pixel_to_mm, 0.0])
+    ax_scale, ay_scale = _edge_scales(marker_a)
+    bx_scale, by_scale = _edge_scales(marker_b)
+    mm_per_px_x = np.mean([s for s in (ax_scale, bx_scale) if s > 0]) if any(s > 0 for s in (ax_scale, bx_scale)) else 0.0
+    mm_per_px_y = np.mean([s for s in (ay_scale, by_scale) if s > 0]) if any(s > 0 for s in (ay_scale, by_scale)) else 0.0
+
+    if mm_per_px_x == 0 or mm_per_px_y == 0:
+        fallback = calibration.pixel_to_mm if calibration.pixel_to_mm > 0 else marker_size_mm / max(
+            1e-6, np.linalg.norm(marker_a.corners[1] - marker_a.corners[0])
+        )
+        mm_per_px_x = mm_per_px_x or fallback
+        mm_per_px_y = mm_per_px_y or fallback
+
+    # Use axis-aligned projection in pixel space but mix both scales to reduce skew impact.
+    delta = np.asarray(marker_b.center) - np.asarray(marker_a.center)
+    width_px = abs(delta[0])
+    height_px = abs(delta[1])
+    # Blend scales to mitigate axis misalignment from rotation.
+    scale_avg = (mm_per_px_x + mm_per_px_y) / 2.0
+    scale_avg *= scale_multiplier
+    width_mm = width_px * scale_avg
+    height_mm = height_px * scale_avg
+
+    x_dir = np.array([1.0, 0.0, 0.0]) * scale_avg
+    y_dir = np.array([0.0, 1.0, 0.0]) * scale_avg
+    origin = np.array([marker_a.center[0] * scale_avg, marker_a.center[1] * scale_avg, 0.0])
 
     return WorkspaceDefinition(
-        width_mm=width_mm,
-        height_mm=height_mm,
+        width_mm=float(width_mm),
+        height_mm=float(height_mm),
         origin_camera=origin,
         x_axis_camera=x_dir,
         y_axis_camera=y_dir,
         camera_to_robot=camera_to_robot,
+    )
+
+
+def smooth_workspace(prev: WorkspaceDefinition, curr: WorkspaceDefinition, alpha: float) -> WorkspaceDefinition:
+    """Exponential smoothing of workspace dimensions and origin to reduce jitter."""
+
+    width = (1 - alpha) * prev.width_mm + alpha * curr.width_mm
+    height = (1 - alpha) * prev.height_mm + alpha * curr.height_mm
+    origin = (1 - alpha) * prev.origin_camera + alpha * curr.origin_camera
+    x_axis = (1 - alpha) * prev.x_axis_camera + alpha * curr.x_axis_camera
+    y_axis = (1 - alpha) * prev.y_axis_camera + alpha * curr.y_axis_camera
+    return WorkspaceDefinition(
+        width_mm=float(width),
+        height_mm=float(height),
+        origin_camera=origin,
+        x_axis_camera=x_axis,
+        y_axis_camera=y_axis,
+        camera_to_robot=curr.camera_to_robot,
     )
 
 
