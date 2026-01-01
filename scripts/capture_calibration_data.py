@@ -1,5 +1,5 @@
 """
-Wrapper CLI that uses `vision.capture` to collect calibration frames from an OAK-D.
+Wrapper CLI that uses `vision.capture` to collect ArUco board frames from an OAK-D.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def parse_resolution(value: str) -> tuple[int, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Capture calibration images and a depth frame.")
+    parser = argparse.ArgumentParser(description="Capture ArUco board images and a depth frame.")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -39,7 +39,7 @@ def main() -> None:
         "--count",
         type=int,
         default=DEFAULT_CAPTURE_COUNT,
-        help="Number of chessboard images to save (default %(default)s).",
+        help="Number of ArUco board images to save (default %(default)s).",
     )
     parser.add_argument(
         "--preview",

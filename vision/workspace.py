@@ -18,6 +18,7 @@ import numpy as np
 from .calibration import CalibrationBundle
 from .markers import WorkspaceMarkers
 from .markers import MarkerDetection
+from .plate import CalibrationPlate
 
 
 @dataclass
@@ -122,6 +123,44 @@ def compute_workspace(
         origin_camera=origin,
         x_axis_camera=x_dir,
         y_axis_camera=y_dir,
+        camera_to_robot=camera_to_robot,
+    )
+
+
+def compute_workspace_from_plate(
+    plate: CalibrationPlate,
+    marker_ids: Tuple[int, int],
+    camera_to_robot: RigidTransform,
+    scale_multiplier: float = 1.0,
+) -> WorkspaceDefinition:
+    """
+    Build a workspace definition directly from a calibration plate layout.
+
+    This uses the plate's known marker spacing to define workspace dimensions,
+    and treats the plate coordinate system as the camera plane.
+    """
+
+    marker_a = plate.markers.get(marker_ids[0])
+    marker_b = plate.markers.get(marker_ids[1])
+    if marker_a is None or marker_b is None:
+        raise RuntimeError("Calibration plate layout is missing workspace marker definitions.")
+
+    delta = marker_b.center_mm - marker_a.center_mm
+    width_mm = abs(float(delta[0])) * scale_multiplier
+    height_mm = abs(float(delta[1])) * scale_multiplier
+    x_sign = 1.0 if delta[0] >= 0 else -1.0
+    y_sign = 1.0 if delta[1] >= 0 else -1.0
+
+    origin = np.array([marker_a.center_mm[0], marker_a.center_mm[1], 0.0])
+    x_axis = np.array([x_sign * scale_multiplier, 0.0, 0.0])
+    y_axis = np.array([0.0, y_sign * scale_multiplier, 0.0])
+
+    return WorkspaceDefinition(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        origin_camera=origin,
+        x_axis_camera=x_axis,
+        y_axis_camera=y_axis,
         camera_to_robot=camera_to_robot,
     )
 

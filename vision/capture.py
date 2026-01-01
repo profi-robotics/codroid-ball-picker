@@ -1,5 +1,5 @@
 """
-Shared helpers for capturing chessboard images and depth frames from an OAK-D.
+Shared helpers for capturing ArUco board images and depth frames from an OAK-D.
 """
 
 from __future__ import annotations

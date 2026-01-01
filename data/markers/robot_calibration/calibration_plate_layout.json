@@ -1,0 +1,12 @@
+{
+  "units": "mm",
+  "dictionary": "DICT_4X4_50",
+  "marker_size_mm": 40.0,
+  "plate_size_mm": [300.0, 200.0],
+  "coordinate_system": "origin at plate top-left, +x right, +y down",
+  "markers": [
+    {"id": 10, "role": "robot_calibration", "sequence": 1, "center_mm": [100.0, 80.0]},
+    {"id": 11, "role": "robot_calibration", "sequence": 2, "center_mm": [200.0, 80.0]},
+    {"id": 12, "role": "robot_calibration", "sequence": 3, "center_mm": [200.0, 150.0]}
+  ]
+}

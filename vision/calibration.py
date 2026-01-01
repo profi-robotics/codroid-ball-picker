@@ -20,6 +20,8 @@ from typing import Dict, Iterable, List, Tuple
 import cv2
 import numpy as np
 
+from .aruco_board import ArucoBoardSpec
+
 
 @dataclass
 class CameraCalibration:
@@ -67,20 +69,33 @@ class CalibrationBundle:
     camera: CameraCalibration
     workspace_plane: WorkspacePlane
     pixel_to_mm: float
+    plate_homography: np.ndarray | None = None
+    plate_layout_path: str | None = None
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        data: Dict[str, object] = {
             "camera": self.camera.to_dict(),
             "workspace_plane": self.workspace_plane.to_dict(),
             "pixel_to_mm": float(self.pixel_to_mm),
         }
+        if self.plate_homography is not None:
+            data["plate_homography"] = self.plate_homography.tolist()
+        if self.plate_layout_path:
+            data["plate_layout_path"] = self.plate_layout_path
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "CalibrationBundle":
+        plate_homography = data.get("plate_homography")
+        if plate_homography is not None:
+            plate_homography = np.asarray(plate_homography, dtype=np.float64)
+        plate_layout_path = data.get("plate_layout_path")
         return cls(
             camera=CameraCalibration.from_dict(data["camera"]),
             workspace_plane=WorkspacePlane.from_dict(data["workspace_plane"]),
             pixel_to_mm=float(data["pixel_to_mm"]),
+            plate_homography=plate_homography,
+            plate_layout_path=str(plate_layout_path) if plate_layout_path else None,
         )
 
 
@@ -129,6 +144,72 @@ def calibrate_camera(image_paths: Iterable[Path], board_size: Tuple[int, int], s
         raise RuntimeError("No chessboard detections found. Check calibration images and board_size.")
 
     ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
+    if not ret:
+        raise RuntimeError("OpenCV calibration failed to converge.")
+
+    return CameraCalibration(camera_matrix=camera_matrix, distortion_coeffs=dist_coeffs)
+
+
+def calibrate_camera_aruco(image_paths: Iterable[Path], board_spec: ArucoBoardSpec) -> CameraCalibration:
+    """
+    Calibrate the camera using an ArUco grid board.
+
+    Args:
+        image_paths: Iterable of captured ArUco board images.
+        board_spec: Board specification describing marker layout in millimetres.
+
+    Returns:
+        CameraCalibration with computed intrinsics.
+    """
+
+    def _detect_markers(gray: np.ndarray) -> Dict[int, np.ndarray]:
+        dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        parameters = cv2.aruco.DetectorParameters()
+        detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        corners_list, ids, _ = detector.detectMarkers(gray)
+        if ids is None or len(ids) == 0:
+            return {}
+        detections: Dict[int, np.ndarray] = {}
+        for marker_corners, marker_id in zip(corners_list, ids.flatten()):
+            detections[int(marker_id)] = marker_corners.reshape((4, 2))
+        return detections
+
+    board_corners = board_spec.marker_corners()
+    objpoints: List[np.ndarray] = []
+    imgpoints: List[np.ndarray] = []
+    image_size = None
+
+    for path in image_paths:
+        image = cv2.imread(str(path))
+        if image is None:
+            raise FileNotFoundError(f"Calibration image not found: {path}")
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if image_size is None:
+            image_size = (gray.shape[1], gray.shape[0])
+        detections = _detect_markers(gray)
+        if not detections:
+            continue
+
+        obj = []
+        img = []
+        for marker_id, img_corners in detections.items():
+            board_marker = board_corners.get(marker_id)
+            if board_marker is None:
+                continue
+            obj.extend(board_marker.tolist())
+            img.extend(img_corners.tolist())
+
+        if len(obj) < 4:
+            continue
+        objpoints.append(np.asarray(obj, dtype=np.float32))
+        imgpoints.append(np.asarray(img, dtype=np.float32))
+
+    if not objpoints or image_size is None:
+        raise RuntimeError("No ArUco board detections found. Check calibration images and board layout.")
+
+    ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(objpoints, imgpoints, image_size, None, None)
     if not ret:
         raise RuntimeError("OpenCV calibration failed to converge.")
 
@@ -229,6 +310,42 @@ def chessboard_pixel_scale(image_path: Path, board_size: Tuple[int, int], square
     return square_size_mm / pixel_per_square
 
 
+def aruco_board_pixel_scale(image_path: Path, board_spec: ArucoBoardSpec) -> float:
+    """
+    Estimate mm-per-pixel from a single ArUco board image by averaging marker edge lengths.
+    """
+
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise FileNotFoundError(f"Calibration image not found: {image_path}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    parameters = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+    corners_list, ids, _ = detector.detectMarkers(gray)
+    if ids is None or len(ids) == 0:
+        raise RuntimeError(f"No ArUco markers detected in {image_path}")
+
+    edge_lengths = []
+    board_corners = board_spec.marker_corners()
+    for marker_corners, marker_id in zip(corners_list, ids.flatten()):
+        if int(marker_id) not in board_corners:
+            continue
+        pts = marker_corners.reshape((4, 2))
+        edge_lengths.append(np.linalg.norm(pts[1] - pts[0]))
+        edge_lengths.append(np.linalg.norm(pts[2] - pts[1]))
+
+    if not edge_lengths:
+        raise RuntimeError("No board markers matched the layout for pixel scale estimation.")
+
+    pixel_per_marker = float(np.mean(edge_lengths))
+    if pixel_per_marker <= 0:
+        raise RuntimeError("Invalid ArUco pixel spacing computed.")
+
+    return board_spec.marker_length_mm / pixel_per_marker
+
+
 def save_calibration(bundle: CalibrationBundle, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output_path, **bundle.to_dict())
@@ -236,11 +353,26 @@ def save_calibration(bundle: CalibrationBundle, output_path: Path) -> None:
 
 def load_calibration(path: Path) -> CalibrationBundle:
     data = np.load(path, allow_pickle=True)
+    def _unwrap(value: object) -> object:
+        if isinstance(value, np.ndarray) and value.shape == () and value.dtype == object:
+            return value.item()
+        return value
+
     # np.load wraps nested structures; unwrap them back to dict for constructors.
-    camera_dict = data["camera"].item() if isinstance(data["camera"].item(), dict) else data["camera"].item()
-    workspace_dict = data["workspace_plane"].item() if isinstance(data["workspace_plane"].item(), dict) else data["workspace_plane"].item()
+    camera_dict = _unwrap(data["camera"])
+    workspace_dict = _unwrap(data["workspace_plane"])
+    plate_homography = None
+    if "plate_homography" in data.files:
+        plate_homography = _unwrap(data["plate_homography"])
+        if plate_homography is not None:
+            plate_homography = np.asarray(plate_homography, dtype=np.float64)
+    plate_layout_path = None
+    if "plate_layout_path" in data.files:
+        plate_layout_path = _unwrap(data["plate_layout_path"])
     return CalibrationBundle(
         camera=CameraCalibration.from_dict(camera_dict),
         workspace_plane=WorkspacePlane.from_dict(workspace_dict),
         pixel_to_mm=float(data["pixel_to_mm"].item()),
+        plate_homography=plate_homography,
+        plate_layout_path=str(plate_layout_path) if plate_layout_path else None,
     )

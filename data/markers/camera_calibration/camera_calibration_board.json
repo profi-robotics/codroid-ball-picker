@@ -1,0 +1,9 @@
+{
+  "board_type": "grid",
+  "dictionary": "DICT_4X4_50",
+  "markers_x": 5,
+  "markers_y": 7,
+  "marker_length_mm": 25.0,
+  "marker_separation_mm": 5.0,
+  "first_marker_id": 13
+}

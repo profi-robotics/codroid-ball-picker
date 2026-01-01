@@ -47,16 +47,6 @@ def frame_provider_stub() -> np.ndarray:
     return np.zeros((720, 1280, 3), dtype=np.uint8)
 
 
-def parse_board_size(value: str) -> tuple[int, int]:
-    pieces = value.lower().split("x")
-    if len(pieces) != 2:
-        raise argparse.ArgumentTypeError("board-size must use the format WxH, e.g. 9x6")
-    try:
-        return int(pieces[0]), int(pieces[1])
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("board-size components must be integers") from exc
-
-
 def parse_resolution(value: str) -> tuple[int, int]:
     parts = value.lower().split("x")
     if len(parts) != 2:
@@ -70,21 +60,15 @@ def parse_resolution(value: str) -> tuple[int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Codroid bootstrap demo.")
     parser.add_argument(
-        "--board-size",
-        type=parse_board_size,
-        default=(7, 6),
-        help="Chessboard inner-corner layout used for calibration (e.g. 9x6).",
-    )
-    parser.add_argument(
-        "--square-size-mm",
-        type=float,
-        default=25.0,
-        help="Physical size of a single chessboard square, used when computing pixel-to-mm.",
+        "--aruco-board-layout",
+        type=Path,
+        default=Path("data/markers/camera_calibration/camera_calibration_board.json"),
+        help="Path to the ArUco board layout JSON used for camera calibration.",
     )
     parser.add_argument(
         "--auto-calibrate",
         action="store_true",
-        help="Capture fresh chessboard/color/depth data before computing calibration.",
+        help="Capture fresh ArUco board/color/depth data before computing calibration.",
     )
     parser.add_argument(
         "--capture-output-dir",
@@ -164,9 +148,8 @@ def main() -> None:
 
     args = parser.parse_args()
     config = DemoConfig(
-        board_size=args.board_size,
-        square_size_mm=args.square_size_mm,
         workspace_scale=args.workspace_scale,
+        aruco_board_layout_path=args.aruco_board_layout,
     )
 
     capture_assets = None
@@ -398,6 +381,8 @@ async def track_workspace_live(
                             camera=demo.calibration.camera,
                             workspace_plane=baseline_plane if baseline_plane else demo.calibration.workspace_plane,
                             pixel_to_mm=demo.calibration.pixel_to_mm * scale_ratio,
+                            plate_homography=demo.calibration.plate_homography,
+                            plate_layout_path=demo.calibration.plate_layout_path,
                         )
                     except Exception:
                         temp_bundle = demo.calibration

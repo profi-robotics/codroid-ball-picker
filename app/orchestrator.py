@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 from robot.websocket_client import CodroidWebSocketClient, MotionParameters
-from vision import calibration, markers, workspace
+from vision import aruco_board, calibration, markers, workspace
 from vision.workspace import RigidTransform, WorkspaceDefinition
 
 LOGGER = logging.getLogger(__name__)
@@ -29,11 +29,10 @@ class DemoConfig:
     marker_ids: Tuple[int, int] = (1, 2)
     marker_size_mm: float = 40.0
     calibration_path: Path = Path("data/calibration_bundle.npz")
+    aruco_board_layout_path: Path = Path("data/markers/camera_calibration/camera_calibration_board.json")
     websocket_uri: str = "ws://192.168.0.10:9090/codroid/ws"
     approach_height_mm: float = 30.0
     drop_offset_mm: float = 0.0
-    board_size: Tuple[int, int] = (7, 6)
-    square_size_mm: float = 25.0
     workspace_scale: float = 1.0
 
 
@@ -60,15 +59,18 @@ class BootstrapDemo:
         if image_paths is None or depth_frame is None:
             raise RuntimeError("Calibration data not found on disk; provide images and a depth frame to calibrate.")
 
-        cam = calibration.calibrate_camera(image_paths, self.config.board_size, self.config.square_size_mm)
+        if not self.config.aruco_board_layout_path.exists():
+            raise FileNotFoundError(
+                f"Aruco board layout not found: {self.config.aruco_board_layout_path}"
+            )
+        board_spec = aruco_board.load_aruco_board_spec(self.config.aruco_board_layout_path)
+        cam = calibration.calibrate_camera_aruco(image_paths, board_spec)
         # Estimate mm-per-pixel scale from the first calibration image to account for camera standoff.
         try:
-            pixel_to_mm = calibration.chessboard_pixel_scale(
-                next(iter(image_paths)), self.config.board_size, self.config.square_size_mm
-            )
+            pixel_to_mm = calibration.aruco_board_pixel_scale(next(iter(image_paths)), board_spec)
         except Exception as exc:  # fallback to square size if detection fails
             LOGGER.warning("Falling back to nominal pixel scale: %s", exc)
-            pixel_to_mm = self.config.square_size_mm
+            pixel_to_mm = board_spec.marker_length_mm
         plane = calibration.estimate_workspace_plane(depth_frame, cam)
         bundle = calibration.CalibrationBundle(camera=cam, workspace_plane=plane, pixel_to_mm=pixel_to_mm)
         calibration.save_calibration(bundle, self.config.calibration_path)
