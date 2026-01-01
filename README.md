@@ -15,7 +15,7 @@ client for motion commands.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves chessboard frames, and records a depth snapshot.
 
 ## Quickstart
-1. Install dependencies (Python 3.10+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
+1. Install dependencies (Python 3.11+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
    ```bash
    uv install
    ```

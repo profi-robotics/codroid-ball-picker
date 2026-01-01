@@ -1,19 +1,23 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
 
 [project]
-name = "codroid-vision-guided-bootstrap-demo"
+name = "codroid-ball-picker"
 version = "0.1.0"
-description = "Scaffold for the Estun Codroid + OAK-D bootstrap workflow."
+description = "Vision-guided Estun Codroid ball picker workflow scaffold."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "opencv-python",
     "numpy",
     "websockets",
     "depthai==3.2.1",
+    "codroid-api",
 ]
 
-[tool.setuptools.packages.find]
-include = ["app", "robot", "vision"]
+[tool.uv.sources]
+codroid-api = { path = "../codroid-api", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "robot", "vision"]
