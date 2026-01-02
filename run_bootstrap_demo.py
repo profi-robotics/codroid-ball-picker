@@ -63,12 +63,12 @@ def main() -> None:
         "--aruco-board-layout",
         type=Path,
         default=Path("data/markers/camera_calibration/camera_calibration_board.json"),
-        help="Path to the ArUco board layout JSON used for camera calibration.",
+        help="Path to the ChArUco board layout JSON used for camera calibration.",
     )
     parser.add_argument(
         "--auto-calibrate",
         action="store_true",
-        help="Capture fresh ArUco board/color/depth data before computing calibration.",
+        help="Capture fresh ChArUco board/color/depth data before computing calibration.",
     )
     parser.add_argument(
         "--capture-output-dir",

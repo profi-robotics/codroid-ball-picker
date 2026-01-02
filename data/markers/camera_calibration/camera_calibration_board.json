@@ -1,9 +1,8 @@
 {
-  "board_type": "grid",
+  "board_type": "charuco",
   "dictionary": "DICT_4X4_50",
-  "markers_x": 5,
-  "markers_y": 7,
-  "marker_length_mm": 25.0,
-  "marker_separation_mm": 5.0,
-  "first_marker_id": 13
+  "squares_x": 5,
+  "squares_y": 7,
+  "square_length_mm": 25.0,
+  "marker_length_mm": 20.0
 }

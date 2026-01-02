@@ -2,7 +2,7 @@
 // export_part: "combined" (default), "base", or "inlay".
 export_part = "combined";
 plate_size_mm = 60;
-plate_thickness_mm = 5;
+plate_thickness_mm = 4;
 marker_size_mm = 40;
 marker_recess_mm = 0;
 marker_inlay_mm = 0.6;
@@ -12,7 +12,7 @@ label_size_mm = 6;
 label_offset_mm = 4;
 label_margin_mm = 2;
 id_label_size_mm = 3.5;
-brand_label_size_mm = 2.5;
+brand_label_size_mm = 3.0;
 marker_id = 1;
 top_label = "Top Left";
 bottom_label = "Верхній лівий";

@@ -20,7 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 import cv2
 import numpy as np
 
-from .aruco_board import ArucoBoardSpec
+from .aruco_board import CharucoBoardSpec
 
 
 @dataclass
@@ -150,35 +150,25 @@ def calibrate_camera(image_paths: Iterable[Path], board_size: Tuple[int, int], s
     return CameraCalibration(camera_matrix=camera_matrix, distortion_coeffs=dist_coeffs)
 
 
-def calibrate_camera_aruco(image_paths: Iterable[Path], board_spec: ArucoBoardSpec) -> CameraCalibration:
+def calibrate_camera_charuco(image_paths: Iterable[Path], board_spec: CharucoBoardSpec) -> CameraCalibration:
     """
-    Calibrate the camera using an ArUco grid board.
+    Calibrate the camera using a ChArUco board.
 
     Args:
-        image_paths: Iterable of captured ArUco board images.
+        image_paths: Iterable of captured ChArUco board images.
         board_spec: Board specification describing marker layout in millimetres.
 
     Returns:
         CameraCalibration with computed intrinsics.
     """
 
-    def _detect_markers(gray: np.ndarray) -> Dict[int, np.ndarray]:
-        dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
-        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-        parameters = cv2.aruco.DetectorParameters()
-        detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-        corners_list, ids, _ = detector.detectMarkers(gray)
-        if ids is None or len(ids) == 0:
-            return {}
-        detections: Dict[int, np.ndarray] = {}
-        for marker_corners, marker_id in zip(corners_list, ids.flatten()):
-            detections[int(marker_id)] = marker_corners.reshape((4, 2))
-        return detections
-
-    board_corners = board_spec.marker_corners()
     objpoints: List[np.ndarray] = []
     imgpoints: List[np.ndarray] = []
     image_size = None
+    board = board_spec.create_board()
+    charuco_params = cv2.aruco.CharucoParameters()
+    detector_params = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
 
     for path in image_paths:
         image = cv2.imread(str(path))
@@ -188,32 +178,30 @@ def calibrate_camera_aruco(image_paths: Iterable[Path], board_spec: ArucoBoardSp
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         if image_size is None:
             image_size = (gray.shape[1], gray.shape[0])
-        detections = _detect_markers(gray)
-        if not detections:
+        charuco_corners, charuco_ids, _marker_corners, _marker_ids = detector.detectBoard(gray)
+        if charuco_ids is None or len(charuco_ids) == 0:
             continue
 
-        obj = []
-        img = []
-        for marker_id, img_corners in detections.items():
-            board_marker = board_corners.get(marker_id)
-            if board_marker is None:
-                continue
-            obj.extend(board_marker.tolist())
-            img.extend(img_corners.tolist())
-
-        if len(obj) < 4:
+        obj, img = board.matchImagePoints(charuco_corners, charuco_ids)
+        if obj is None or img is None or len(obj) < 4:
             continue
-        objpoints.append(np.asarray(obj, dtype=np.float32))
-        imgpoints.append(np.asarray(img, dtype=np.float32))
+        objpoints.append(obj)
+        imgpoints.append(img)
 
     if not objpoints or image_size is None:
-        raise RuntimeError("No ArUco board detections found. Check calibration images and board layout.")
+        raise RuntimeError("No ChArUco board detections found. Check calibration images and board layout.")
 
     ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(objpoints, imgpoints, image_size, None, None)
     if not ret:
         raise RuntimeError("OpenCV calibration failed to converge.")
 
     return CameraCalibration(camera_matrix=camera_matrix, distortion_coeffs=dist_coeffs)
+
+
+def calibrate_camera_aruco(image_paths: Iterable[Path], board_spec: CharucoBoardSpec) -> CameraCalibration:
+    """Backward-compatible wrapper for the old ArUco-grid entry point."""
+
+    return calibrate_camera_charuco(image_paths, board_spec)
 
 
 def estimate_workspace_plane(depth_frame: np.ndarray, intrinsics: CameraCalibration, max_points: int = 5000) -> WorkspacePlane:
@@ -310,40 +298,58 @@ def chessboard_pixel_scale(image_path: Path, board_size: Tuple[int, int], square
     return square_size_mm / pixel_per_square
 
 
-def aruco_board_pixel_scale(image_path: Path, board_spec: ArucoBoardSpec) -> float:
+def charuco_board_pixel_scale(image_path: Path, board_spec: CharucoBoardSpec) -> float:
     """
-    Estimate mm-per-pixel from a single ArUco board image by averaging marker edge lengths.
+    Estimate mm-per-pixel from a single ChArUco board image by averaging adjacent
+    chessboard corner spacing.
     """
 
     image = cv2.imread(str(image_path))
     if image is None:
         raise FileNotFoundError(f"Calibration image not found: {image_path}")
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
-    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-    parameters = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-    corners_list, ids, _ = detector.detectMarkers(gray)
-    if ids is None or len(ids) == 0:
-        raise RuntimeError(f"No ArUco markers detected in {image_path}")
+    board = board_spec.create_board()
+    charuco_params = cv2.aruco.CharucoParameters()
+    detector_params = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
+    charuco_corners, charuco_ids, _marker_corners, _marker_ids = detector.detectBoard(gray)
+    if charuco_ids is None or len(charuco_ids) < 2:
+        raise RuntimeError(f"No ChArUco corners detected in {image_path}")
 
-    edge_lengths = []
-    board_corners = board_spec.marker_corners()
-    for marker_corners, marker_id in zip(corners_list, ids.flatten()):
-        if int(marker_id) not in board_corners:
-            continue
-        pts = marker_corners.reshape((4, 2))
-        edge_lengths.append(np.linalg.norm(pts[1] - pts[0]))
-        edge_lengths.append(np.linalg.norm(pts[2] - pts[1]))
+    obj_points, img_points = board.matchImagePoints(charuco_corners, charuco_ids)
+    if obj_points is None or img_points is None:
+        raise RuntimeError("Failed to map ChArUco corners to board coordinates.")
 
-    if not edge_lengths:
-        raise RuntimeError("No board markers matched the layout for pixel scale estimation.")
+    obj = obj_points.reshape(-1, 3)[:, :2]
+    img = img_points.reshape(-1, 2)
+    if len(obj) < 2:
+        raise RuntimeError("Not enough ChArUco corners for pixel scale estimation.")
 
-    pixel_per_marker = float(np.mean(edge_lengths))
-    if pixel_per_marker <= 0:
-        raise RuntimeError("Invalid ArUco pixel spacing computed.")
+    square_len = board_spec.square_length_mm
+    pixel_distances: List[float] = []
+    for i in range(len(obj)):
+        for j in range(i + 1, len(obj)):
+            mm_distance = float(np.linalg.norm(obj[i] - obj[j]))
+            if abs(mm_distance - square_len) > 1e-3:
+                continue
+            px_distance = float(np.linalg.norm(img[i] - img[j]))
+            if px_distance > 0:
+                pixel_distances.append(px_distance)
 
-    return board_spec.marker_length_mm / pixel_per_marker
+    if not pixel_distances:
+        raise RuntimeError("No adjacent ChArUco corners found for pixel scale estimation.")
+
+    pixel_per_square = float(np.mean(pixel_distances))
+    if pixel_per_square <= 0:
+        raise RuntimeError("Invalid ChArUco pixel spacing computed.")
+
+    return square_len / pixel_per_square
+
+
+def aruco_board_pixel_scale(image_path: Path, board_spec: CharucoBoardSpec) -> float:
+    """Backward-compatible wrapper for older ArUco-grid entry points."""
+
+    return charuco_board_pixel_scale(image_path, board_spec)
 
 
 def save_calibration(bundle: CalibrationBundle, output_path: Path) -> None:

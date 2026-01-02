@@ -61,13 +61,13 @@ class BootstrapDemo:
 
         if not self.config.aruco_board_layout_path.exists():
             raise FileNotFoundError(
-                f"Aruco board layout not found: {self.config.aruco_board_layout_path}"
+                f"ChArUco board layout not found: {self.config.aruco_board_layout_path}"
             )
-        board_spec = aruco_board.load_aruco_board_spec(self.config.aruco_board_layout_path)
-        cam = calibration.calibrate_camera_aruco(image_paths, board_spec)
+        board_spec = aruco_board.load_charuco_board_spec(self.config.aruco_board_layout_path)
+        cam = calibration.calibrate_camera_charuco(image_paths, board_spec)
         # Estimate mm-per-pixel scale from the first calibration image to account for camera standoff.
         try:
-            pixel_to_mm = calibration.aruco_board_pixel_scale(next(iter(image_paths)), board_spec)
+            pixel_to_mm = calibration.charuco_board_pixel_scale(next(iter(image_paths)), board_spec)
         except Exception as exc:  # fallback to square size if detection fails
             LOGGER.warning("Falling back to nominal pixel scale: %s", exc)
             pixel_to_mm = board_spec.marker_length_mm

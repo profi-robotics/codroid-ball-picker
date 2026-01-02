@@ -12,16 +12,16 @@ client for motion commands.
 - `run_bootstrap_demo.py` – entry point that runs the end-to-end flow using a
   frame provider stub.
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
-- `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ArUco board frames, and records a depth snapshot.
+- `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 
 ## Quickstart
 1. Install dependencies (Python 3.11+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
    ```bash
    uv install
    ```
-2. Capture calibration data (ArUco board images + one depth frame) and place them
+2. Capture calibration data (ChArUco board images + one depth frame) and place them
    somewhere accessible to the Jetson. The helper script can automate the capture.
-   For the default ArUco board layout you’d run:
+   For the default ChArUco board layout you’d run:
    ```bash
    python scripts/capture_calibration_data.py \
      --output-dir data/calibration \
@@ -37,7 +37,7 @@ client for motion commands.
 5. Provide a real camera feed. You can now launch the demo with `--use-depthai-camera`
    (optionally overriding `--camera-resolution`/`--camera-fps`) to stream live RGB frames
    from the attached OAK-D, or replace the `frame_provider_stub` with your own camera hook.
-6. Run the demo (adjust the ArUco board layout path if needed, e.g.
+6. Run the demo (adjust the ChArUco board layout path if needed, e.g.
    `python run_bootstrap_demo.py --aruco-board-layout data/markers/camera_calibration/camera_calibration_board.json`). To capture the calibration
    data as part of this step, add `--auto-calibrate` (you can tweak resolution,
    count, and preview mode):
@@ -74,28 +74,34 @@ OpenSCAD sources for the holder geometry:
 - `data/markers/corner_markers/top_left/workspace_marker_id1.scad`
 - `data/markers/corner_markers/bottom_right/workspace_marker_id2.scad`
 
-## Camera calibration board (ArUco)
-The camera intrinsics are calibrated with an OpenCV ArUco grid board defined in `data/markers/camera_calibration/camera_calibration_board.json`. Print the matching SVG at 100% scale so the marker size and spacing match the JSON values.
+## Camera calibration board (ChArUco)
+The camera intrinsics are calibrated with an OpenCV ChArUco board defined in `data/markers/camera_calibration/camera_calibration_board.json`. Print the matching SVG/PDF at 100% scale so the marker size and spacing match the JSON values.
 
 Assets:
-- `data/markers/camera_calibration/camera_calibration_board.svg` - SVG layout for the ArUco grid board.
-- `data/markers/camera_calibration/camera_calibration_board.json` - board definition (marker size, spacing, dictionary).
+- `data/markers/camera_calibration/camera_calibration_board.svg` - SVG layout for the ChArUco board.
+- `data/markers/camera_calibration/camera_calibration_board.json` - board definition (square size, marker size, dictionary).
+- `data/markers/camera_calibration/camera_calibration_board.scad` - parametric 3D printable plate with marker inlays.
+- `data/markers/camera_calibration/camera_calibration_board_multicolor.3mf` - multicolor 3MF export (single object with base + inlay components).
+- `data/markers/camera_calibration/camera_calibration_board.pdf` - 300 DPI printable PDF with footer text.
+The 3D plate adds rounded corners and a footer label below the marker grid; the grid dimensions still match the OpenCV board spec.
 
 ## Robot calibration plate
-The robot calibration plate contains only the three robot calibration markers so the camera/robot coordinate systems can be aligned without the workspace markers. The layout uses DICT_4X4_50 markers at 40 mm edge size and is designed to be easy to turn into a 3D printable plate.
+The robot calibration plate contains only the three robot calibration markers so the camera/robot coordinate systems can be aligned without the workspace markers. The layout uses DICT_4X4_50 markers at 50 mm edge size, sized to nearly fill an A4 sheet while leaving margins and a footer label.
 
 Assets:
-- `data/markers/robot_calibration/calibration_plate.svg` - full-size 300 x 200 mm layout with three robot markers.
-- `data/markers/robot_calibration/calibration_plate.scad` - parametric plate model with 1 mm marker recesses and labels.
+- `data/markers/robot_calibration/calibration_plate.svg` - full-size 297 x 210 mm (A4) layout with three robot markers.
+- `data/markers/robot_calibration/calibration_plate.scad` - parametric plate model with marker inlays and labels.
+- `data/markers/robot_calibration/calibration_plate_multicolor.3mf` - multicolor 3MF export (single object).
+- `data/markers/robot_calibration/calibration_plate.pdf` - printable PDF layout.
 - `data/markers/robot_calibration/calibration_plate_layout.json` - marker IDs and center coordinates in mm.
 - `data/markers/robot_calibration/aruco_4x4_id10.png`, `data/markers/robot_calibration/aruco_4x4_id11.png`, `data/markers/robot_calibration/aruco_4x4_id12.png` - robot calibration markers.
 
 Marker centers (mm, origin at plate top-left, +x right, +y down):
-- ID 10 (robot calibration, Point 1): (100, 80)
-- ID 11 (robot calibration, Point 2): (200, 80)
-- ID 12 (robot calibration, Point 3): (200, 150)
+- ID 10 (robot calibration, Point 1): (35, 35)
+- ID 11 (robot calibration, Point 2): (262, 35)
+- ID 12 (robot calibration, Point 3): (262, 165)
 
-Robot 3-point calibration: teach the robot to the centers of IDs 10, 11, and 12 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The SVG/SCAD files include numeric labels next to each robot marker. Keep `marker_size_mm` at 40.0 in `app/orchestrator.py` to match the printed markers.
+Robot 3-point calibration: teach the robot to the centers of IDs 10, 11, and 12 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The SVG/SCAD files include numeric labels plus center tick marks for manual alignment.
 
 The script will:
 1. Load calibration (or raise if missing),

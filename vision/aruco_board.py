@@ -1,5 +1,5 @@
 """
-ArUco grid board specifications for camera calibration.
+ChArUco board specifications for camera calibration.
 
 The board spec is stored as JSON so the printed target stays in sync with code.
 """
@@ -9,52 +9,50 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Tuple
 
-import numpy as np
+import cv2
 
 
 @dataclass(frozen=True)
-class ArucoBoardSpec:
-    markers_x: int
-    markers_y: int
+class CharucoBoardSpec:
+    squares_x: int
+    squares_y: int
+    square_length_mm: float
     marker_length_mm: float
-    marker_separation_mm: float
     dictionary: str = "DICT_4X4_50"
-    first_marker_id: int = 0
 
     def board_size_mm(self) -> Tuple[float, float]:
-        width = self.markers_x * self.marker_length_mm + (self.markers_x - 1) * self.marker_separation_mm
-        height = self.markers_y * self.marker_length_mm + (self.markers_y - 1) * self.marker_separation_mm
+        width = self.squares_x * self.square_length_mm
+        height = self.squares_y * self.square_length_mm
         return float(width), float(height)
 
-    def marker_corners(self) -> Dict[int, np.ndarray]:
-        corners: Dict[int, np.ndarray] = {}
-        pitch = self.marker_length_mm + self.marker_separation_mm
-        for row in range(self.markers_y):
-            for col in range(self.markers_x):
-                marker_id = self.first_marker_id + row * self.markers_x + col
-                x0 = col * pitch
-                y0 = row * pitch
-                corners[marker_id] = np.array(
-                    [
-                        [x0, y0, 0.0],
-                        [x0 + self.marker_length_mm, y0, 0.0],
-                        [x0 + self.marker_length_mm, y0 + self.marker_length_mm, 0.0],
-                        [x0, y0 + self.marker_length_mm, 0.0],
-                    ],
-                    dtype=np.float64,
-                )
-        return corners
+    def create_board(self) -> cv2.aruco_CharucoBoard:
+        dictionary_id = getattr(cv2.aruco, self.dictionary)
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        return cv2.aruco.CharucoBoard(
+            (self.squares_x, self.squares_y),
+            self.square_length_mm,
+            self.marker_length_mm,
+            dictionary,
+        )
 
 
-def load_aruco_board_spec(path: Path) -> ArucoBoardSpec:
+def load_charuco_board_spec(path: Path) -> CharucoBoardSpec:
     data = json.loads(path.read_text(encoding="utf-8"))
-    return ArucoBoardSpec(
-        markers_x=int(data["markers_x"]),
-        markers_y=int(data["markers_y"]),
+    board_type = data.get("board_type", "charuco")
+    if board_type != "charuco":
+        raise ValueError(f"Unsupported board_type '{board_type}' in {path}")
+    return CharucoBoardSpec(
+        squares_x=int(data["squares_x"]),
+        squares_y=int(data["squares_y"]),
+        square_length_mm=float(data["square_length_mm"]),
         marker_length_mm=float(data["marker_length_mm"]),
-        marker_separation_mm=float(data["marker_separation_mm"]),
         dictionary=data.get("dictionary", "DICT_4X4_50"),
-        first_marker_id=int(data.get("first_marker_id", 0)),
     )
+
+
+def load_aruco_board_spec(path: Path) -> CharucoBoardSpec:
+    """Backward-compatible alias for older callers."""
+
+    return load_charuco_board_spec(path)
