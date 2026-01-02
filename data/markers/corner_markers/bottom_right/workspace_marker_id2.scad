@@ -69,15 +69,16 @@ module label_engrave() {
         halign = "center",
         valign = "bottom"
       );
-  translate([label_margin_mm, plate_size_mm - label_margin_mm, plate_thickness_mm - label_depth_mm])
-    linear_extrude(height = label_depth_mm + 0.1)
-      text(
-        text = str("ID ", marker_id),
-        size = id_label_size_mm,
-        font = "Liberation Sans:style=Bold",
-        halign = "left",
-        valign = "top"
-      );
+  translate([label_margin_mm, plate_size_mm / 2, plate_thickness_mm - label_depth_mm])
+    rotate([0, 0, 90])
+      linear_extrude(height = label_depth_mm + 0.1)
+        text(
+          text = str("ID ", marker_id),
+          size = id_label_size_mm,
+          font = "Liberation Sans:style=Bold",
+          halign = "left",
+          valign = "center"
+        );
   translate([plate_size_mm - label_margin_mm, plate_size_mm - label_margin_mm, plate_thickness_mm - label_depth_mm])
     rotate([0, 0, 90])
       linear_extrude(height = label_depth_mm + 0.1)
