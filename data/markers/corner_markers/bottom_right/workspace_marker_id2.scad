@@ -12,15 +12,17 @@ label_size_mm = 6;
 label_offset_mm = 4;
 label_margin_mm = 2;
 id_label_size_mm = 3.5;
-brand_label_size_mm = 3.0;
+brand_label_size_mm = 3.5;
+brand_label_margin_mm = 4;
 marker_id = 2;
 top_label = "Bottom right";
 bottom_label = "Нижній правий";
-brand_label = "Profi Robotics Ukraine";
+brand_label = "Profi Robotics";
 
 marker_origin = (plate_size_mm - marker_size_mm) / 2;
 top_label_y = plate_size_mm - label_margin_mm;
 bottom_label_y = label_margin_mm;
+brand_label_y = plate_size_mm / 2;
 marker_cell_size_mm = marker_size_mm / marker_grid_cells;
 base_color = [1, 1, 1];
 inlay_color = [0, 0, 0];
@@ -79,15 +81,15 @@ module label_engrave() {
           halign = "left",
           valign = "center"
         );
-  translate([plate_size_mm - label_margin_mm, plate_size_mm - label_margin_mm, plate_thickness_mm - label_depth_mm])
+  translate([plate_size_mm - brand_label_margin_mm, brand_label_y, plate_thickness_mm - label_depth_mm])
     rotate([0, 0, 90])
       linear_extrude(height = label_depth_mm + 0.1)
         text(
           text = brand_label,
           size = brand_label_size_mm,
           font = "Liberation Sans:style=Bold",
-          halign = "right",
-          valign = "top"
+          halign = "center",
+          valign = "center"
         );
 }
 
