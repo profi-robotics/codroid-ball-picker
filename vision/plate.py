@@ -3,7 +3,7 @@ Calibration plate utilities for mapping pixels to real-world millimetres.
 
 The plate layout is defined in data/markers/robot_calibration/calibration_plate_layout.json and
 uses ArUco markers to establish a homography between image pixels and plate
-coordinates.
+coordinates, plus optional calibration point coordinates for robot touch targets.
 """
 
 from __future__ import annotations
@@ -28,16 +28,26 @@ class PlateMarker:
 
 
 @dataclass
+class CalibrationPoint:
+    sequence: int
+    center_mm: np.ndarray
+
+
+@dataclass
 class CalibrationPlate:
     marker_size_mm: float
     plate_size_mm: Tuple[float, float]
     dictionary: str
     markers: Dict[int, PlateMarker]
+    calibration_points: List[CalibrationPoint]
     coordinate_system: str
 
     def robot_calibration_markers(self) -> List[PlateMarker]:
         robots = [marker for marker in self.markers.values() if marker.role == "robot_calibration"]
         return sorted(robots, key=lambda marker: marker.sequence or 0)
+
+    def robot_calibration_points(self) -> List[CalibrationPoint]:
+        return sorted(self.calibration_points, key=lambda point: point.sequence)
 
 
 @dataclass
@@ -61,11 +71,21 @@ def load_plate_layout(layout_path: Path) -> CalibrationPlate:
             sequence=entry.get("sequence"),
         )
 
+    calibration_points: List[CalibrationPoint] = []
+    for entry in data.get("calibration_points", []):
+        calibration_points.append(
+            CalibrationPoint(
+                sequence=int(entry["sequence"]),
+                center_mm=np.asarray(entry["center_mm"], dtype=np.float64),
+            )
+        )
+
     return CalibrationPlate(
         marker_size_mm=float(data["marker_size_mm"]),
         plate_size_mm=(float(data["plate_size_mm"][0]), float(data["plate_size_mm"][1])),
         dictionary=data.get("dictionary", "DICT_4X4_50"),
         markers=markers,
+        calibration_points=calibration_points,
         coordinate_system=data.get("coordinate_system", "origin at plate top-left, +x right, +y down"),
     )
 

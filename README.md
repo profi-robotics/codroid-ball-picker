@@ -86,22 +86,32 @@ Assets:
 The 3D plate adds rounded corners and a footer label below the marker grid; the grid dimensions still match the OpenCV board spec.
 
 ## Robot calibration plate
-The robot calibration plate contains only the three robot calibration markers so the camera/robot coordinate systems can be aligned without the workspace markers. The layout uses DICT_4X4_50 markers at 50 mm edge size, sized to nearly fill an A4 sheet while leaving margins and a footer label.
+The robot calibration plate uses edge markers for camera tracking so the center stays clear for gripper alignment grooves. The layout uses DICT_4X4_50 markers at 20 mm edge size on a 300 x 280 mm plate, with three numbered rectangular groove targets for robot calibration.
 
 Assets:
-- `data/markers/robot_calibration/calibration_plate.svg` - full-size 297 x 210 mm (A4) layout with three robot markers.
-- `data/markers/robot_calibration/calibration_plate.scad` - parametric plate model with marker inlays and labels.
-- `data/markers/robot_calibration/calibration_plate_multicolor.3mf` - multicolor 3MF export (single object).
+- `data/markers/robot_calibration/calibration_plate.svg` - full-size 300 x 280 mm layout with edge markers and groove targets.
+- `data/markers/robot_calibration/calibration_plate.scad` - parametric plate model with marker inlays and groove targets.
+- `data/markers/robot_calibration/calibration_plate_multicolor.3mf` - multicolor 3MF export (base + inlay objects).
 - `data/markers/robot_calibration/calibration_plate.pdf` - printable PDF layout.
-- `data/markers/robot_calibration/calibration_plate_layout.json` - marker IDs and center coordinates in mm.
-- `data/markers/robot_calibration/aruco_4x4_id10.png`, `data/markers/robot_calibration/aruco_4x4_id11.png`, `data/markers/robot_calibration/aruco_4x4_id12.png` - robot calibration markers.
+- `data/markers/robot_calibration/calibration_plate_layout.json` - edge marker IDs plus calibration point coordinates in mm.
+- `data/markers/robot_calibration/aruco_4x4_id20.png` through `data/markers/robot_calibration/aruco_4x4_id27.png` - edge markers.
 
-Marker centers (mm, origin at plate top-left, +x right, +y down):
-- ID 10 (robot calibration, Point 1): (35, 35)
-- ID 11 (robot calibration, Point 2): (262, 35)
-- ID 12 (robot calibration, Point 3): (262, 165)
+Edge marker centers (mm, origin at plate top-left, +x right, +y down):
+- ID 20: (20, 20)
+- ID 21: (150, 20)
+- ID 22: (280, 20)
+- ID 23: (20, 140)
+- ID 24: (280, 140)
+- ID 25: (20, 260)
+- ID 26: (150, 260)
+- ID 27: (280, 260)
 
-Robot 3-point calibration: teach the robot to the centers of IDs 10, 11, and 12 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The SVG/SCAD files include numeric labels plus center tick marks for manual alignment.
+Robot calibration points (rectangular groove centers, 20 x 33 mm):
+- Point 1: (70, 70)
+- Point 2: (230, 70)
+- Point 3: (230, 210)
+
+Robot 3-point calibration: teach the robot to the groove intersections for Points 1–3 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The edge markers are for camera tracking only.
 
 The script will:
 1. Load calibration (or raise if missing),
