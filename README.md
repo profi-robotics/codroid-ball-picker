@@ -56,6 +56,28 @@ client for motion commands.
      --track-workspace --marker-preview \
      --workspace-scale 0.97
    ```
+7. Launch the calibration UI when you want a visual, step-by-step bring-up:
+   ```bash
+   python run_calibration_ui.py --debug
+   ```
+   Use the Setup drawer to start the camera stream, verify the robot connection, and
+   work through the three calibration steps. The UI reads/writes calibration assets
+   under `data/` by default.
+
+## Calibration UI (Dash)
+The calibration console is a Dash + Dash Mantine Components UI that stitches the
+camera, workspace, and robot calibration flows together. It provides:
+- A tabbed layout (Calibration tab) with a vertical stepper for camera, workarea,
+  and robot calibration.
+- A live camera view with overlays for ChArUco detection, workspace markers, and
+  calibration plate markers.
+- A Setup drawer to verify camera connectivity and test the robot WebSocket link.
+
+Run it locally with:
+```bash
+python run_calibration_ui.py --debug
+```
+Then open `http://127.0.0.1:8050` in your browser.
 
 ## Corner markers
 Printable ArUco fiducials for the default `(1, 2)` marker IDs live under `data/markers/corner_markers/`:

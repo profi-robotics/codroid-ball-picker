@@ -101,6 +101,17 @@ def _build_pipeline(
     return color_out, stereo.depth
 
 
+def build_pipeline(
+    pipeline: dai.Pipeline,
+    sockets: CameraSockets,
+    resolution: tuple[int, int],
+    fps: float,
+) -> tuple[dai.Node.Output, dai.Node.Output]:
+    """Public wrapper for building the shared DepthAI pipeline."""
+
+    return _build_pipeline(pipeline, sockets, resolution, fps)
+
+
 def _capture_color_images(
     color_queue: dai.DataOutputQueue,
     dest: Path,

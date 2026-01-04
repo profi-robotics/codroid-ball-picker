@@ -1,0 +1,68 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+:root {
+  --app-bg: #f5efe4;
+  --app-ink: #1f2a32;
+  --panel-bg: rgba(255, 252, 246, 0.94);
+  --panel-border: rgba(31, 42, 50, 0.12);
+  --panel-shadow: 0 24px 60px rgba(31, 42, 50, 0.12);
+  --accent: #0f766e;
+  --accent-soft: rgba(15, 118, 110, 0.12);
+}
+
+body {
+  margin: 0;
+  color: var(--app-ink);
+  background:
+    radial-gradient(circle at 10% 10%, #fff4d6, transparent 45%),
+    radial-gradient(circle at 90% 20%, #d7f3ef, transparent 40%),
+    radial-gradient(circle at 80% 90%, #ffe3d0, transparent 50%),
+    var(--app-bg);
+}
+
+.app-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.panel-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+}
+
+.camera-panel {
+  background: linear-gradient(140deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.9));
+}
+
+.camera-feed {
+  width: 100%;
+  height: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  margin-top: 12px;
+  background: #0b0f14;
+}
+
+.main-panel {
+  animation: rise-in 0.55s ease;
+}
+
+#camera-device-info ul {
+  padding-left: 1.1rem;
+  margin: 0;
+  color: rgba(31, 42, 50, 0.7);
+  font-size: 0.85rem;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
