@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
+import logging
 import threading
 import time
 from typing import Optional, Tuple
@@ -44,25 +45,47 @@ class DepthAIFrameStream:
     def start(self) -> None:
         if self._running:
             return
-        self._stack = ExitStack()
-        pipeline = self._stack.enter_context(dai.Pipeline())
-        device = pipeline.getDefaultDevice()
-        sockets = resolve_camera_sockets(device)
-        color_out, depth_out = build_pipeline(
-            pipeline,
-            sockets,
-            self.config.resolution,
-            self.config.fps,
-        )
-        self._color_queue = color_out.createOutputQueue(maxSize=2, blocking=True)
-        self._depth_queue = depth_out.createOutputQueue(maxSize=2, blocking=False)
-        pipeline.start()
+        try:
+            self._stack = ExitStack()
+            pipeline = self._stack.enter_context(dai.Pipeline())
+            logging.info("Created pipeline, calling getDefaultDevice")
+            device = pipeline.getDefaultDevice()
+            logging.info(f"Got device: {device}")
+            if device is None:
+                raise RuntimeError(
+                    "getDefaultDevice() returned None; no camera connected")
+            sockets = resolve_camera_sockets(device)
+            logging.info(f"Resolved sockets: {sockets}")
+            color_out, depth_out = build_pipeline(
+                pipeline,
+                sockets,
+                self.config.resolution,
+                self.config.fps,
+            )
+            logging.info("Built pipeline, creating queues")
+            self._color_queue = color_out.createOutputQueue(
+                maxSize=2, blocking=True)
+            self._depth_queue = depth_out.createOutputQueue(
+                maxSize=2, blocking=False)
+            logging.info("Created queues, starting pipeline")
+            pipeline.start()
+            logging.info("Pipeline started")
 
-        self._pipeline = pipeline
-        self._device = device
-        self._running = True
-        self._thread = threading.Thread(target=self._reader_loop, name="DepthAIFrameStream", daemon=True)
-        self._thread.start()
+            self._pipeline = pipeline
+            self._device = device
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._reader_loop, name="DepthAIFrameStream", daemon=True)
+            self._thread.start()
+            logging.info("Reader thread started")
+        except Exception as e:
+            logging.error(
+                f"Failed to start DepthAIFrameStream: {e}", exc_info=True)
+            self._running = False
+            if self._stack is not None:
+                self._stack.close()
+                self._stack = None
+            raise
 
     def stop(self) -> None:
         if not self._running:
@@ -118,5 +141,7 @@ class DepthAIFrameStream:
                     self._last_frame = frame
                     if depth_frame is not None:
                         self._last_depth = depth_frame
-            except Exception:
+            except Exception as e:
+                logging.error(
+                    f"DepthAIFrameStream reader error: {e}", exc_info=True)
                 time.sleep(0.02)

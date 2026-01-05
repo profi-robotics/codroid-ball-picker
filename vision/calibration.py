@@ -40,7 +40,8 @@ class CameraCalibration:
     def from_dict(cls, data: Dict[str, List[List[float]]]) -> "CameraCalibration":
         return cls(
             camera_matrix=np.asarray(data["camera_matrix"], dtype=np.float64),
-            distortion_coeffs=np.asarray(data["distortion_coeffs"], dtype=np.float64),
+            distortion_coeffs=np.asarray(
+                data["distortion_coeffs"], dtype=np.float64),
         )
 
 
@@ -95,7 +96,8 @@ class CalibrationBundle:
             workspace_plane=WorkspacePlane.from_dict(data["workspace_plane"]),
             pixel_to_mm=float(data["pixel_to_mm"]),
             plate_homography=plate_homography,
-            plate_layout_path=str(plate_layout_path) if plate_layout_path else None,
+            plate_layout_path=str(
+                plate_layout_path) if plate_layout_path else None,
         )
 
 
@@ -114,7 +116,7 @@ def calibrate_camera(image_paths: Iterable[Path], board_size: Tuple[int, int], s
 
     # Prepare object points based on the known square size.
     objp = np.zeros((board_size[0] * board_size[1], 3), np.float32)
-    objp[:, :2] = np.mgrid[0 : board_size[0], 0 : board_size[1]].T.reshape(-1, 2)
+    objp[:, :2] = np.mgrid[0: board_size[0], 0: board_size[1]].T.reshape(-1, 2)
     objp *= square_size_mm
 
     objpoints: List[np.ndarray] = []
@@ -135,15 +137,18 @@ def calibrate_camera(image_paths: Iterable[Path], board_size: Tuple[int, int], s
             30,
             0.001,
         )
-        corners_subpix = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        corners_subpix = cv2.cornerSubPix(
+            gray, corners, (11, 11), (-1, -1), criteria)
 
         objpoints.append(objp)
         imgpoints.append(corners_subpix)
 
     if not objpoints:
-        raise RuntimeError("No chessboard detections found. Check calibration images and board_size.")
+        raise RuntimeError(
+            "No chessboard detections found. Check calibration images and board_size.")
 
-    ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
+    ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(
+        objpoints, imgpoints, gray.shape[::-1], None, None)
     if not ret:
         raise RuntimeError("OpenCV calibration failed to converge.")
 
@@ -166,9 +171,12 @@ def calibrate_camera_charuco(image_paths: Iterable[Path], board_spec: CharucoBoa
     imgpoints: List[np.ndarray] = []
     image_size = None
     board = board_spec.create_board()
-    charuco_params = cv2.aruco.CharucoParameters()
+
+    # Get dictionary and set up detector with inverted marker support (to match UI behavior)
+    dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
     detector_params = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
+    detector_params.detectInvertedMarker = True  # Enable inverted marker detection
 
     for path in image_paths:
         image = cv2.imread(str(path))
@@ -178,7 +186,23 @@ def calibrate_camera_charuco(image_paths: Iterable[Path], board_spec: CharucoBoa
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         if image_size is None:
             image_size = (gray.shape[1], gray.shape[0])
-        charuco_corners, charuco_ids, _marker_corners, _marker_ids = detector.detectBoard(gray)
+
+        # First detect markers using ArucoDetector
+        aruco_detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+        marker_corners, marker_ids, _rejected = aruco_detector.detectMarkers(
+            gray)
+
+        # Only proceed with ChArUco if markers were found
+        if marker_ids is None or len(marker_ids) == 0:
+            continue
+
+        # Now detect ChArUco corners
+        charuco_params = cv2.aruco.CharucoParameters()
+        charuco_detector = cv2.aruco.CharucoDetector(
+            board, charuco_params, detector_params)
+        charuco_corners, charuco_ids, _marker_corners, _marker_ids = charuco_detector.detectBoard(
+            gray)
+
         if charuco_ids is None or len(charuco_ids) == 0:
             continue
 
@@ -189,9 +213,11 @@ def calibrate_camera_charuco(image_paths: Iterable[Path], board_spec: CharucoBoa
         imgpoints.append(img)
 
     if not objpoints or image_size is None:
-        raise RuntimeError("No ChArUco board detections found. Check calibration images and board layout.")
+        raise RuntimeError(
+            "No ChArUco board detections found. Check calibration images and board layout.")
 
-    ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(objpoints, imgpoints, image_size, None, None)
+    ret, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(
+        objpoints, imgpoints, image_size, None, None)
     if not ret:
         raise RuntimeError("OpenCV calibration failed to converge.")
 
@@ -213,16 +239,19 @@ def estimate_workspace_plane(depth_frame: np.ndarray, intrinsics: CameraCalibrat
     """
 
     if depth_frame.ndim != 2:
-        raise ValueError("Depth frame must be a single-channel array of depths in metres.")
+        raise ValueError(
+            "Depth frame must be a single-channel array of depths in metres.")
 
     # Filter out invalid/zero depths.
     valid_mask = np.isfinite(depth_frame) & (depth_frame > 0)
     valid_indices = np.argwhere(valid_mask)
     if valid_indices.size == 0:
-        raise RuntimeError("No valid depth pixels available for plane estimation.")
+        raise RuntimeError(
+            "No valid depth pixels available for plane estimation.")
 
     sample_count = min(max_points, len(valid_indices))
-    choice_idx = np.random.choice(len(valid_indices), size=sample_count, replace=False)
+    choice_idx = np.random.choice(
+        len(valid_indices), size=sample_count, replace=False)
     uv = valid_indices[choice_idx]
     v = uv[:, 0]
     u = uv[:, 1]
@@ -275,7 +304,8 @@ def chessboard_pixel_scale(image_path: Path, board_size: Tuple[int, int], square
 
     # Use refined corners for more accurate spacing.
     criteria = (cv2.TermCriteria_EPS + cv2.TermCriteria_MAX_ITER, 30, 0.001)
-    corners_subpix = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria).reshape(-1, 2)
+    corners_subpix = cv2.cornerSubPix(
+        gray, corners, (11, 11), (-1, -1), criteria).reshape(-1, 2)
 
     # Compute average horizontal and vertical pixel spacing between adjacent corners.
     cols = board_size[0]
@@ -285,11 +315,13 @@ def chessboard_pixel_scale(image_path: Path, board_size: Tuple[int, int], square
     for r in range(rows):
         for c in range(cols - 1):
             idx = r * cols + c
-            horiz_distances.append(np.linalg.norm(corners_subpix[idx + 1] - corners_subpix[idx]))
+            horiz_distances.append(np.linalg.norm(
+                corners_subpix[idx + 1] - corners_subpix[idx]))
     for r in range(rows - 1):
         for c in range(cols):
             idx = r * cols + c
-            vert_distances.append(np.linalg.norm(corners_subpix[idx + cols] - corners_subpix[idx]))
+            vert_distances.append(np.linalg.norm(
+                corners_subpix[idx + cols] - corners_subpix[idx]))
 
     pixel_per_square = float(np.mean(horiz_distances + vert_distances))
     if pixel_per_square <= 0:
@@ -309,21 +341,42 @@ def charuco_board_pixel_scale(image_path: Path, board_spec: CharucoBoardSpec) ->
         raise FileNotFoundError(f"Calibration image not found: {image_path}")
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     board = board_spec.create_board()
-    charuco_params = cv2.aruco.CharucoParameters()
+
+    # Get dictionary and set up detector with inverted marker support (to match UI behavior)
+    dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
     detector_params = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
-    charuco_corners, charuco_ids, _marker_corners, _marker_ids = detector.detectBoard(gray)
+    detector_params.detectInvertedMarker = True
+
+    # First detect markers using ArucoDetector
+    aruco_detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+    marker_corners, marker_ids, _rejected = aruco_detector.detectMarkers(gray)
+
+    # Only proceed if markers were found
+    if marker_ids is None or len(marker_ids) == 0:
+        raise RuntimeError(f"No ArUco markers detected in {image_path}")
+
+    # Now detect ChArUco corners
+    charuco_params = cv2.aruco.CharucoParameters()
+    charuco_detector = cv2.aruco.CharucoDetector(
+        board, charuco_params, detector_params)
+    charuco_corners, charuco_ids, _marker_corners, _marker_ids = charuco_detector.detectBoard(
+        gray)
+
     if charuco_ids is None or len(charuco_ids) < 2:
         raise RuntimeError(f"No ChArUco corners detected in {image_path}")
 
-    obj_points, img_points = board.matchImagePoints(charuco_corners, charuco_ids)
+    obj_points, img_points = board.matchImagePoints(
+        charuco_corners, charuco_ids)
     if obj_points is None or img_points is None:
-        raise RuntimeError("Failed to map ChArUco corners to board coordinates.")
+        raise RuntimeError(
+            "Failed to map ChArUco corners to board coordinates.")
 
     obj = obj_points.reshape(-1, 3)[:, :2]
     img = img_points.reshape(-1, 2)
     if len(obj) < 2:
-        raise RuntimeError("Not enough ChArUco corners for pixel scale estimation.")
+        raise RuntimeError(
+            "Not enough ChArUco corners for pixel scale estimation.")
 
     square_len = board_spec.square_length_mm
     pixel_distances: List[float] = []
@@ -337,7 +390,8 @@ def charuco_board_pixel_scale(image_path: Path, board_spec: CharucoBoardSpec) ->
                 pixel_distances.append(px_distance)
 
     if not pixel_distances:
-        raise RuntimeError("No adjacent ChArUco corners found for pixel scale estimation.")
+        raise RuntimeError(
+            "No adjacent ChArUco corners found for pixel scale estimation.")
 
     pixel_per_square = float(np.mean(pixel_distances))
     if pixel_per_square <= 0:
@@ -359,6 +413,7 @@ def save_calibration(bundle: CalibrationBundle, output_path: Path) -> None:
 
 def load_calibration(path: Path) -> CalibrationBundle:
     data = np.load(path, allow_pickle=True)
+
     def _unwrap(value: object) -> object:
         if isinstance(value, np.ndarray) and value.shape == () and value.dtype == object:
             return value.item()
@@ -380,5 +435,6 @@ def load_calibration(path: Path) -> CalibrationBundle:
         workspace_plane=WorkspacePlane.from_dict(workspace_dict),
         pixel_to_mm=float(data["pixel_to_mm"].item()),
         plate_homography=plate_homography,
-        plate_layout_path=str(plate_layout_path) if plate_layout_path else None,
+        plate_layout_path=str(
+            plate_layout_path) if plate_layout_path else None,
     )

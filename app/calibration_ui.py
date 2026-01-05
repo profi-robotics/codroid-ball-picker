@@ -110,6 +110,7 @@ class MotionJPEGStream:
         self.frame_queue: list[bytes] = []
         self.lock = threading.Lock()
         self.max_queue_size = 3
+        self.frame_count = 0
 
     def add_frame(self, frame: np.ndarray) -> None:
         """Add a frame to the stream queue."""
@@ -119,6 +120,7 @@ class MotionJPEGStream:
 
         with self.lock:
             self.frame_queue.append(buffer.tobytes())
+            self.frame_count += 1
             # Keep only recent frames
             if len(self.frame_queue) > self.max_queue_size:
                 self.frame_queue.pop(0)
@@ -415,14 +417,33 @@ def get_latest_frame() -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
 
 
 def capture_color_frame(output_dir: Path) -> Path:
-    frame, _depth = get_latest_frame()
-    if frame is None:
-        raise RuntimeError("Camera stream is not providing frames yet.")
+    # Retry logic: frame might not be available immediately, so poll briefly
+    max_retries = 5
+    for attempt in range(max_retries):
+        frame, _depth = get_latest_frame()
+        if frame is not None and frame.size > 0:
+            break
+        if attempt < max_retries - 1:
+            time.sleep(0.1)
+
+    if frame is None or frame.size == 0:
+        raise RuntimeError(
+            f"Camera stream not providing frames after {max_retries} attempts.")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     frames = _update_capture_state(output_dir)
     index = _frame_index(frames[-1]) + 1 if frames else 1
     path = output_dir / f"calibration_color_{index:02}.png"
-    cv2.imwrite(str(path), frame)
+
+    success = cv2.imwrite(str(path), frame)
+    if not success:
+        raise RuntimeError(f"Failed to write frame to {path}.")
+
+    # Verify by reading back immediately
+    verify = cv2.imread(str(path))
+    if verify is None:
+        raise RuntimeError(f"Failed to read back saved frame from {path}.")
+
     SESSION.capture.frames.append(path)
     return path
 
@@ -449,6 +470,60 @@ def load_depth_snapshot(output_dir: Path) -> Optional[np.ndarray]:
     return depth.astype(np.float32)
 
 
+def _clear_calibration_outputs(output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    for pattern in ("calibration_color_*.png", "calibration_depth_frame.npz"):
+        for path in output_dir.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                logging.warning(f"[CALIBRATE] Unable to remove {path}")
+
+
+def _charuco_detection_counts(image_paths: list[Path], board_path: Path) -> Tuple[list[int], int]:
+    spec = aruco_board.load_charuco_board_spec(board_path)
+    board = spec.create_board()
+
+    # Get dictionary for initial marker detection
+    dictionary_id = getattr(cv2.aruco, spec.dictionary)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    detector_params = cv2.aruco.DetectorParameters()
+    detector_params.detectInvertedMarker = True  # Match live overlay behavior
+
+    counts: list[int] = []
+    usable_frames = 0
+    for path in image_paths:
+        image = cv2.imread(str(path))
+        if image is None:
+            counts.append(0)
+            continue
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # First detect markers
+        detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+        marker_corners, marker_ids, _rejected = detector.detectMarkers(gray)
+
+        # Then detect ChArUco corners if markers were found
+        corner_count = 0
+        if marker_ids is not None and len(marker_ids) > 0:
+            charuco_params = cv2.aruco.CharucoParameters()
+            charuco_detector = cv2.aruco.CharucoDetector(
+                board, charuco_params, detector_params)
+            charuco_corners, charuco_ids, _, _ = charuco_detector.detectBoard(
+                gray)
+            corner_count = 0 if charuco_ids is None else int(len(charuco_ids))
+
+            if charuco_ids is not None and charuco_corners is not None:
+                obj, img = board.matchImagePoints(charuco_corners, charuco_ids)
+                if obj is not None and img is not None and len(obj) >= 4:
+                    usable_frames += 1
+
+        counts.append(corner_count)
+
+    return counts, usable_frames
+
+
 def compute_calibration_bundle(board_path: Path, bundle_path: Path, output_dir: Path) -> str:
     if not board_path.exists():
         raise FileNotFoundError(
@@ -457,7 +532,7 @@ def compute_calibration_bundle(board_path: Path, bundle_path: Path, output_dir: 
     if not frames:
         raise RuntimeError(
             "No calibration frames found. Capture frames before calibrating.")
-    depth_frame = SESSION.capture.depth_frame or load_depth_snapshot(
+    depth_frame = SESSION.capture.depth_frame if SESSION.capture.depth_frame is not None else load_depth_snapshot(
         output_dir)
     if depth_frame is None:
         raise RuntimeError(
@@ -534,26 +609,51 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
     if not board_path.exists():
         status = "ChArUco layout not found."
         return vis, status, "ChArUco corners: --"
-    board_spec = aruco_board.load_charuco_board_spec(board_path)
-    board = board_spec.create_board()
-    charuco_params = cv2.aruco.CharucoParameters()
-    detector_params = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.CharucoDetector(
-        board, charuco_params, detector_params)
-    gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
-    charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(
-        gray)
-    marker_count = 0 if marker_ids is None else len(marker_ids)
-    corner_count = 0 if charuco_ids is None else len(charuco_ids)
-    if marker_ids is not None and marker_corners is not None:
-        cv2.aruco.drawDetectedMarkers(vis, marker_corners, marker_ids)
-    if charuco_ids is not None and charuco_corners is not None:
-        cv2.aruco.drawDetectedCornersCharuco(vis, charuco_corners, charuco_ids)
-    _draw_label(vis, f"Markers: {marker_count}", (10, 30), (255, 255, 255))
-    _draw_label(vis, f"Corners: {corner_count}", (10, 55), (255, 255, 255))
-    status = "Camera calibration overlay ready."
-    metric = f"ChArUco corners: {corner_count}"
-    return vis, status, metric
+
+    try:
+        board_spec = aruco_board.load_charuco_board_spec(board_path)
+        board = board_spec.create_board()
+        gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
+
+        # Get dictionary and detector
+        dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        detector_params = cv2.aruco.DetectorParameters()
+        detector_params.detectInvertedMarker = True  # Enable inverted marker detection
+
+        # Detect markers
+        detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+        marker_corners, marker_ids, rejected = detector.detectMarkers(gray)
+
+        marker_count = 0 if marker_ids is None else len(marker_ids)
+
+        if marker_ids is not None:
+            vis = cv2.aruco.drawDetectedMarkers(
+                vis, marker_corners, marker_ids)
+
+        # Try ChArUco detection
+        corner_count = 0
+
+        if marker_ids is not None and len(marker_ids) > 0:
+            charuco_params = cv2.aruco.CharucoParameters()
+            charuco_detector = cv2.aruco.CharucoDetector(
+                board, charuco_params, detector_params)
+            charuco_corners, charuco_ids, _, _ = charuco_detector.detectBoard(
+                gray)
+            corner_count = 0 if charuco_ids is None else len(charuco_ids)
+            if charuco_ids is not None:
+                vis = cv2.aruco.drawDetectedCornersCharuco(
+                    vis, charuco_corners, charuco_ids)
+
+        _draw_label(vis, f"Markers: {marker_count}", (10, 30), (255, 255, 255))
+        _draw_label(vis, f"Corners: {corner_count}", (10, 55), (255, 255, 255))
+        status = f"Detected {marker_count} markers and {corner_count} corners."
+        metric = f"ChArUco corners: {corner_count}"
+        return vis, status, metric
+    except Exception as exc:
+        logging.error(f"ChArUco detection error: {exc}", exc_info=True)
+        _draw_label(vis, f"Error: {str(exc)[:50]}", (10, 30), (255, 0, 0))
+        return vis, f"Detection error: {exc}", "ChArUco corners: --"
 
 
 def draw_workspace_overlay(
@@ -810,49 +910,104 @@ def build_stepper_card() -> dmc.Card:
                         children=dmc.Stack(
                             [
                                 dmc.Text(
-                                    "Capture the ChArUco board frames and a depth snapshot.",
+                                    "Capture the ChArUco board frames to calibrate the camera.",
                                     size="sm",
                                     c="dimmed",
                                 ),
-                                dmc.TextInput(
-                                    id="calibration-board-path",
-                                    label="Board layout",
-                                    value=str(DEFAULT_BOARD_PATH),
+                                dmc.Card(
+                                    dmc.Group(
+                                        [
+                                            dmc.ThemeIcon(
+                                                dmc.Text("✓", size="lg"),
+                                                size="lg",
+                                                radius="md",
+                                                color="gray",
+                                                id="markers-detected-icon",
+                                            ),
+                                            dmc.Stack(
+                                                [
+                                                    dmc.Text(
+                                                        "Markers detected", size="sm", fw=600),
+                                                    dmc.Text(
+                                                        "Position the ChArUco board in view",
+                                                        size="xs",
+                                                        c="dimmed",
+                                                    ),
+                                                ],
+                                                gap="xs",
+                                            ),
+                                        ],
+                                        gap="md",
+                                    ),
+                                    p="md",
+                                    withBorder=True,
                                 ),
-                                dmc.TextInput(
-                                    id="calibration-output-dir",
-                                    label="Capture output dir",
-                                    value=str(DEFAULT_CAPTURE_DIR),
+                                dmc.Button(
+                                    "Calibrate",
+                                    id="calibrate-camera",
+                                    fullWidth=True,
+                                    disabled=True,
+                                    color="teal",
                                 ),
-                                dmc.TextInput(
-                                    id="calibration-bundle-path",
-                                    label="Calibration bundle",
-                                    value=str(DEFAULT_BUNDLE_PATH),
+                                dmc.Box(
+                                    id="camera-calibration-action",
+                                    style={"minHeight": "60px"},
                                 ),
-                                dmc.Group(
-                                    [
-                                        dmc.Button(
-                                            "Capture frame", id="capture-frame", variant="outline"),
-                                        dmc.Button(
-                                            "Capture depth", id="capture-depth", variant="outline"),
+                                dmc.Accordion(
+                                    children=[
+                                        dmc.AccordionItem(
+                                            children=[
+                                                dmc.AccordionControl(
+                                                    "Advanced options"),
+                                                dmc.AccordionPanel(
+                                                    dmc.Stack(
+                                                        [
+                                                            dmc.TextInput(
+                                                                id="calibration-board-path",
+                                                                label="Board layout path",
+                                                                value=str(
+                                                                    DEFAULT_BOARD_PATH),
+                                                                size="sm",
+                                                            ),
+                                                            dmc.TextInput(
+                                                                id="calibration-output-dir",
+                                                                label="Output directory",
+                                                                value=str(
+                                                                    DEFAULT_CAPTURE_DIR),
+                                                                size="sm",
+                                                            ),
+                                                            dmc.TextInput(
+                                                                id="calibration-bundle-path",
+                                                                label="Bundle save path",
+                                                                value=str(
+                                                                    DEFAULT_BUNDLE_PATH),
+                                                                size="sm",
+                                                            ),
+                                                            dmc.Group(
+                                                                [
+                                                                    dmc.Button(
+                                                                        "Load bundle",
+                                                                        id="load-calibration",
+                                                                        variant="light",
+                                                                        size="sm",
+                                                                    ),
+                                                                ],
+                                                                grow=True,
+                                                            ),
+                                                        ],
+                                                        gap="sm",
+                                                    ),
+                                                ),
+                                            ],
+                                            value="advanced",
+                                        ),
                                     ],
-                                    grow=True,
+                                    variant="separated",
                                 ),
-                                dmc.Group(
-                                    [
-                                        dmc.Button(
-                                            "Compute calibration", id="compute-calibration"),
-                                        dmc.Button(
-                                            "Load bundle", id="load-calibration", variant="light"),
-                                    ],
-                                    grow=True,
-                                ),
-                                dmc.Text(id="camera-calibration-action",
-                                         size="sm", c="dimmed"),
                                 dmc.Text(
                                     id="camera-calibration-metrics", size="sm"),
                             ],
-                            gap="xs",
+                            gap="md",
                         ),
                     ),
                     dmc.StepperStep(
@@ -965,22 +1120,21 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                 align="center",
             ),
             dmc.Text(id="overlay-status", size="sm", c="dimmed"),
-            html.Video(
-                id="camera-feed",
-                src="/video_feed",
-                controls=False,
-                autoPlay=True,
-                muted=True,
-                poster=placeholder_src,
-                style={
-                    "width": "100%",
-                    "height": "auto",
-                    "borderRadius": "16px",
-                    "border": "1px solid rgba(15, 118, 110, 0.2)",
-                    "marginTop": "12px",
-                    "backgroundColor": "#0b0f14",
-                    "display": "block",
-                },
+            html.Div(
+                id="camera-feed-container",
+                children=html.Img(
+                    id="camera-feed",
+                    src="/camera_frame.jpg",
+                    style={
+                        "width": "100%",
+                        "height": "auto",
+                        "borderRadius": "16px",
+                        "border": "1px solid rgba(15, 118, 110, 0.2)",
+                        "marginTop": "12px",
+                        "backgroundColor": "#0b0f14",
+                    },
+                ),
+                style={"position": "relative"}
             ),
         ],
         withBorder=True,
@@ -1261,6 +1415,8 @@ def build_layout() -> dmc.MantineProvider:
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="camera-interval",
                              interval=300, n_intervals=0),
+                html.Div(id="camera-refresh-container",
+                         style={"display": "none"}),
                 build_setup_drawer(),
                 dmc.AppShell(
                     [
@@ -1402,9 +1558,6 @@ def register_callbacks(app: Dash) -> None:
         """
         function(n_clicks) {
             if (!n_clicks) return;
-            const video = document.getElementById('camera-feed');
-            if (!video) return;
-            const fsFn = video.requestFullscreen || 
                          video.webkitRequestFullscreen ||
                          video.mozRequestFullScreen ||
                          video.msRequestFullscreen;
@@ -1420,6 +1573,22 @@ def register_callbacks(app: Dash) -> None:
         Output("fullscreen-btn", "n_clicks"),
         Input("fullscreen-btn", "n_clicks"),
         prevent_initial_call=True,
+    )
+
+    # Auto-refresh camera image every 300ms
+    app.clientside_callback(
+        """
+        function(interval) {
+            var img = document.getElementById('camera-feed');
+            if (img && img.tagName === 'IMG') {
+                img.src = '/camera_frame.jpg?t=' + Date.now();
+            }
+            return null;
+        }
+        """,
+        Output("camera-refresh-container", "children"),
+        Input("camera-interval", "n_intervals"),
+        prevent_initial_call=False,
     )
 
     @app.callback(
@@ -1886,10 +2055,30 @@ def register_callbacks(app: Dash) -> None:
         return notifications, current
 
     @app.callback(
+        Output("calibrate-camera", "disabled"),
+        Output("markers-detected-icon", "color"),
+        Input("camera-calibration-metrics", "children"),
+        prevent_initial_call=True,
+    )
+    def _update_calibrate_button_state(metrics: str) -> Tuple[bool, str]:
+        """Enable Calibrate button and update icon when markers are detected (>= 16)"""
+        if not metrics or "ChArUco corners:" not in metrics:
+            return True, "gray"
+        try:
+            # Extract corner count from "ChArUco corners: X"
+            parts = metrics.split(":")
+            if len(parts) >= 2:
+                count = int(parts[-1].strip().split()[0])
+                is_disabled = count < 16
+                color = "red" if is_disabled else "green"
+                return is_disabled, color
+        except (ValueError, IndexError):
+            pass
+        return True, "gray"
+
+    @app.callback(
         Output("camera-calibration-action", "children"),
-        Input("capture-frame", "n_clicks"),
-        Input("capture-depth", "n_clicks"),
-        Input("compute-calibration", "n_clicks"),
+        Input("calibrate-camera", "n_clicks"),
         Input("load-calibration", "n_clicks"),
         State("calibration-output-dir", "value"),
         State("calibration-board-path", "value"),
@@ -1897,32 +2086,104 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _handle_camera_calibration_actions(
-        _capture_frame: int,
-        _capture_depth: int,
-        _compute: int,
+        _calibrate: int,
         _load: int,
         output_dir: str,
         board_path: str,
         bundle_path: str,
-    ) -> str:
+    ) -> dmc.Alert:
         trigger = callback_context.triggered_id
+
         output_path = _safe_path(output_dir, DEFAULT_CAPTURE_DIR)
         board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
         bundle_path = _safe_path(bundle_path, DEFAULT_BUNDLE_PATH)
-        try:
-            if trigger == "capture-frame":
-                captured = capture_color_frame(output_path)
-                return f"Captured {captured.name}."
-            if trigger == "capture-depth":
-                captured = capture_depth_snapshot(output_path)
-                return f"Saved depth snapshot to {captured.name}."
-            if trigger == "compute-calibration":
-                return compute_calibration_bundle(board_path, bundle_path, output_path)
-            if trigger == "load-calibration":
-                return load_calibration_bundle(bundle_path)
-        except Exception as exc:
-            return f"Calibration action failed: {exc}"
-        return "Awaiting calibration action."
+
+        if trigger == "load-calibration":
+            try:
+                result = load_calibration_bundle(bundle_path)
+                return dmc.Alert(
+                    result,
+                    icon="✓",
+                    title="Bundle loaded",
+                    color="green",
+                )
+            except Exception as exc:
+                logging.error(
+                    f"[CALIBRATE] Error loading bundle: {exc}", exc_info=True)
+                return dmc.Alert(
+                    str(exc)[:200],
+                    icon="!",
+                    title="Load error",
+                    color="red",
+                )
+
+        if trigger == "calibrate-camera":
+            try:
+                # Clear prior calibration artifacts on disk to avoid mixing old frames
+                _clear_calibration_outputs(output_path)
+
+                # Clear previous captures
+                SESSION.capture.frames = []
+                SESSION.capture.depth_frame = None
+
+                # Capture 30 frames for more robust calibration
+                num_frames = 30
+                captured_frames = []
+                for i in range(num_frames):
+                    captured = capture_color_frame(output_path)
+                    captured_frames.append(captured.name)
+                    # Small delay between captures to avoid motion blur
+                    if i < num_frames - 1:
+                        time.sleep(0.1)
+
+                # Capture depth snapshot
+                depth_path = capture_depth_snapshot(output_path)
+
+                # Pre-flight check: ensure the saved frames actually contain ChArUco corners
+                detection_counts, usable_frames = _charuco_detection_counts(
+                    _list_capture_frames(output_path), board_path
+                )
+                if usable_frames == 0:
+                    raise RuntimeError(
+                        "No usable ChArUco detections in captured frames. "
+                        f"Corner counts: {detection_counts}. "
+                        "Ensure the board is visible, sharp, and well-lit."
+                    )
+
+                # Compute calibration bundle
+                result = compute_calibration_bundle(
+                    board_path, bundle_path, output_path)
+
+                return dmc.Alert(
+                    children=[
+                        dmc.Stack(
+                            [
+                                dmc.Text(
+                                    f"✓ Captured {len(captured_frames)} RGB frames", size="sm"
+                                ),
+                                dmc.Text(
+                                    "✓ Captured 1 depth snapshot", size="sm"),
+                                dmc.Text(f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"),
+                                dmc.Text(result, size="sm", fw=600, c="teal"),
+                            ],
+                            gap="xs",
+                        ),
+                    ],
+                    icon="✓",
+                    title="Calibration complete",
+                    color="green",
+                )
+            except Exception as exc:
+                logging.error(
+                    f"[CALIBRATE] Error during calibration: {exc}", exc_info=True)
+                return dmc.Alert(
+                    str(exc)[:200],
+                    icon="!",
+                    title="Calibration error",
+                    color="red",
+                )
+
+        return dmc.Alert("", icon="•", title="Ready", color="gray")
 
     @app.callback(
         Output("workspace-action-status", "children"),
@@ -1946,36 +2207,9 @@ def register_callbacks(app: Dash) -> None:
             marker_size, SESSION.config.marker_size_mm)
         try:
             ws = compute_workspace_from_latest(marker_ids, marker_size_mm)
-            return f"Workspace locked: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm."
+            return f"Workspace computed: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
         except Exception as exc:
-            return f"Workspace detection failed: {exc}"
-
-    @app.callback(
-        Output("plate-action-status", "children"),
-        Input("compute-plate", "n_clicks"),
-        Input("attach-plate", "n_clicks"),
-        State("plate-layout-path", "value"),
-        State("calibration-bundle-path", "value"),
-        prevent_initial_call=True,
-    )
-    def _handle_plate_action(
-        _compute_clicks: int,
-        _attach_clicks: int,
-        layout_path: str,
-        bundle_path: str,
-    ) -> str:
-        trigger = callback_context.triggered_id
-        layout_path = _safe_path(layout_path, DEFAULT_PLATE_PATH)
-        bundle_path = _safe_path(bundle_path, DEFAULT_BUNDLE_PATH)
-        try:
-            if trigger == "compute-plate":
-                result = compute_plate_calibration_from_latest(layout_path)
-                return f"Plate detected. Error {result.reprojection_error_mm:.2f} mm."
-            if trigger == "attach-plate":
-                return attach_plate_calibration(bundle_path, layout_path)
-        except Exception as exc:
-            return f"Plate calibration failed: {exc}"
-        return "Awaiting plate action."
+            return f"Workspace error: {exc}"
 
     @app.callback(
         Output("overlay-status", "children"),
@@ -2006,9 +2240,17 @@ def register_callbacks(app: Dash) -> None:
         drop_marker_id: Optional[float],
     ) -> Tuple[str, str, str, str, str, str]:
         frame, _depth = get_latest_frame()
+        if _ticks % 30 == 0:
+            logging.warning(
+                f"_update_camera_view called, frame is None: {frame is None}")
+
         if frame is None:
-            placeholder = _placeholder_frame("Camera stream offline")
-            MJPEG_STREAM.add_frame(placeholder)
+            # Don't add placeholder to MJPEG stream - let video element show its poster image
+            # Only log every 30 calls to reduce noise
+            if _ticks % 30 == 0:
+                is_running = SESSION.camera_stream and SESSION.camera_stream.is_running()
+                logging.warning(
+                    f"No frame from camera. Stream running: {is_running}")
             return (
                 "Camera stream is stopped.",
                 "ChArUco corners: --",
@@ -2018,6 +2260,7 @@ def register_callbacks(app: Dash) -> None:
                 "Drop marker: --",
             )
 
+        # Frame received, add to MJPEG stream
         step = active_step or 0
         tab = active_tab or "calibration"
         board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
@@ -2089,18 +2332,6 @@ def register_callbacks(app: Dash) -> None:
                 metric,
             )
 
-        vis, status, detection_metric, drop_metric = draw_monitor_overlay(
-            frame, drop_marker)
-        MJPEG_STREAM.add_frame(vis)
-        return (
-            status,
-            "ChArUco corners: --",
-            "Workspace: --",
-            "Plate error: --",
-            detection_metric,
-            drop_metric,
-        )
-
 
 def create_app() -> Dash:
     app = Dash(__name__)
@@ -2111,27 +2342,55 @@ def create_app() -> Dash:
     @app.server.route("/video_feed")
     def video_feed():
         """Stream Motion JPEG video for fullscreen playback."""
+        print("DEBUG: /video_feed endpoint accessed")
+
         def generate():
             boundary = b'--frame\r\n'
+            frame_count = 0
             while True:
                 frame_data = MJPEG_STREAM.get_frame()
-                if frame_data is None:
-                    blank = np.zeros((720, 1280, 3), dtype=np.uint8)
-                    success, buffer = cv2.imencode(".jpg", blank)
-                    frame_data = buffer.tobytes() if success else b''
 
-                if frame_data:
-                    yield boundary
-                    yield b'Content-Type: image/jpeg\r\n'
-                    yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
-                    yield frame_data
-                    yield b'\r\n'
-                else:
+                if not frame_data:
                     time.sleep(0.033)
+                    continue
+
+                frame_count += 1
+                if frame_count == 1:
+                    logging.warning(
+                        f"/video_feed serving first frame, size={len(frame_data)} bytes")
+                if frame_count % 30 == 0:
+                    logging.warning(f"/video_feed served {frame_count} frames")
+
+                yield boundary
+                yield b'Content-Type: image/jpeg\r\n'
+                yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
+                yield frame_data
+                yield b'\r\n'
+                time.sleep(0.01)  # Small delay to avoid hammering
 
         return app.server.response_class(
             generate(),
             mimetype='multipart/x-mixed-replace; boundary=frame'
+        )
+
+    @app.server.route("/camera_frame.jpg")
+    def camera_frame():
+        """Get the latest camera frame as a JPEG image."""
+        frame_data = MJPEG_STREAM.get_frame()
+        if not frame_data:
+            # Return placeholder as JPEG bytes
+            placeholder = _placeholder_frame("Camera stream offline")
+            success, buffer = cv2.imencode(".jpg", placeholder)
+            if success:
+                frame_data = buffer.tobytes()
+            else:
+                return app.server.response_class(
+                    b"",
+                    mimetype='image/jpeg'
+                )
+        return app.server.response_class(
+            frame_data,
+            mimetype='image/jpeg'
         )
 
     return app
