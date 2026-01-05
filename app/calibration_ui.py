@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import logging
 import os
@@ -41,6 +42,9 @@ DEFAULT_RESOLUTION = (1280, 720)
 DEFAULT_FPS = 30.0
 DEFAULT_MODEL_DIR = Path("data/models")
 DEFAULT_DROP_MARKER_ID = 30
+ROBOT_COORDINATE_ID = 5
+MIN_PLATE_MARKERS = 4
+FLANGE_BUTTON_PORT = 41
 
 
 def _load_codroid_defaults() -> dict:
@@ -101,6 +105,9 @@ SESSION = UISession(
         user_port=CODROID_DEFAULTS["ws_port"],
     )
 )
+
+PLATE_STATUS = {"count": 0, "ok": False,
+                "timestamp": 0.0, "message": "Waiting for plate markers"}
 
 
 def _restore_persisted_state() -> None:
@@ -424,6 +431,36 @@ def _default_transform() -> workspace.RigidTransform:
     return workspace.RigidTransform(rotation=np.eye(3), translation=np.zeros(3))
 
 
+def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.RigidTransform:
+    """Compute best-fit rigid transform from from_pts -> to_pts."""
+    if from_pts.shape != to_pts.shape:
+        raise ValueError("Point clouds must have the same shape.")
+    if from_pts.shape[0] < 3:
+        raise ValueError("At least 3 points are required for a rigid transform.")
+    a = np.asarray(from_pts, dtype=np.float64)
+    b = np.asarray(to_pts, dtype=np.float64)
+    centroid_a = np.mean(a, axis=0)
+    centroid_b = np.mean(b, axis=0)
+    aa = a - centroid_a
+    bb = b - centroid_b
+    h = aa.T @ bb
+    u, _s, vt = np.linalg.svd(h)
+    r = vt.T @ u.T
+    if np.linalg.det(r) < 0:
+        vt[-1, :] *= -1
+        r = vt.T @ u.T
+    t = centroid_b - r @ centroid_a
+    return workspace.RigidTransform(rotation=r, translation=t)
+
+
+def _ensure_plate_visible(max_age_s: float = 1.0) -> None:
+    now = time.time()
+    if not PLATE_STATUS.get("ok"):
+        raise RuntimeError("Calibration plate markers are not visible.")
+    if now - PLATE_STATUS.get("timestamp", 0.0) > max_age_s:
+        raise RuntimeError("Calibration plate markers are stale; keep them visible.")
+
+
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float]) -> str:
     stop_camera_stream()
     resolution = (_safe_int(width, DEFAULT_RESOLUTION[0]), _safe_int(
@@ -649,6 +686,135 @@ def attach_plate_calibration(bundle_path: Path, layout_path: Path) -> str:
     calibration.save_calibration(updated, bundle_path)
     SESSION.calibration_bundle = updated
     return f"Updated bundle saved to {bundle_path}."
+
+
+async def _run_robot_plate_calibration(
+    robot_uri: str,
+    plate_layout: plate.CalibrationPlate,
+) -> Tuple[list[dict], dict]:
+    """Capture three robot poses via flange button 1 and calibrate coord ID 5."""
+    settings = _apply_robot_uri(CodroidSettings(), robot_uri or DEFAULT_ROBOT_URI)
+    robot_config = settings.build_robot_config()
+    async with CodroidAPI(robot_config) as robot_api:
+        await robot_api.robot_login()
+        await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+
+        latest_posture: dict = {}
+        di_state: dict = {}
+        press_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def _listener() -> None:
+            nonlocal latest_posture
+            async for msg in robot_api.listen():
+                action = msg.get("action")
+                if action == "RobotPosture":
+                    data = (msg.get("data") or {}).get("data") or {}
+                    latest_posture = data.get("end") or latest_posture
+                di = CodroidAPI.extract_di_state(msg)
+                if di and FLANGE_BUTTON_PORT in di:
+                    prev = di_state.get(FLANGE_BUTTON_PORT)
+                    di_state[FLANGE_BUTTON_PORT] = di[FLANGE_BUTTON_PORT]
+                    if prev != di[FLANGE_BUTTON_PORT] and di[FLANGE_BUTTON_PORT] == 1:
+                        if latest_posture:
+                            press_queue.put_nowait(latest_posture.copy())
+
+        listener_task = asyncio.create_task(_listener())
+
+        async def _poll_io() -> None:
+            while True:
+                request = robot_api.build_message(
+                    message_type="IOManager",
+                    action="GetIOValue",
+                    data=[FLANGE_BUTTON_PORT],
+                )
+                await robot_api.send_message(request)
+                await asyncio.sleep(0.2)
+
+        poll_task = asyncio.create_task(_poll_io())
+
+        robot_points: list[dict] = []
+        try:
+            calib_points = plate_layout.robot_calibration_points()
+            if len(calib_points) < 3:
+                raise RuntimeError("Calibration plate layout is missing calibration points.")
+
+            for idx in range(3):
+                _ensure_plate_visible()
+                try:
+                    posture = await asyncio.wait_for(press_queue.get(), timeout=90.0)
+                except asyncio.TimeoutError:
+                    raise RuntimeError("Timed out waiting for flange button 1 press.")
+                robot_points.append(posture)
+
+            # Persist user coordinate 5 using the captured points.
+            cpos_points = [
+                CodroidAPI.build_target_cpos(
+                    x=float(pt["x"]),
+                    y=float(pt["y"]),
+                    z=float(pt["z"]),
+                    a=float(pt["a"]),
+                    b=float(pt["b"]),
+                    c=float(pt["c"]),
+                )
+                for pt in robot_points
+            ]
+            coord_frame = await robot_api.coordinate_calibration(
+                cpos_points,
+                coordinate_id=ROBOT_COORDINATE_ID,
+                set_active_coordinate=True,
+            )
+            if coord_frame:
+                await robot_api.change_coordinate_parameter(ROBOT_COORDINATE_ID, coord_frame)
+            return robot_points, coord_frame or {}
+        finally:
+            poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poll_task
+            listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener_task
+
+
+def _apply_robot_calibration_results(
+    robot_points: list[dict],
+    plate_layout: plate.CalibrationPlate,
+) -> workspace.RigidTransform:
+    plate_pts = []
+    for calib_point in plate_layout.robot_calibration_points()[:3]:
+        plate_pts.append([float(calib_point.center_mm[0]),
+                         float(calib_point.center_mm[1]), 0.0])
+    robot_pts = []
+    for pt in robot_points[:3]:
+        robot_pts.append([float(pt["x"]), float(
+            pt["y"]), float(pt["z"])])
+    plate_pts_np = np.asarray(plate_pts, dtype=np.float64)
+    robot_pts_np = np.asarray(robot_pts, dtype=np.float64)
+    transform = _rigid_transform(plate_pts_np, robot_pts_np)
+
+    if SESSION.workspace_definition is not None:
+        ws = SESSION.workspace_definition
+        updated_ws = workspace.WorkspaceDefinition(
+            width_mm=ws.width_mm,
+            height_mm=ws.height_mm,
+            origin_camera=ws.origin_camera,
+            x_axis_camera=ws.x_axis_camera,
+            y_axis_camera=ws.y_axis_camera,
+            camera_to_robot=transform,
+        )
+    else:
+        # Fallback: use the plate dimensions as the workspace basis.
+        updated_ws = workspace.WorkspaceDefinition(
+            width_mm=float(plate_layout.plate_size_mm[0]),
+            height_mm=float(plate_layout.plate_size_mm[1]),
+            origin_camera=np.array([0.0, 0.0, 0.0]),
+            x_axis_camera=np.array([1.0, 0.0, 0.0]),
+            y_axis_camera=np.array([0.0, 1.0, 0.0]),
+            camera_to_robot=transform,
+        )
+
+    SESSION.workspace_definition = updated_ws
+    save_workspace_definition(updated_ws, DEFAULT_WORKSPACE_PATH)
+    return transform
 
 
 def _draw_label(frame: np.ndarray, text: str, origin: Tuple[int, int], color: Tuple[int, int, int]) -> None:
@@ -885,12 +1051,18 @@ def draw_workspace_overlay(
 def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray, str, str]:
     vis = frame.copy()
     if not layout_path.exists():
+        PLATE_STATUS.update(
+            {"count": 0, "ok": False, "timestamp": time.time(), "message": "Layout not found"}
+        )
         return vis, "Calibration plate layout not found.", "Plate error: --"
     plate_layout = plate.load_plate_layout(layout_path)
     try:
         calibration_result = plate.estimate_plate_calibration(
             frame, plate_layout)
     except Exception as exc:
+        PLATE_STATUS.update(
+            {"count": 0, "ok": False, "timestamp": time.time(), "message": str(exc)}
+        )
         return vis, f"Plate detection: {exc}", "Plate error: --"
 
     for det in calibration_result.detections.values():
@@ -905,6 +1077,14 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
     metric = f"Reprojection error: {calibration_result.reprojection_error_mm:.2f} mm"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
     status = f"Plate markers detected: {len(calibration_result.detections)}"
+    PLATE_STATUS.update(
+        {
+            "count": len(calibration_result.detections),
+            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "timestamp": time.time(),
+            "message": status,
+        }
+    )
     return vis, status, metric
 
 
@@ -1003,6 +1183,10 @@ def build_setup_drawer() -> dmc.Drawer:
         title="Setup & Connections",
         padding="md",
         size="lg",
+        zIndex=2000,
+        withOverlay=True,
+        overlayProps={"opacity": 0.55, "color": "#000"},
+        withinPortal=True,
         children=dmc.Stack(
             [
                 dmc.Text("Camera connection", fw=600),
@@ -1317,9 +1501,33 @@ def build_stepper_card() -> dmc.Card:
                                     ],
                                     grow=True,
                                 ),
+                                dmc.Alert(
+                                    id="plate-detection-summary",
+                                    title="Plate visibility",
+                                    color="yellow",
+                                    children="Waiting for plate markers...",
+                                    variant="light",
+                                ),
+                                dmc.Button(
+                                    "Begin calibrating robot",
+                                    id="start-robot-calibration",
+                                    variant="filled",
+                                    color="teal",
+                                    disabled=True,
+                                ),
                                 dmc.Text(id="plate-action-status",
                                          size="sm", c="dimmed"),
                                 dmc.Text(id="plate-metrics", size="sm"),
+                                dmc.Text(
+                                    "Press flange button 1 to capture each point.",
+                                    size="sm",
+                                    c="dimmed",
+                                ),
+                                dmc.Text(
+                                    id="robot-calibration-status",
+                                    size="sm",
+                                    c="teal",
+                                ),
                             ],
                             gap="xs",
                         ),
@@ -1651,6 +1859,14 @@ def build_layout() -> dmc.MantineProvider:
                           data={"camera": None, "robot": None}),
                 dcc.Store(id="calibration-progress-store",
                           data={"progress": 0}),
+                dcc.Store(
+                    id="plate-detection-state",
+                    data={"count": 0, "ok": False, "timestamp": 0.0, "message": ""},
+                ),
+                dcc.Store(
+                    id="robot-calibration-state",
+                    data={"status": "idle", "message": ""},
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="camera-interval",
@@ -1796,6 +2012,36 @@ async def _with_robot_api(uri: str, action: Callable[[CodroidAPI], Awaitable[Non
 
 
 def register_callbacks(app: Dash) -> None:
+    # Client-side toggle for the Setup drawer (faster UI response).
+    app.clientside_callback(
+        """
+        function(openClicks, closeClicks, opened) {
+            const ctx = dash_clientside.callback_context;
+            if (!ctx.triggered || ctx.triggered.length === 0) {
+                return opened;
+            }
+            const trigger = ctx.triggered[0].prop_id.split('.')[0];
+            if (trigger === "open-setup") {
+                return true;
+            }
+            if (trigger === "setup-close") {
+                return false;
+            }
+            // Fallback: compare counts.
+            const o = openClicks || 0;
+            const c = closeClicks || 0;
+            if (o > c) return true;
+            if (c > o) return false;
+            return opened;
+        }
+        """,
+        Output("setup-drawer", "opened"),
+        Input("open-setup", "n_clicks"),
+        Input("setup-close", "n_clicks"),
+        State("setup-drawer", "opened"),
+        prevent_initial_call=False,
+    )
+
     app.clientside_callback(
         """
         function(n_clicks) {
@@ -1832,20 +2078,6 @@ def register_callbacks(app: Dash) -> None:
         Input("camera-interval", "n_intervals"),
         prevent_initial_call=False,
     )
-
-    @app.callback(
-        Output("setup-drawer", "opened"),
-        Input("open-setup", "n_clicks"),
-        Input("setup-close", "n_clicks"),
-        State("setup-drawer", "opened"),
-    )
-    def _toggle_setup_drawer(open_clicks: int, close_clicks: int, opened: bool) -> bool:
-        trigger = callback_context.triggered_id
-        if trigger == "open-setup":
-            return True
-        if trigger == "setup-close":
-            return False
-        return opened
 
     @app.callback(
         Output("calibration-stepper", "active"),
@@ -2531,12 +2763,46 @@ def register_callbacks(app: Dash) -> None:
             return f"Workspace error: {exc}"
 
     @app.callback(
+        Output("plate-action-status", "children"),
+        Output("plate-metrics", "children", allow_duplicate=True),
+        Input("compute-plate", "n_clicks"),
+        Input("attach-plate", "n_clicks"),
+        State("plate-layout-path", "value"),
+        prevent_initial_call=True,
+    )
+    def _handle_plate_actions(
+        _compute_clicks: int,
+        _attach_clicks: int,
+        plate_layout_path: str,
+    ) -> Tuple[str, str]:
+        trigger = callback_context.triggered_id
+        layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
+        if trigger == "compute-plate":
+            try:
+                result = compute_plate_calibration_from_latest(layout_path)
+                metric = f"Reprojection error: {result.reprojection_error_mm:.2f} mm"
+                return (
+                    f"Plate detected with {len(result.detections)} markers.",
+                    metric,
+                )
+            except Exception as exc:
+                return f"Plate detection failed: {exc}", "Plate error: --"
+        if trigger == "attach-plate":
+            try:
+                status = attach_plate_calibration(DEFAULT_BUNDLE_PATH, layout_path)
+                return status, "Plate attached to bundle."
+            except Exception as exc:
+                return f"Attach failed: {exc}", "Plate error: --"
+        return no_update, no_update
+
+    @app.callback(
         Output("overlay-status", "children"),
         Output("camera-calibration-metrics", "children"),
         Output("workspace-metrics", "children"),
         Output("plate-metrics", "children"),
         Output("detection-metrics", "children"),
         Output("drop-marker-metrics", "children"),
+        Output("plate-detection-state", "data"),
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
@@ -2557,8 +2823,14 @@ def register_callbacks(app: Dash) -> None:
         marker_size: Optional[float],
         plate_layout: str,
         drop_marker_id: Optional[float],
-    ) -> Tuple[str, str, str, str, str, str]:
+    ) -> Tuple[str, str, str, str, str, str, dict]:
         frame, _depth = get_latest_frame()
+        plate_state = {
+            "count": 0,
+            "ok": False,
+            "timestamp": time.time(),
+            "message": "Waiting for plate markers",
+        }
         if _ticks % 30 == 0:
             logging.warning(
                 f"_update_camera_view called, frame is None: {frame is None}")
@@ -2577,6 +2849,7 @@ def register_callbacks(app: Dash) -> None:
                 "Plate error: --",
                 "Detections: --",
                 "Drop marker: --",
+                plate_state,
             )
 
         # Frame received, add to MJPEG stream
@@ -2604,6 +2877,7 @@ def register_callbacks(app: Dash) -> None:
                     "Plate error: --",
                     "Detections: --",
                     "Drop marker: --",
+                    plate_state,
                 )
             if step == 1:
                 vis, status, metric = draw_workspace_overlay(
@@ -2617,8 +2891,10 @@ def register_callbacks(app: Dash) -> None:
                     "Plate error: --",
                     "Detections: --",
                     "Drop marker: --",
+                    plate_state,
                 )
             vis, status, metric = draw_plate_overlay(frame, plate_path)
+            plate_state = PLATE_STATUS.copy()
             _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
             return (
@@ -2628,6 +2904,7 @@ def register_callbacks(app: Dash) -> None:
                 metric,
                 "Detections: --",
                 "Drop marker: --",
+                plate_state,
             )
 
         if tab == "detection":
@@ -2641,6 +2918,7 @@ def register_callbacks(app: Dash) -> None:
                 "Plate error: --",
                 metric,
                 "Drop marker: --",
+                plate_state,
             )
 
         if tab == "pick-place":
@@ -2654,6 +2932,76 @@ def register_callbacks(app: Dash) -> None:
                 "Plate error: --",
                 "Detections: --",
                 metric,
+                plate_state,
+            )
+
+    @app.callback(
+        Output("plate-detection-summary", "children"),
+        Output("plate-detection-summary", "color"),
+        Output("start-robot-calibration", "disabled"),
+        Output("start-robot-calibration", "variant"),
+        Input("plate-detection-state", "data"),
+        State("robot-calibration-state", "data"),
+    )
+    def _update_plate_summary(
+        plate_state: Optional[dict],
+        calib_state: Optional[dict],
+    ) -> Tuple[str, str, bool, str]:
+        state = plate_state or {}
+        count = state.get("count", 0)
+        ok = bool(state.get("ok"))
+        message = state.get("message") or f"Detected {count} marker(s)."
+        color = "green" if ok else "yellow"
+        in_progress = (calib_state or {}).get("status") == "running"
+        disabled = not ok or in_progress
+        variant = "filled" if not disabled else "light"
+        return message, color, disabled, variant
+
+    @app.callback(
+        Output("robot-calibration-status", "children"),
+        Output("robot-calibration-state", "data"),
+        Input("start-robot-calibration", "n_clicks"),
+        State("plate-layout-path", "value"),
+        State("plate-detection-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    def _start_robot_calibration(
+        _clicks: int,
+        plate_layout_path: str,
+        plate_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[str, dict]:
+        if not plate_state or not plate_state.get("ok"):
+            return (
+                f"Calibration plate markers not stable (need >= {MIN_PLATE_MARKERS}).",
+                {"status": "idle", "message": ""},
+            )
+        try:
+            layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
+            plate_layout = plate.load_plate_layout(layout_path)
+            _ensure_plate_visible()
+            message = "Waiting for flange button presses (1, then 2, then 3)..."
+            calib_state = {"status": "running", "message": message}
+            # Run calibration synchronously for now.
+            robot_points, coord_frame = asyncio.run(
+                _run_robot_plate_calibration(robot_uri or DEFAULT_ROBOT_URI, plate_layout)
+            )
+            transform = _apply_robot_calibration_results(
+                robot_points,
+                plate_layout,
+            )
+            summary = (
+                f"Robot calibration complete. "
+                f"Captured {len(robot_points)} points. "
+                f"Coordinate ID {ROBOT_COORDINATE_ID} updated. "
+                f"Transform saved to workspace (translation {transform.translation.round(2).tolist()})."
+            )
+            return summary, {"status": "done", "message": summary}
+        except Exception as exc:
+            return (
+                f"Robot calibration failed: {exc}",
+                {"status": "idle", "message": str(exc)},
             )
 
 
