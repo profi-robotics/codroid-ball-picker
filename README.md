@@ -2,12 +2,12 @@
 
 This repository contains a hardware-agnostic scaffold for bringing up the Estun
 Codroid + OAK-D pick-and-place pipeline. The focus is on repeatable calibration,
-marker-driven workspace definition, coordinate mapping, and a minimal WebSocket
-client for motion commands.
+marker-driven workspace definition, coordinate mapping, and `codroid-api` for
+robot motion commands.
 
 ## Layout
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
-- `robot/` – WebSocket client and command catalog extracted from browser traffic.
+- `robot/` – legacy WebSocket notes and command catalog extracted from browser traffic.
 - `app/` – orchestration logic that ties vision outputs to robot commands.
 - `run_bootstrap_demo.py` – entry point that runs the end-to-end flow using a
   frame provider stub.
@@ -28,8 +28,9 @@ client for motion commands.
      --count 15 \
      --preview
    ```
-3. Update `DemoConfig` in `app/orchestrator.py` with your WebSocket URI and
-   marker parameters.
+3. Configure robot connectivity via `CODROID_*` env vars (defaults come from
+   `codroid-api`). `DemoConfig` in `app/orchestrator.py` can override
+   `robot_host`, `robot_port`, or `user_port` if needed.
 4. Verify your OAK-D is visible:
    ```bash
    python -m vision.camera_check
@@ -61,23 +62,28 @@ client for motion commands.
    python run_calibration_ui.py --debug
    ```
    Use the Setup drawer to start the camera stream, verify the robot connection, and
-   work through the three calibration steps. The UI reads/writes calibration assets
-   under `data/` by default.
+   work through the workflow tabs (Calibration, Detection, Pick & Place, Monitoring).
+   The UI reads/writes calibration assets under `data/` by default.
 
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the
-camera, workspace, and robot calibration flows together. It provides:
-- A tabbed layout (Calibration tab) with a vertical stepper for camera, workarea,
-  and robot calibration.
-- A live camera view with overlays for ChArUco detection, workspace markers, and
-  calibration plate markers.
-- A Setup drawer to verify camera connectivity and test the robot WebSocket link.
+camera, detection, and robot flows together. It provides:
+- A tabbed layout for Calibration, Detection (YOLO model upload + inference),
+  Pick & Place, and Monitoring.
+- A live camera view with overlays for ChArUco detection, workspace markers,
+  YOLO detections, and the drop marker.
+- A Setup drawer to verify camera connectivity and test the robot connection.
 
 Run it locally with:
 ```bash
 python run_calibration_ui.py --debug
 ```
-Then open `http://127.0.0.1:8050` in your browser.
+Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
+connectivity follow the `codroid-api` settings (env `CODROID_HOST` and
+`CODROID_ROBOT_PORT`, or the factory defaults).
+
+YOLO inference relies on the `ultralytics` package. Install it with `uv add ultralytics`
+if you want to run detections from uploaded `.pt`/`.onnx` models.
 
 ## Corner markers
 Printable ArUco fiducials for the default `(1, 2)` marker IDs live under `data/markers/corner_markers/`:
@@ -139,10 +145,11 @@ The script will:
 1. Load calibration (or raise if missing),
 2. Detect the two workspace markers,
 3. Compute workspace size and target poses (center + bottom-left),
-4. Enable the robot and execute two linear moves via WebSocket,
+4. Enable the robot and execute two linear moves via `codroid-api`,
 5. Disable the robot.
 
 ## WebSocket Protocol Notes
 A concise command catalog derived from DevTools captures is available at
 `robot/command_catalog.md`. If new commands are discovered, extend that file and
-mirror the behaviour in `robot/websocket_client.py`.
+mirror the behaviour in `codroid-api` (the legacy `robot/websocket_client.py`
+remains for reference only).

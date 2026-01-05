@@ -17,7 +17,7 @@ from typing import Callable, Iterable, Optional, Tuple
 import cv2
 import numpy as np
 
-from robot.websocket_client import CodroidWebSocketClient, MotionParameters
+from codroid_api import CodroidAPI, CodroidSettings
 from vision import aruco_board, calibration, markers, workspace
 from vision.workspace import RigidTransform, WorkspaceDefinition
 
@@ -30,7 +30,9 @@ class DemoConfig:
     marker_size_mm: float = 40.0
     calibration_path: Path = Path("data/calibration_bundle.npz")
     aruco_board_layout_path: Path = Path("data/markers/camera_calibration/camera_calibration_board.json")
-    websocket_uri: str = "ws://192.168.0.10:9090/codroid/ws"
+    robot_host: Optional[str] = None
+    robot_port: Optional[int] = None
+    user_port: Optional[int] = None
     approach_height_mm: float = 30.0
     drop_offset_mm: float = 0.0
     workspace_scale: float = 1.0
@@ -41,7 +43,8 @@ class BootstrapDemo:
         self.config = config
         self.calibration: Optional[calibration.CalibrationBundle] = None
         self.workspace: Optional[WorkspaceDefinition] = None
-        self.robot: Optional[CodroidWebSocketClient] = None
+        self.user_api: Optional[CodroidAPI] = None
+        self.robot: Optional[CodroidAPI] = None
 
     def load_or_create_calibration(
         self,
@@ -92,10 +95,29 @@ class BootstrapDemo:
             "Workspace detected: width=%.1fmm height=%.1fmm", self.workspace.width_mm, self.workspace.height_mm
         )
 
-    async def _ensure_robot(self) -> CodroidWebSocketClient:
+    async def _ensure_robot(self) -> CodroidAPI:
         if self.robot is None:
-            self.robot = CodroidWebSocketClient(self.config.websocket_uri)
+            settings = CodroidSettings()
+            if self.config.robot_host:
+                settings.host = self.config.robot_host
+            if self.config.robot_port:
+                settings.robot_port = self.config.robot_port
+            if self.config.user_port:
+                settings.ws_port = self.config.user_port
+
+            user_config = settings.build_user_config()
+            robot_config = settings.build_robot_config()
+            self.user_api = CodroidAPI(user_config)
+            self.robot = CodroidAPI(robot_config)
+
+            await self.user_api.connect()
+            if user_config.user_password:
+                await self.user_api.ws_login_with_password()
+            elif user_config.usercode:
+                await self.user_api.ws_login()
+
             await self.robot.connect()
+            await self.robot.robot_login()
         return self.robot
 
     async def run_motion_sequence(self) -> None:
@@ -103,9 +125,7 @@ class BootstrapDemo:
             raise RuntimeError("Workspace has not been computed.")
 
         robot = await self._ensure_robot()
-        await robot.enable()
-
-        params = MotionParameters(speed=50.0, acceleration=100.0, blend=0.0)
+        await robot.power_on()
         center_xy = workspace.workspace_center(self.workspace)
         drop_xy = workspace.bottom_left(self.workspace)
 
@@ -113,21 +133,23 @@ class BootstrapDemo:
         drop_pose = self._pose_from_workspace(drop_xy, self.config.drop_offset_mm)
 
         LOGGER.info("Moving to workspace center %s", center_xy)
-        await robot.movl(center_pose, params)
+        center_target = robot.build_target_cpos(**center_pose)
+        await robot.move_to_cartesian_target_linear(center_target)
 
         LOGGER.info("Simulated grip close at center")
 
         LOGGER.info("Moving to bottom-left drop %s", drop_xy)
-        await robot.movl(drop_pose, params)
+        drop_target = robot.build_target_cpos(**drop_pose)
+        await robot.move_to_cartesian_target_linear(drop_target)
 
         LOGGER.info("Simulated grip open at drop location")
-        await robot.disable()
+        await robot.power_off()
 
     def _pose_from_workspace(self, xy_mm: Tuple[float, float], z_offset_mm: float) -> dict:
         assert self.workspace is not None
         robot_xyz = self.workspace.workspace_to_robot(xy_mm[0], xy_mm[1], z_offset_mm)
         # Orientation left as zeroed Euler for initial bootstrap.
-        return {"x": robot_xyz[0], "y": robot_xyz[1], "z": robot_xyz[2], "rx": 0.0, "ry": 0.0, "rz": 0.0}
+        return {"x": robot_xyz[0], "y": robot_xyz[1], "z": robot_xyz[2], "a": 0.0, "b": 0.0, "c": 0.0}
 
 
 async def run_demo_with_frame(
