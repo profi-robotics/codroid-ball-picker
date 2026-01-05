@@ -101,6 +101,9 @@ SESSION = UISession(
     )
 )
 
+# Global calibration progress tracker
+CALIBRATION_PROGRESS = {"value": 0, "current_frame": 0, "max_frames": 0}
+
 
 class MotionJPEGStream:
     """Manager for Motion JPEG video streaming for fullscreen video playback."""
@@ -953,6 +956,21 @@ def build_stepper_card() -> dmc.Card:
                                     id="camera-calibration-action",
                                     style={"minHeight": "60px"},
                                 ),
+                                dmc.Text(
+                                    id="calibration-progress-text",
+                                    size="sm",
+                                    c="dimmed",
+                                    style={"display": "none",
+                                           "marginBottom": "8px"},
+                                ),
+                                dmc.Progress(
+                                    id="calibration-progress",
+                                    value=0,
+                                    size="sm",
+                                    striped=True,
+                                    animated=True,
+                                    style={"display": "none"},
+                                ),
                                 dmc.Accordion(
                                     children=[
                                         dmc.AccordionItem(
@@ -1411,10 +1429,14 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(id="robot-connection-state"),
                 dcc.Store(id="notification-state",
                           data={"camera": None, "robot": None}),
+                dcc.Store(id="calibration-progress-store",
+                          data={"progress": 0}),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="camera-interval",
                              interval=300, n_intervals=0),
+                dcc.Interval(id="calibration-progress-interval",
+                             interval=100, n_intervals=0),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
                 build_setup_drawer(),
@@ -2078,6 +2100,7 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("camera-calibration-action", "children"),
+        Output("calibration-progress-store", "data"),
         Input("calibrate-camera", "n_clicks"),
         Input("load-calibration", "n_clicks"),
         State("calibration-output-dir", "value"),
@@ -2101,21 +2124,23 @@ def register_callbacks(app: Dash) -> None:
         if trigger == "load-calibration":
             try:
                 result = load_calibration_bundle(bundle_path)
-                return dmc.Alert(
+                alert = dmc.Alert(
                     result,
                     icon="✓",
                     title="Bundle loaded",
                     color="green",
                 )
+                return alert, {"progress": 0}
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error loading bundle: {exc}", exc_info=True)
-                return dmc.Alert(
+                alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
                     title="Load error",
                     color="red",
                 )
+                return alert, {"progress": 0}
 
         if trigger == "calibrate-camera":
             try:
@@ -2129,9 +2154,16 @@ def register_callbacks(app: Dash) -> None:
                 # Capture 30 frames for more robust calibration
                 num_frames = 30
                 captured_frames = []
+                CALIBRATION_PROGRESS["max_frames"] = num_frames
+                CALIBRATION_PROGRESS["value"] = 1  # Start progress
                 for i in range(num_frames):
                     captured = capture_color_frame(output_path)
                     captured_frames.append(captured.name)
+                    # Update progress (1-30 frames = 3-98%)
+                    frame_num = i + 1
+                    CALIBRATION_PROGRESS["current_frame"] = frame_num
+                    CALIBRATION_PROGRESS["value"] = int(
+                        (frame_num / num_frames) * 95) + 3
                     # Small delay between captures to avoid motion blur
                     if i < num_frames - 1:
                         time.sleep(0.1)
@@ -2154,7 +2186,7 @@ def register_callbacks(app: Dash) -> None:
                 result = compute_calibration_bundle(
                     board_path, bundle_path, output_path)
 
-                return dmc.Alert(
+                alert = dmc.Alert(
                     children=[
                         dmc.Stack(
                             [
@@ -2163,7 +2195,8 @@ def register_callbacks(app: Dash) -> None:
                                 ),
                                 dmc.Text(
                                     "✓ Captured 1 depth snapshot", size="sm"),
-                                dmc.Text(f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"),
+                                dmc.Text(
+                                    f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"),
                                 dmc.Text(result, size="sm", fw=600, c="teal"),
                             ],
                             gap="xs",
@@ -2173,17 +2206,25 @@ def register_callbacks(app: Dash) -> None:
                     title="Calibration complete",
                     color="green",
                 )
+                # Reset progress tracker
+                CALIBRATION_PROGRESS["value"] = 0
+                CALIBRATION_PROGRESS["current_frame"] = 0
+                return alert, {"progress": 0}
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error during calibration: {exc}", exc_info=True)
-                return dmc.Alert(
+                alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
                     title="Calibration error",
                     color="red",
                 )
+                # Reset progress tracker on error
+                CALIBRATION_PROGRESS["value"] = 0
+                CALIBRATION_PROGRESS["current_frame"] = 0
+                return alert, {"progress": 0}
 
-        return dmc.Alert("", icon="•", title="Ready", color="gray")
+        return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}
 
     @app.callback(
         Output("workspace-action-status", "children"),
@@ -2372,6 +2413,26 @@ def create_app() -> Dash:
             generate(),
             mimetype='multipart/x-mixed-replace; boundary=frame'
         )
+
+    @app.callback(
+        Output("calibration-progress", "value"),
+        Output("calibration-progress", "style"),
+        Output("calibration-progress-text", "children"),
+        Output("calibration-progress-text", "style"),
+        Input("calibration-progress-interval", "n_intervals"),
+    )
+    def _update_calibration_progress(_):
+        """Update progress bar and text from global calibration progress tracker."""
+        progress = CALIBRATION_PROGRESS.get("value", 0)
+        current_frame = CALIBRATION_PROGRESS.get("current_frame", 0)
+        max_frames = CALIBRATION_PROGRESS.get("max_frames", 0)
+
+        # Show progress bar and text only if capturing (1-99%)
+        if progress > 0 and progress < 100:
+            text = f"Capturing images: {current_frame}/{max_frames}"
+            return progress, {"display": "block"}, text, {"display": "block", "marginBottom": "8px"}
+
+        return 0, {"display": "none"}, "", {"display": "none"}
 
     @app.server.route("/camera_frame.jpg")
     def camera_frame():
