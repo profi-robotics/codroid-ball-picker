@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Tuple
@@ -27,8 +30,10 @@ from vision.stream import DepthAIFrameStream, StreamConfig
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_BOARD_PATH = Path("data/markers/camera_calibration/camera_calibration_board.json")
-DEFAULT_PLATE_PATH = Path("data/markers/robot_calibration/calibration_plate_layout.json")
+DEFAULT_BOARD_PATH = Path(
+    "data/markers/camera_calibration/camera_calibration_board.json")
+DEFAULT_PLATE_PATH = Path(
+    "data/markers/robot_calibration/calibration_plate_layout.json")
 DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
 DEFAULT_CAPTURE_DIR = Path("data/calibration")
 DEFAULT_RESOLUTION = (1280, 720)
@@ -95,6 +100,38 @@ SESSION = UISession(
         user_port=CODROID_DEFAULTS["ws_port"],
     )
 )
+
+
+class MotionJPEGStream:
+    """Manager for Motion JPEG video streaming for fullscreen video playback."""
+
+    def __init__(self, frame_rate: float = 30.0):
+        self.frame_rate = frame_rate
+        self.frame_queue: list[bytes] = []
+        self.lock = threading.Lock()
+        self.max_queue_size = 3
+
+    def add_frame(self, frame: np.ndarray) -> None:
+        """Add a frame to the stream queue."""
+        success, buffer = cv2.imencode(".jpg", frame)
+        if not success:
+            return
+
+        with self.lock:
+            self.frame_queue.append(buffer.tobytes())
+            # Keep only recent frames
+            if len(self.frame_queue) > self.max_queue_size:
+                self.frame_queue.pop(0)
+
+    def get_frame(self) -> Optional[bytes]:
+        """Get the most recent frame from the queue."""
+        with self.lock:
+            if self.frame_queue:
+                return self.frame_queue[-1]
+        return None
+
+
+MJPEG_STREAM = MotionJPEGStream()
 
 
 def _safe_int(value: Optional[float], fallback: int) -> int:
@@ -174,7 +211,8 @@ def _load_ultralytics_model(model_path: Path) -> object:
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        raise RuntimeError("ultralytics is not installed. Run `uv add ultralytics` to enable YOLO inference.") from exc
+        raise RuntimeError(
+            "ultralytics is not installed. Run `uv add ultralytics` to enable YOLO inference.") from exc
     return YOLO(str(model_path))
 
 
@@ -208,7 +246,8 @@ def _workspace_pixel_to_mm(
 ) -> Tuple[float, float]:
     scale = float(workspace_def.x_axis_camera[0])
     if scale == 0:
-        raise RuntimeError("Workspace scale is zero; recompute workspace markers.")
+        raise RuntimeError(
+            "Workspace scale is zero; recompute workspace markers.")
     origin_px_x = workspace_def.origin_camera[0] / scale
     origin_px_y = workspace_def.origin_camera[1] / scale
     x_mm = (pixel_xy[0] - origin_px_x) * scale
@@ -241,10 +280,12 @@ def _run_detection(
     class_filter: Optional[str],
 ) -> list[dict]:
     if SESSION.yolo_model is None:
-        raise RuntimeError("No YOLO model loaded. Upload a model or install ultralytics.")
+        raise RuntimeError(
+            "No YOLO model loaded. Upload a model or install ultralytics.")
     classes = None
     if class_filter:
-        classes = [int(val.strip()) for val in class_filter.split(",") if val.strip().isdigit()]
+        classes = [int(val.strip())
+                   for val in class_filter.split(",") if val.strip().isdigit()]
     results = SESSION.yolo_model.predict(
         frame,
         conf=confidence,
@@ -277,7 +318,8 @@ def _run_detection(
             }
             if SESSION.workspace_definition is not None:
                 try:
-                    detection["workspace_mm"] = _workspace_pixel_to_mm(SESSION.workspace_definition, center)
+                    detection["workspace_mm"] = _workspace_pixel_to_mm(
+                        SESSION.workspace_definition, center)
                 except Exception:
                     detection["workspace_mm"] = None
             detections.append(detection)
@@ -296,7 +338,8 @@ def _format_detection_list(detections: list[dict]) -> list:
             coord = f"{workspace_mm[0]:.1f}, {workspace_mm[1]:.1f} mm"
         else:
             coord = "workspace: --"
-        rows.append(dmc.Text(f"{idx}. {label} ({conf:.2f}) @ {coord}", size="sm"))
+        rows.append(
+            dmc.Text(f"{idx}. {label} ({conf:.2f}) @ {coord}", size="sm"))
     return rows
 
 
@@ -310,9 +353,11 @@ def _detect_drop_marker(
     marker = detections[marker_id]
     workspace_mm = None
     if SESSION.workspace_definition is not None:
-        workspace_mm = _workspace_pixel_to_mm(SESSION.workspace_definition, marker.center)
+        workspace_mm = _workspace_pixel_to_mm(
+            SESSION.workspace_definition, marker.center)
     if workspace_mm is None:
-        raise RuntimeError("Workspace is not defined; run workspace detection first.")
+        raise RuntimeError(
+            "Workspace is not defined; run workspace detection first.")
     return marker, workspace_mm
 
 
@@ -345,9 +390,11 @@ def _default_transform() -> workspace.RigidTransform:
 
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float]) -> str:
     stop_camera_stream()
-    resolution = (_safe_int(width, DEFAULT_RESOLUTION[0]), _safe_int(height, DEFAULT_RESOLUTION[1]))
+    resolution = (_safe_int(width, DEFAULT_RESOLUTION[0]), _safe_int(
+        height, DEFAULT_RESOLUTION[1]))
     fps_value = _safe_float(fps, DEFAULT_FPS)
-    stream = DepthAIFrameStream(StreamConfig(resolution=resolution, fps=fps_value))
+    stream = DepthAIFrameStream(StreamConfig(
+        resolution=resolution, fps=fps_value))
     stream.start()
     SESSION.camera_stream = stream
     device_id = stream.device_id() or "unknown"
@@ -404,16 +451,22 @@ def load_depth_snapshot(output_dir: Path) -> Optional[np.ndarray]:
 
 def compute_calibration_bundle(board_path: Path, bundle_path: Path, output_dir: Path) -> str:
     if not board_path.exists():
-        raise FileNotFoundError(f"ChArUco board layout not found: {board_path}")
+        raise FileNotFoundError(
+            f"ChArUco board layout not found: {board_path}")
     frames = _update_capture_state(output_dir)
     if not frames:
-        raise RuntimeError("No calibration frames found. Capture frames before calibrating.")
-    depth_frame = SESSION.capture.depth_frame or load_depth_snapshot(output_dir)
+        raise RuntimeError(
+            "No calibration frames found. Capture frames before calibrating.")
+    depth_frame = SESSION.capture.depth_frame or load_depth_snapshot(
+        output_dir)
     if depth_frame is None:
-        raise RuntimeError("No depth snapshot found. Capture a depth frame before calibrating.")
-    config = DemoConfig(calibration_path=bundle_path, aruco_board_layout_path=board_path)
+        raise RuntimeError(
+            "No depth snapshot found. Capture a depth frame before calibrating.")
+    config = DemoConfig(calibration_path=bundle_path,
+                        aruco_board_layout_path=board_path)
     demo = BootstrapDemo(config)
-    demo.load_or_create_calibration(image_paths=frames, depth_frame=depth_frame, force_rebuild=True)
+    demo.load_or_create_calibration(
+        image_paths=frames, depth_frame=depth_frame, force_rebuild=True)
     SESSION.calibration_bundle = demo.calibration
     return f"Calibration bundle saved to {bundle_path}."
 
@@ -447,7 +500,8 @@ def compute_plate_calibration_from_latest(layout_path: Path) -> plate.PlateCalib
     if frame is None:
         raise RuntimeError("Camera stream is not providing frames yet.")
     if not layout_path.exists():
-        raise FileNotFoundError(f"Calibration plate layout not found: {layout_path}")
+        raise FileNotFoundError(
+            f"Calibration plate layout not found: {layout_path}")
     layout = plate.load_plate_layout(layout_path)
     result = plate.estimate_plate_calibration(frame, layout)
     SESSION.plate_calibration = result
@@ -484,9 +538,11 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
     board = board_spec.create_board()
     charuco_params = cv2.aruco.CharucoParameters()
     detector_params = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
+    detector = cv2.aruco.CharucoDetector(
+        board, charuco_params, detector_params)
     gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
-    charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(gray)
+    charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(
+        gray)
     marker_count = 0 if marker_ids is None else len(marker_ids)
     corner_count = 0 if charuco_ids is None else len(charuco_ids)
     if marker_ids is not None and marker_corners is not None:
@@ -513,7 +569,8 @@ def draw_workspace_overlay(
             cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=2)
             center = tuple(np.round(det.center).astype(int))
             cv2.circle(vis, center, 4, color, -1)
-            cv2.putText(vis, f"ID {det.marker_id}", center, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.putText(vis, f"ID {det.marker_id}", center,
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         status = "Workspace markers detected."
     except Exception as exc:
         return vis, f"Workspace detection: {exc}", "Workspace: --"
@@ -540,16 +597,19 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
         return vis, "Calibration plate layout not found.", "Plate error: --"
     plate_layout = plate.load_plate_layout(layout_path)
     try:
-        calibration_result = plate.estimate_plate_calibration(frame, plate_layout)
+        calibration_result = plate.estimate_plate_calibration(
+            frame, plate_layout)
     except Exception as exc:
         return vis, f"Plate detection: {exc}", "Plate error: --"
 
     for det in calibration_result.detections.values():
         pts = det.corners.astype(int)
-        cv2.polylines(vis, [pts], isClosed=True, color=(255, 204, 0), thickness=2)
+        cv2.polylines(vis, [pts], isClosed=True,
+                      color=(255, 204, 0), thickness=2)
         center = tuple(np.round(det.center).astype(int))
         cv2.circle(vis, center, 4, (255, 204, 0), -1)
-        cv2.putText(vis, f"ID {det.marker_id}", center, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 204, 0), 2)
+        cv2.putText(vis, f"ID {det.marker_id}", center,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 204, 0), 2)
 
     metric = f"Reprojection error: {calibration_result.reprojection_error_mm:.2f} mm"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
@@ -618,16 +678,21 @@ def build_header() -> dmc.AppShellHeader:
             [
                 dmc.Stack(
                     [
-                        dmc.Text("Codroid Calibration Console", className="app-title"),
-                        dmc.Text("Vision + robot bring-up dashboard", size="sm", c="dimmed"),
+                        dmc.Text("Codroid Calibration Console",
+                                 className="app-title"),
+                        dmc.Text("Vision + robot bring-up dashboard",
+                                 size="sm", c="dimmed"),
                     ],
                     gap=2,
                 ),
                 dmc.Group(
                     [
-                        dmc.Badge("Camera: off", id="header-camera-badge", color="gray", variant="light"),
-                        dmc.Badge("Robot: idle", id="header-robot-badge", color="gray", variant="light"),
-                        dmc.Button("Setup", id="open-setup", variant="outline"),
+                        dmc.Badge("Camera: off", id="header-camera-badge",
+                                  color="gray", variant="light"),
+                        dmc.Badge("Robot: idle", id="header-robot-badge",
+                                  color="gray", variant="light"),
+                        dmc.Button("Setup", id="open-setup",
+                                   variant="outline"),
                     ],
                     gap="sm",
                 ),
@@ -652,7 +717,8 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Text("Camera connection", fw=600),
                 dmc.Group(
                     [
-                        dmc.Button("Scan for camera", id="camera-scan", variant="light"),
+                        dmc.Button("Scan for camera",
+                                   id="camera-scan", variant="light"),
                         dmc.Switch(
                             id="camera-enable",
                             label="Enable live camera stream",
@@ -698,11 +764,13 @@ def build_setup_drawer() -> dmc.Drawer:
                     label="WebSocket URI",
                     value=DEFAULT_ROBOT_URI,
                 ),
-                dmc.Button("Test robot connection", id="robot-test", variant="light"),
+                dmc.Button("Test robot connection",
+                           id="robot-test", variant="light"),
                 dmc.Text(id="robot-status-text", size="sm", c="dimmed"),
                 dmc.Group(
                     [
-                        dmc.Button("Close", id="setup-close", variant="subtle"),
+                        dmc.Button("Close", id="setup-close",
+                                   variant="subtle"),
                     ],
                     justify="flex-end",
                 ),
@@ -720,7 +788,8 @@ def build_stepper_card() -> dmc.Card:
                     dmc.Text("Calibration Steps", fw=600, size="lg"),
                     dmc.Group(
                         [
-                            dmc.Button("Back", id="step-prev", variant="light", size="sm"),
+                            dmc.Button("Back", id="step-prev",
+                                       variant="light", size="sm"),
                             dmc.Button("Next", id="step-next", size="sm"),
                         ],
                         gap="xs",
@@ -762,20 +831,26 @@ def build_stepper_card() -> dmc.Card:
                                 ),
                                 dmc.Group(
                                     [
-                                        dmc.Button("Capture frame", id="capture-frame", variant="outline"),
-                                        dmc.Button("Capture depth", id="capture-depth", variant="outline"),
+                                        dmc.Button(
+                                            "Capture frame", id="capture-frame", variant="outline"),
+                                        dmc.Button(
+                                            "Capture depth", id="capture-depth", variant="outline"),
                                     ],
                                     grow=True,
                                 ),
                                 dmc.Group(
                                     [
-                                        dmc.Button("Compute calibration", id="compute-calibration"),
-                                        dmc.Button("Load bundle", id="load-calibration", variant="light"),
+                                        dmc.Button(
+                                            "Compute calibration", id="compute-calibration"),
+                                        dmc.Button(
+                                            "Load bundle", id="load-calibration", variant="light"),
                                     ],
                                     grow=True,
                                 ),
-                                dmc.Text(id="camera-calibration-action", size="sm", c="dimmed"),
-                                dmc.Text(id="camera-calibration-metrics", size="sm"),
+                                dmc.Text(id="camera-calibration-action",
+                                         size="sm", c="dimmed"),
+                                dmc.Text(
+                                    id="camera-calibration-metrics", size="sm"),
                             ],
                             gap="xs",
                         ),
@@ -816,8 +891,10 @@ def build_stepper_card() -> dmc.Card:
                                     min=1,
                                     max=100,
                                 ),
-                                dmc.Button("Compute workspace", id="compute-workspace", variant="light"),
-                                dmc.Text(id="workspace-action-status", size="sm", c="dimmed"),
+                                dmc.Button(
+                                    "Compute workspace", id="compute-workspace", variant="light"),
+                                dmc.Text(id="workspace-action-status",
+                                         size="sm", c="dimmed"),
                                 dmc.Text(id="workspace-metrics", size="sm"),
                             ],
                             gap="xs",
@@ -840,12 +917,15 @@ def build_stepper_card() -> dmc.Card:
                                 ),
                                 dmc.Group(
                                     [
-                                        dmc.Button("Detect plate", id="compute-plate", variant="light"),
-                                        dmc.Button("Attach to bundle", id="attach-plate"),
+                                        dmc.Button(
+                                            "Detect plate", id="compute-plate", variant="light"),
+                                        dmc.Button("Attach to bundle",
+                                                   id="attach-plate"),
                                     ],
                                     grow=True,
                                 ),
-                                dmc.Text(id="plate-action-status", size="sm", c="dimmed"),
+                                dmc.Text(id="plate-action-status",
+                                         size="sm", c="dimmed"),
                                 dmc.Text(id="plate-metrics", size="sm"),
                             ],
                             gap="xs",
@@ -861,19 +941,47 @@ def build_stepper_card() -> dmc.Card:
 
 
 def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dmc.Card:
-    placeholder_src = _encode_frame(_placeholder_frame("Camera stream offline"))
+    placeholder_src = _encode_frame(
+        _placeholder_frame("Camera stream offline"))
     return dmc.Card(
         [
             dmc.Group(
                 [
-                    dmc.Text(title, fw=600, size="lg"),
-                    dmc.Badge(badge, variant="light"),
+                    dmc.Group(
+                        [
+                            dmc.Text(title, fw=600, size="lg"),
+                            dmc.Badge(badge, variant="light"),
+                        ],
+                        gap="xs",
+                    ),
+                    dmc.ActionIcon(
+                        html.Span(
+                            "⛶", style={"fontSize": "1.2rem"}, title="Fullscreen"),
+                        id="fullscreen-btn",
+                        variant="light",
+                    ),
                 ],
                 justify="space-between",
                 align="center",
             ),
             dmc.Text(id="overlay-status", size="sm", c="dimmed"),
-            html.Img(id="camera-feed", src=placeholder_src, className="camera-feed"),
+            html.Video(
+                id="camera-feed",
+                src="/video_feed",
+                controls=False,
+                autoPlay=True,
+                muted=True,
+                poster=placeholder_src,
+                style={
+                    "width": "100%",
+                    "height": "auto",
+                    "borderRadius": "16px",
+                    "border": "1px solid rgba(15, 118, 110, 0.2)",
+                    "marginTop": "12px",
+                    "backgroundColor": "#0b0f14",
+                    "display": "block",
+                },
+            ),
         ],
         withBorder=True,
         radius="lg",
@@ -889,7 +997,8 @@ def build_detection_tab() -> dmc.Stack:
     model_card = dmc.Card(
         [
             dmc.Text("Model Loader", fw=600, size="lg"),
-            dmc.Text("Upload a YOLO model (.pt/.onnx) to enable detection.", size="sm", c="dimmed"),
+            dmc.Text(
+                "Upload a YOLO model (.pt/.onnx) to enable detection.", size="sm", c="dimmed"),
             dcc.Upload(
                 id="model-upload",
                 children=dmc.Button("Upload YOLO model", variant="light"),
@@ -899,11 +1008,13 @@ def build_detection_tab() -> dmc.Stack:
                 id="model-select",
                 label="Active model",
                 data=_model_options(),
-                value=str(SESSION.active_model_path) if SESSION.active_model_path else None,
+                value=str(
+                    SESSION.active_model_path) if SESSION.active_model_path else None,
                 searchable=True,
                 clearable=True,
             ),
-            dmc.Button("Load selected model", id="load-model", variant="outline"),
+            dmc.Button("Load selected model",
+                       id="load-model", variant="outline"),
             dmc.Text(id="model-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
@@ -1020,7 +1131,8 @@ def build_pick_place_tab() -> dmc.Stack:
                 min=0,
                 max=49,
             ),
-            dmc.Button("Detect drop marker", id="detect-drop-marker", variant="light"),
+            dmc.Button("Detect drop marker",
+                       id="detect-drop-marker", variant="light"),
             dmc.Text(id="drop-marker-metrics", size="sm"),
             dmc.NumberInput(
                 id="drop-height",
@@ -1060,8 +1172,10 @@ def build_pick_place_tab() -> dmc.Stack:
             ),
             dmc.Group(
                 [
-                    dmc.Button("Open gripper", id="gripper-open", variant="light"),
-                    dmc.Button("Close gripper", id="gripper-close", variant="light"),
+                    dmc.Button("Open gripper", id="gripper-open",
+                               variant="light"),
+                    dmc.Button("Close gripper", id="gripper-close",
+                               variant="light"),
                 ],
                 grow=True,
             ),
@@ -1081,7 +1195,8 @@ def build_pick_place_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
-            dmc.Button("Pick & Drop", id="execute-pick-drop", variant="outline"),
+            dmc.Button("Pick & Drop", id="execute-pick-drop",
+                       variant="outline"),
             dmc.Text(id="pick-place-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
@@ -1136,12 +1251,16 @@ def build_layout() -> dmc.MantineProvider:
         withCssVariables=True,
         children=html.Div(
             [
-                dmc.NotificationContainer(id="app-notifications", position="top-right", limit=3),
+                dmc.NotificationContainer(
+                    id="app-notifications", position="top-right", limit=3),
                 dcc.Store(id="camera-connection-state"),
                 dcc.Store(id="robot-connection-state"),
-                dcc.Store(id="notification-state", data={"camera": None, "robot": None}),
-                dcc.Interval(id="auto-init", interval=400, n_intervals=0, max_intervals=1),
-                dcc.Interval(id="camera-interval", interval=300, n_intervals=0),
+                dcc.Store(id="notification-state",
+                          data={"camera": None, "robot": None}),
+                dcc.Interval(id="auto-init", interval=400,
+                             n_intervals=0, max_intervals=1),
+                dcc.Interval(id="camera-interval",
+                             interval=300, n_intervals=0),
                 build_setup_drawer(),
                 dmc.AppShell(
                     [
@@ -1155,10 +1274,14 @@ def build_layout() -> dmc.MantineProvider:
                                                 [
                                                     dmc.TabsList(
                                                         [
-                                                            dmc.TabsTab("Calibration", value="calibration"),
-                                                            dmc.TabsTab("Detection", value="detection"),
-                                                            dmc.TabsTab("Pick & Place", value="pick-place"),
-                                                            dmc.TabsTab("Monitoring", value="monitoring"),
+                                                            dmc.TabsTab(
+                                                                "Calibration", value="calibration"),
+                                                            dmc.TabsTab(
+                                                                "Detection", value="detection"),
+                                                            dmc.TabsTab(
+                                                                "Pick & Place", value="pick-place"),
+                                                            dmc.TabsTab(
+                                                                "Monitoring", value="monitoring"),
                                                         ],
                                                         style={
                                                             "width": "100%",
@@ -1167,21 +1290,27 @@ def build_layout() -> dmc.MantineProvider:
                                                             "marginBottom": "12px",
                                                         },
                                                     ),
-                                                    dmc.TabsPanel(build_calibration_tab(), value="calibration"),
-                                                    dmc.TabsPanel(build_detection_tab(), value="detection"),
-                                                    dmc.TabsPanel(build_pick_place_tab(), value="pick-place"),
-                                                    dmc.TabsPanel(build_monitoring_tab(), value="monitoring"),
+                                                    dmc.TabsPanel(
+                                                        build_calibration_tab(), value="calibration"),
+                                                    dmc.TabsPanel(
+                                                        build_detection_tab(), value="detection"),
+                                                    dmc.TabsPanel(
+                                                        build_pick_place_tab(), value="pick-place"),
+                                                    dmc.TabsPanel(
+                                                        build_monitoring_tab(), value="monitoring"),
                                                 ],
                                                 id="main-tabs",
                                                 value="calibration",
                                                 variant="pills",
                                                 color="teal",
-                                                style={"width": "100%", "marginBottom": "12px"},
+                                                style={"width": "100%",
+                                                       "marginBottom": "12px"},
                                             ),
                                             span={"base": 12, "md": 4},
                                         ),
                                         dmc.GridCol(
-                                            dmc.Stack([build_camera_panel()], gap="md"),
+                                            dmc.Stack(
+                                                [build_camera_panel()], gap="md"),
                                             span={"base": 12, "md": 8},
                                         ),
                                     ],
@@ -1196,7 +1325,8 @@ def build_layout() -> dmc.MantineProvider:
                         ),
                     ],
                     header={"height": 64},
-                    navbar={"width": 220, "breakpoint": "md", "collapsed": {"mobile": True}},
+                    navbar={"width": 220, "breakpoint": "md",
+                            "collapsed": {"mobile": True}},
                     padding="md",
                 ),
             ]
@@ -1268,6 +1398,30 @@ async def _with_robot_api(uri: str, action: Callable[[CodroidAPI], Awaitable[Non
 
 
 def register_callbacks(app: Dash) -> None:
+    app.clientside_callback(
+        """
+        function(n_clicks) {
+            if (!n_clicks) return;
+            const video = document.getElementById('camera-feed');
+            if (!video) return;
+            const fsFn = video.requestFullscreen || 
+                         video.webkitRequestFullscreen ||
+                         video.mozRequestFullScreen ||
+                         video.msRequestFullscreen;
+            if (fsFn) {
+                fsFn.call(video).catch(err => {
+                    if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+                });
+            } else if (video.webkitEnterFullscreen) {
+                video.webkitEnterFullscreen();
+            }
+        }
+        """,
+        Output("fullscreen-btn", "n_clicks"),
+        Input("fullscreen-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
     @app.callback(
         Output("setup-drawer", "opened"),
         Input("open-setup", "n_clicks"),
@@ -1389,7 +1543,8 @@ def register_callbacks(app: Dash) -> None:
         options = _model_options()
         if trigger == "model-upload" and contents:
             try:
-                model_path = save_uploaded_model(contents, filename or "model.bin", DEFAULT_MODEL_DIR)
+                model_path = save_uploaded_model(
+                    contents, filename or "model.bin", DEFAULT_MODEL_DIR)
                 status = activate_model(model_path)
                 options = _model_options()
                 return status, options, str(model_path)
@@ -1437,7 +1592,8 @@ def register_callbacks(app: Dash) -> None:
         iou_value = _safe_float(iou, 0.45)
         max_value = _safe_int(max_detections, 10)
         try:
-            detections = _run_detection(frame, conf_value, iou_value, max_value, class_filter)
+            detections = _run_detection(
+                frame, conf_value, iou_value, max_value, class_filter)
             SESSION.detections = detections
             SESSION.last_detection_error = None
             SESSION.last_action = "Detection run completed."
@@ -1531,7 +1687,8 @@ def register_callbacks(app: Dash) -> None:
                 await robot_api.set_param(gripper_path, value)
 
             try:
-                asyncio.run(_with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _action))
+                asyncio.run(_with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _action))
                 SESSION.last_action = f"Gripper command sent ({value})."
                 return f"Gripper command sent ({value})."
             except Exception as exc:
@@ -1555,9 +1712,11 @@ def register_callbacks(app: Dash) -> None:
             return "Detection is missing center coordinates."
         workspace_mm = detection.get("workspace_mm")
         if workspace_mm is None:
-            workspace_mm = _workspace_pixel_to_mm(SESSION.workspace_definition, center)
+            workspace_mm = _workspace_pixel_to_mm(
+                SESSION.workspace_definition, center)
 
-        pick_pose = _pose_from_workspace_mm(SESSION.workspace_definition, workspace_mm[0], workspace_mm[1], pick_mm)
+        pick_pose = _pose_from_workspace_mm(
+            SESSION.workspace_definition, workspace_mm[0], workspace_mm[1], pick_mm)
         approach_pose = _pose_from_workspace_mm(
             SESSION.workspace_definition, workspace_mm[0], workspace_mm[1], approach_mm
         )
@@ -1600,7 +1759,8 @@ def register_callbacks(app: Dash) -> None:
 
         try:
             if trigger == "execute-pick":
-                asyncio.run(_with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _pick_action))
+                asyncio.run(_with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _pick_action))
                 SESSION.last_action = "Pick command sent."
                 return "Pick command sent."
             if trigger == "execute-drop":
@@ -1609,11 +1769,13 @@ def register_callbacks(app: Dash) -> None:
                 async def _drop_only(robot_api: CodroidAPI) -> None:
                     await _drop_action(robot_api, drop_target_mm)
 
-                asyncio.run(_with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _drop_only))
+                asyncio.run(_with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _drop_only))
                 SESSION.last_action = "Drop command sent."
                 return "Drop command sent."
             if trigger == "execute-pick-drop":
-                asyncio.run(_with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action))
+                asyncio.run(_with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action))
                 SESSION.last_action = "Pick & drop command sent."
                 return "Pick & drop command sent."
         except Exception as exc:
@@ -1655,7 +1817,8 @@ def register_callbacks(app: Dash) -> None:
             dmc.Text(f"Detections: {detection_count}", size="sm"),
         ]
         if SESSION.last_detection_error:
-            detection_items.append(dmc.Text(f"Last error: {SESSION.last_detection_error}", size="sm", c="red"))
+            detection_items.append(
+                dmc.Text(f"Last error: {SESSION.last_detection_error}", size="sm", c="red"))
         pick_items = [
             dmc.Text(f"Drop marker ID: {SESSION.drop_marker_id}", size="sm"),
             dmc.Text(f"Last action: {last_action}", size="sm"),
@@ -1779,7 +1942,8 @@ def register_callbacks(app: Dash) -> None:
             _safe_int(marker_a, SESSION.config.marker_ids[0]),
             _safe_int(marker_b, SESSION.config.marker_ids[1]),
         )
-        marker_size_mm = _safe_float(marker_size, SESSION.config.marker_size_mm)
+        marker_size_mm = _safe_float(
+            marker_size, SESSION.config.marker_size_mm)
         try:
             ws = compute_workspace_from_latest(marker_ids, marker_size_mm)
             return f"Workspace locked: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm."
@@ -1814,7 +1978,6 @@ def register_callbacks(app: Dash) -> None:
         return "Awaiting plate action."
 
     @app.callback(
-        Output("camera-feed", "src"),
         Output("overlay-status", "children"),
         Output("camera-calibration-metrics", "children"),
         Output("workspace-metrics", "children"),
@@ -1841,12 +2004,12 @@ def register_callbacks(app: Dash) -> None:
         marker_size: Optional[float],
         plate_layout: str,
         drop_marker_id: Optional[float],
-    ) -> Tuple[str, str, str, str, str, str, str]:
+    ) -> Tuple[str, str, str, str, str, str]:
         frame, _depth = get_latest_frame()
         if frame is None:
             placeholder = _placeholder_frame("Camera stream offline")
+            MJPEG_STREAM.add_frame(placeholder)
             return (
-                _encode_frame(placeholder),
                 "Camera stream is stopped.",
                 "ChArUco corners: --",
                 "Workspace: --",
@@ -1863,14 +2026,15 @@ def register_callbacks(app: Dash) -> None:
             _safe_int(marker_a, SESSION.config.marker_ids[0]),
             _safe_int(marker_b, SESSION.config.marker_ids[1]),
         )
-        marker_size_mm = _safe_float(marker_size, SESSION.config.marker_size_mm)
+        marker_size_mm = _safe_float(
+            marker_size, SESSION.config.marker_size_mm)
         drop_marker = _safe_int(drop_marker_id, SESSION.drop_marker_id)
 
         if tab == "calibration":
             if step == 0:
                 vis, status, metric = draw_charuco_overlay(frame, board_path)
+                MJPEG_STREAM.add_frame(vis)
                 return (
-                    _encode_frame(vis),
                     status,
                     metric,
                     "Workspace: --",
@@ -1879,9 +2043,10 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                 )
             if step == 1:
-                vis, status, metric = draw_workspace_overlay(frame, marker_ids, marker_size_mm)
+                vis, status, metric = draw_workspace_overlay(
+                    frame, marker_ids, marker_size_mm)
+                MJPEG_STREAM.add_frame(vis)
                 return (
-                    _encode_frame(vis),
                     status,
                     "ChArUco corners: --",
                     metric,
@@ -1890,8 +2055,8 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                 )
             vis, status, metric = draw_plate_overlay(frame, plate_path)
+            MJPEG_STREAM.add_frame(vis)
             return (
-                _encode_frame(vis),
                 status,
                 "ChArUco corners: --",
                 "Workspace: --",
@@ -1902,8 +2067,8 @@ def register_callbacks(app: Dash) -> None:
 
         if tab == "detection":
             vis, status, metric = draw_detection_overlay(frame)
+            MJPEG_STREAM.add_frame(vis)
             return (
-                _encode_frame(vis),
                 status,
                 "ChArUco corners: --",
                 "Workspace: --",
@@ -1914,8 +2079,8 @@ def register_callbacks(app: Dash) -> None:
 
         if tab == "pick-place":
             vis, status, metric = draw_drop_marker_overlay(frame, drop_marker)
+            MJPEG_STREAM.add_frame(vis)
             return (
-                _encode_frame(vis),
                 status,
                 "ChArUco corners: --",
                 "Workspace: --",
@@ -1924,9 +2089,10 @@ def register_callbacks(app: Dash) -> None:
                 metric,
             )
 
-        vis, status, detection_metric, drop_metric = draw_monitor_overlay(frame, drop_marker)
+        vis, status, detection_metric, drop_metric = draw_monitor_overlay(
+            frame, drop_marker)
+        MJPEG_STREAM.add_frame(vis)
         return (
-            _encode_frame(vis),
             status,
             "ChArUco corners: --",
             "Workspace: --",
@@ -1941,6 +2107,33 @@ def create_app() -> Dash:
     app.title = "Codroid Calibration Console"
     app.layout = build_layout()
     register_callbacks(app)
+
+    @app.server.route("/video_feed")
+    def video_feed():
+        """Stream Motion JPEG video for fullscreen playback."""
+        def generate():
+            boundary = b'--frame\r\n'
+            while True:
+                frame_data = MJPEG_STREAM.get_frame()
+                if frame_data is None:
+                    blank = np.zeros((720, 1280, 3), dtype=np.uint8)
+                    success, buffer = cv2.imencode(".jpg", blank)
+                    frame_data = buffer.tobytes() if success else b''
+
+                if frame_data:
+                    yield boundary
+                    yield b'Content-Type: image/jpeg\r\n'
+                    yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
+                    yield frame_data
+                    yield b'\r\n'
+                else:
+                    time.sleep(0.033)
+
+        return app.server.response_class(
+            generate(),
+            mimetype='multipart/x-mixed-replace; boundary=frame'
+        )
+
     return app
 
 

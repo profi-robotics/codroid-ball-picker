@@ -13,11 +13,9 @@
 body {
   margin: 0;
   color: var(--app-ink);
-  background:
-    radial-gradient(circle at 10% 10%, #fff4d6, transparent 45%),
+  background: radial-gradient(circle at 10% 10%, #fff4d6, transparent 45%),
     radial-gradient(circle at 90% 20%, #d7f3ef, transparent 40%),
-    radial-gradient(circle at 80% 90%, #ffe3d0, transparent 50%),
-    var(--app-bg);
+    radial-gradient(circle at 80% 90%, #ffe3d0, transparent 50%), var(--app-bg);
 }
 
 .app-title {
@@ -33,7 +31,11 @@ body {
 }
 
 .camera-panel {
-  background: linear-gradient(140deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.9));
+  background: linear-gradient(
+    140deg,
+    rgba(15, 118, 110, 0.08),
+    rgba(255, 255, 255, 0.9)
+  );
 }
 
 .camera-feed {
@@ -43,6 +45,33 @@ body {
   border: 1px solid rgba(15, 118, 110, 0.2);
   margin-top: 12px;
   background: #0b0f14;
+  display: block;
+  max-width: 100%;
+}
+
+.camera-feed-container {
+  position: relative;
+  width: 100%;
+  transition: all 0.3s ease;
+}
+
+.camera-feed-container[style*="position: fixed"] {
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-feed-container[style*="position: fixed"] .camera-feed {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  margin: 0;
+  object-fit: contain;
 }
 
 .main-panel {
