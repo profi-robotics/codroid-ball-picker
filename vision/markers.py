@@ -43,18 +43,21 @@ def _detect_all_markers(
 
     dictionary = _get_dictionary(dictionary_name)
     parameters = cv2.aruco.DetectorParameters()
+    parameters.detectInvertedMarker = True
     detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     corners_list, ids, _ = detector.detectMarkers(gray)
     if ids is None or len(ids) == 0:
-        raise RuntimeError("No markers detected. Ensure markers are in frame and high-contrast.")
+        raise RuntimeError(
+            "No markers detected. Ensure markers are in frame and high-contrast.")
 
     detections: Dict[int, MarkerDetection] = {}
     for marker_corners, marker_id in zip(corners_list, ids.flatten()):
         pts = marker_corners.reshape((4, 2))
         center = tuple(np.mean(pts, axis=0).tolist())
-        detections[int(marker_id)] = MarkerDetection(marker_id=int(marker_id), corners=pts, center=center)
+        detections[int(marker_id)] = MarkerDetection(
+            marker_id=int(marker_id), corners=pts, center=center)
 
     return detections
 
@@ -112,5 +115,6 @@ def detect_markers(
         WorkspaceMarkers containing detections for A and B.
     """
 
-    detections = detect_markers_map(image, marker_ids, dictionary_name=dictionary_name)
+    detections = detect_markers_map(
+        image, marker_ids, dictionary_name=dictionary_name)
     return workspace_markers_from_detections(detections, marker_ids)

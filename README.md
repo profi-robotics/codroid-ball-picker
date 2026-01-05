@@ -63,7 +63,9 @@ robot motion commands.
    ```
    Use the Setup drawer to start the camera stream, verify the robot connection, and
    work through the workflow tabs (Calibration, Detection, Pick & Place, Monitoring).
-   The UI reads/writes calibration assets under `data/` by default.
+   The UI reads/writes calibration assets under `data/` by default. Once the
+   workspace is computed it is saved to `data/workspace_definition.npz` and
+   reloaded automatically on restart, similar to the calibration bundle.
 
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the
@@ -72,6 +74,9 @@ camera, detection, and robot flows together. It provides:
   Pick & Place, and Monitoring.
 - A live camera view with overlays for ChArUco detection, workspace markers,
   YOLO detections, and the drop marker.
+- If `data/calibration_bundle.npz` or `data/workspace_definition.npz` already
+  exist, the Calibration and Workarea steps surface “Use saved …” buttons to
+  load them without recomputing.
 - A Setup drawer to verify camera connectivity and test the robot connection.
 
 Run it locally with:

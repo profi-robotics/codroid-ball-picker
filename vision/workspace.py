@@ -11,6 +11,7 @@ This module maps between:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
@@ -53,8 +54,30 @@ class WorkspaceDefinition:
     y_axis_camera: np.ndarray
     camera_to_robot: RigidTransform
 
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "width_mm": float(self.width_mm),
+            "height_mm": float(self.height_mm),
+            "origin_camera": self.origin_camera.tolist(),
+            "x_axis_camera": self.x_axis_camera.tolist(),
+            "y_axis_camera": self.y_axis_camera.tolist(),
+            "camera_to_robot": self.camera_to_robot.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> "WorkspaceDefinition":
+        return cls(
+            width_mm=float(data["width_mm"]),
+            height_mm=float(data["height_mm"]),
+            origin_camera=np.asarray(data["origin_camera"], dtype=np.float64),
+            x_axis_camera=np.asarray(data["x_axis_camera"], dtype=np.float64),
+            y_axis_camera=np.asarray(data["y_axis_camera"], dtype=np.float64),
+            camera_to_robot=RigidTransform.from_dict(data["camera_to_robot"]),
+        )
+
     def workspace_to_camera(self, x_mm: float, y_mm: float, z_offset_mm: float = 0.0) -> np.ndarray:
-        point = self.origin_camera + (x_mm * self.x_axis_camera) + (y_mm * self.y_axis_camera)
+        point = self.origin_camera + \
+            (x_mm * self.x_axis_camera) + (y_mm * self.y_axis_camera)
         point += z_offset_mm * np.cross(self.x_axis_camera, self.y_axis_camera)
         return point
 
@@ -93,8 +116,10 @@ def compute_workspace(
 
     ax_scale, ay_scale = _edge_scales(marker_a)
     bx_scale, by_scale = _edge_scales(marker_b)
-    mm_per_px_x = np.mean([s for s in (ax_scale, bx_scale) if s > 0]) if any(s > 0 for s in (ax_scale, bx_scale)) else 0.0
-    mm_per_px_y = np.mean([s for s in (ay_scale, by_scale) if s > 0]) if any(s > 0 for s in (ay_scale, by_scale)) else 0.0
+    mm_per_px_x = np.mean([s for s in (ax_scale, bx_scale) if s > 0]) if any(
+        s > 0 for s in (ax_scale, bx_scale)) else 0.0
+    mm_per_px_y = np.mean([s for s in (ay_scale, by_scale) if s > 0]) if any(
+        s > 0 for s in (ay_scale, by_scale)) else 0.0
 
     if mm_per_px_x == 0 or mm_per_px_y == 0:
         fallback = calibration.pixel_to_mm if calibration.pixel_to_mm > 0 else marker_size_mm / max(
@@ -115,7 +140,8 @@ def compute_workspace(
 
     x_dir = np.array([1.0, 0.0, 0.0]) * scale_avg
     y_dir = np.array([0.0, 1.0, 0.0]) * scale_avg
-    origin = np.array([marker_a.center[0] * scale_avg, marker_a.center[1] * scale_avg, 0.0])
+    origin = np.array([marker_a.center[0] * scale_avg,
+                      marker_a.center[1] * scale_avg, 0.0])
 
     return WorkspaceDefinition(
         width_mm=float(width_mm),
@@ -143,7 +169,8 @@ def compute_workspace_from_plate(
     marker_a = plate.markers.get(marker_ids[0])
     marker_b = plate.markers.get(marker_ids[1])
     if marker_a is None or marker_b is None:
-        raise RuntimeError("Calibration plate layout is missing workspace marker definitions.")
+        raise RuntimeError(
+            "Calibration plate layout is missing workspace marker definitions.")
 
     delta = marker_b.center_mm - marker_a.center_mm
     width_mm = abs(float(delta[0])) * scale_multiplier
@@ -189,3 +216,28 @@ def workspace_center(workspace: WorkspaceDefinition) -> Tuple[float, float]:
 
 def bottom_left(workspace: WorkspaceDefinition) -> Tuple[float, float]:
     return 0.0, workspace.height_mm
+
+
+def save_workspace(definition: WorkspaceDefinition, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, **definition.to_dict())
+
+
+def load_workspace(path: Path) -> WorkspaceDefinition:
+    data = np.load(path, allow_pickle=True)
+
+    def _unwrap(value: object) -> object:
+        if isinstance(value, np.ndarray) and value.shape == () and value.dtype == object:
+            return value.item()
+        return value
+
+    return WorkspaceDefinition.from_dict(
+        {
+            "width_mm": float(_unwrap(data["width_mm"])),
+            "height_mm": float(_unwrap(data["height_mm"])),
+            "origin_camera": _unwrap(data["origin_camera"]),
+            "x_axis_camera": _unwrap(data["x_axis_camera"]),
+            "y_axis_camera": _unwrap(data["y_axis_camera"]),
+            "camera_to_robot": _unwrap(data["camera_to_robot"]),
+        }
+    )

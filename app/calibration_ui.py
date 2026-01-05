@@ -35,6 +35,7 @@ DEFAULT_BOARD_PATH = Path(
 DEFAULT_PLATE_PATH = Path(
     "data/markers/robot_calibration/calibration_plate_layout.json")
 DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
+DEFAULT_WORKSPACE_PATH = Path("data/workspace_definition.npz")
 DEFAULT_CAPTURE_DIR = Path("data/calibration")
 DEFAULT_RESOLUTION = (1280, 720)
 DEFAULT_FPS = 30.0
@@ -100,6 +101,36 @@ SESSION = UISession(
         user_port=CODROID_DEFAULTS["ws_port"],
     )
 )
+
+
+def _restore_persisted_state() -> None:
+    if SESSION.calibration_bundle is None and DEFAULT_BUNDLE_PATH.exists():
+        try:
+            SESSION.calibration_bundle = calibration.load_calibration(
+                DEFAULT_BUNDLE_PATH)
+            LOGGER.info("Loaded calibration bundle from %s",
+                        DEFAULT_BUNDLE_PATH)
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to load calibration bundle from %s: %s",
+                DEFAULT_BUNDLE_PATH,
+                exc,
+            )
+    if SESSION.workspace_definition is None and DEFAULT_WORKSPACE_PATH.exists():
+        try:
+            SESSION.workspace_definition = workspace.load_workspace(
+                DEFAULT_WORKSPACE_PATH)
+            LOGGER.info("Loaded workspace definition from %s",
+                        DEFAULT_WORKSPACE_PATH)
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to load workspace definition from %s: %s",
+                DEFAULT_WORKSPACE_PATH,
+                exc,
+            )
+
+
+_restore_persisted_state()
 
 # Global calibration progress tracker
 CALIBRATION_PROGRESS = {"value": 0, "current_frame": 0, "max_frames": 0}
@@ -570,7 +601,24 @@ def compute_workspace_from_latest(marker_ids: Tuple[int, int], marker_size_mm: f
         camera_to_robot=_default_transform(),
     )
     SESSION.workspace_definition = ws
+    save_workspace_definition(ws, DEFAULT_WORKSPACE_PATH)
     return ws
+
+
+def save_workspace_definition(
+    workspace_def: workspace.WorkspaceDefinition,
+    workspace_path: Path = DEFAULT_WORKSPACE_PATH,
+) -> str:
+    workspace.save_workspace(workspace_def, workspace_path)
+    return f"Workspace saved to {workspace_path}."
+
+
+def load_workspace_definition(workspace_path: Path = DEFAULT_WORKSPACE_PATH) -> workspace.WorkspaceDefinition:
+    if not workspace_path.exists():
+        raise FileNotFoundError(
+            f"Workspace definition not found: {workspace_path}")
+    SESSION.workspace_definition = workspace.load_workspace(workspace_path)
+    return SESSION.workspace_definition
 
 
 def compute_plate_calibration_from_latest(layout_path: Path) -> plate.PlateCalibration:
@@ -605,6 +653,69 @@ def attach_plate_calibration(bundle_path: Path, layout_path: Path) -> str:
 
 def _draw_label(frame: np.ndarray, text: str, origin: Tuple[int, int], color: Tuple[int, int, int]) -> None:
     cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+
+def _workspace_corners_px(workspace_def: workspace.WorkspaceDefinition) -> np.ndarray:
+    scale = float(workspace_def.x_axis_camera[0])
+    if scale == 0:
+        raise RuntimeError(
+            "Workspace scale is zero; recompute workspace markers.")
+    origin_px_x = workspace_def.origin_camera[0] / scale
+    origin_px_y = workspace_def.origin_camera[1] / scale
+    width_px = workspace_def.width_mm / scale
+    height_px = workspace_def.height_mm / scale
+    points = np.asarray(
+        [
+            [origin_px_x, origin_px_y],
+            [origin_px_x + width_px, origin_px_y],
+            [origin_px_x + width_px, origin_px_y + height_px],
+            [origin_px_x, origin_px_y + height_px],
+        ],
+        dtype=np.float64,
+    )
+    return np.round(points).astype(int)
+
+
+def _draw_dotted_polyline(
+    frame: np.ndarray,
+    points: np.ndarray,
+    color: Tuple[int, int, int] = (0, 215, 255),
+    thickness: int = 2,
+    gap: int = 10,
+) -> None:
+    for idx in range(len(points)):
+        start = points[idx]
+        end = points[(idx + 1) % len(points)]
+        vec = end - start
+        length = float(np.linalg.norm(vec))
+        if length == 0:
+            continue
+        direction = vec / length
+        dist = 0.0
+        while dist < length:
+            segment_start = start + direction * dist
+            dist = min(length, dist + gap)
+            segment_end = start + direction * dist
+            cv2.line(
+                frame,
+                tuple(np.round(segment_start).astype(int)),
+                tuple(np.round(segment_end).astype(int)),
+                color,
+                thickness,
+                lineType=cv2.LINE_AA,
+            )
+            dist += gap
+
+
+def _apply_workspace_overlay(frame: np.ndarray) -> None:
+    if SESSION.workspace_definition is None:
+        return
+    try:
+        corners_px = _workspace_corners_px(SESSION.workspace_definition)
+    except Exception as exc:
+        logging.debug("Workspace overlay skipped: %s", exc)
+        return
+    _draw_dotted_polyline(frame, corners_px)
 
 
 def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarray, str, str]:
@@ -666,32 +777,109 @@ def draw_workspace_overlay(
 ) -> Tuple[np.ndarray, str, str]:
     vis = frame.copy()
     try:
-        detections = markers.detect_markers(frame, marker_ids)
-        for det, color in zip((detections.marker_a, detections.marker_b), ((0, 255, 0), (0, 140, 255))):
-            pts = det.corners.astype(int)
-            cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=2)
-            center = tuple(np.round(det.center).astype(int))
-            cv2.circle(vis, center, 4, color, -1)
-            cv2.putText(vis, f"ID {det.marker_id}", center,
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect ArUco markers with inverted color support
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        detector_params = cv2.aruco.DetectorParameters()
+        detector_params.detectInvertedMarker = True
+
+        detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+        marker_corners, marker_ids_detected, _rejected = detector.detectMarkers(
+            gray)
+
+        if marker_ids_detected is None or len(marker_ids_detected) == 0:
+            raise RuntimeError(
+                "No markers detected. Ensure markers are in frame and high-contrast.")
+
+        # Map detected markers by ID
+        detected_map = {}
+        for corners, mid in zip(marker_corners, marker_ids_detected.flatten()):
+            pts = corners.reshape((4, 2))
+            center = tuple(np.mean(pts, axis=0).tolist())
+            detected_map[int(mid)] = {
+                'corners': pts,
+                'center': center,
+                'id': int(mid)
+            }
+
+        # Check if we have both required markers
+        if marker_ids[0] not in detected_map or marker_ids[1] not in detected_map:
+            found_ids = sorted(detected_map.keys())
+            raise RuntimeError(
+                f"Missing required markers {marker_ids}. Found: {found_ids}")
+
+        marker_a_center = None
+        marker_b_center = None
+
+        # Draw detected markers with colors
+        colors = {marker_ids[0]: (0, 255, 0), marker_ids[1]: (0, 140, 255)}
+        for mid, color in colors.items():
+            if mid in detected_map:
+                det = detected_map[mid]
+                pts = det['corners'].astype(int)
+                cv2.polylines(vis, [pts], isClosed=True,
+                              color=color, thickness=2)
+                center = tuple(np.round(det['center']).astype(int))
+                cv2.circle(vis, center, 4, color, -1)
+                cv2.putText(vis, f"ID {mid}", center,
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                if mid == marker_ids[0]:
+                    marker_a_center = center
+                elif mid == marker_ids[1]:
+                    marker_b_center = center
+
+        # Draw rectangle between the two marker centers
+        if marker_a_center is not None and marker_b_center is not None:
+            # Draw line connecting the markers
+            cv2.line(vis, marker_a_center, marker_b_center, (255, 255, 0), 2)
+
+            # Draw a rectangle with the markers as opposite corners
+            pt1 = marker_a_center
+            pt2 = marker_b_center
+            cv2.rectangle(vis, pt1, pt2, (255, 255, 0), 2)
+
+            # Draw the diagonal for clarity
+            cv2.line(vis, pt1, pt2, (255, 255, 0), 1)
+
         status = "Workspace markers detected."
+
+        # Compute workspace metrics if calibration is available
+        metric = "Workspace: --"
+        if SESSION.calibration_bundle is not None:
+            try:
+                # Create a simple detections object for workspace computation
+                det_a = type('MarkerDetection', (), {
+                    'marker_id': marker_ids[0],
+                    'corners': detected_map[marker_ids[0]]['corners'],
+                    'center': detected_map[marker_ids[0]]['center']
+                })()
+                det_b = type('MarkerDetection', (), {
+                    'marker_id': marker_ids[1],
+                    'corners': detected_map[marker_ids[1]]['corners'],
+                    'center': detected_map[marker_ids[1]]['center']
+                })()
+                detections = type('WorkspaceMarkers', (), {
+                    'marker_a': det_a,
+                    'marker_b': det_b
+                })()
+
+                ws = workspace.compute_workspace(
+                    detections,
+                    SESSION.calibration_bundle,
+                    marker_size_mm=marker_size_mm,
+                    camera_to_robot=_default_transform(),
+                )
+                metric = f"Workspace: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+                _draw_label(vis, metric, (10, 30), (255, 255, 255))
+            except Exception as exc:
+                metric = f"Workspace: {exc}"
+
+        return vis, status, metric
+
     except Exception as exc:
         return vis, f"Workspace detection: {exc}", "Workspace: --"
-
-    metric = "Workspace: --"
-    if SESSION.calibration_bundle is not None:
-        try:
-            ws = workspace.compute_workspace(
-                detections,
-                SESSION.calibration_bundle,
-                marker_size_mm=marker_size_mm,
-                camera_to_robot=_default_transform(),
-            )
-            metric = f"Workspace: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
-            _draw_label(vis, metric, (10, 30), (255, 255, 255))
-        except Exception as exc:
-            metric = f"Workspace: {exc}"
-    return vis, status, metric
 
 
 def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray, str, str]:
@@ -952,9 +1140,16 @@ def build_stepper_card() -> dmc.Card:
                                     disabled=True,
                                     color="teal",
                                 ),
+                                dmc.Button(
+                                    "Use saved calibration",
+                                    id="use-existing-calibration",
+                                    fullWidth=True,
+                                    variant="outline",
+                                    style={"display": "none"},
+                                ),
                                 dmc.Box(
                                     id="camera-calibration-action",
-                                    style={"minHeight": "60px"},
+                                    style={"minHeight": "0px"},
                                 ),
                                 dmc.Text(
                                     id="calibration-progress-text",
@@ -1038,34 +1233,59 @@ def build_stepper_card() -> dmc.Card:
                                     size="sm",
                                     c="dimmed",
                                 ),
-                                dmc.Group(
-                                    [
-                                        dmc.NumberInput(
-                                            id="marker-id-a",
-                                            label="Marker ID A",
-                                            value=SESSION.config.marker_ids[0],
-                                            min=0,
-                                            max=49,
-                                        ),
-                                        dmc.NumberInput(
-                                            id="marker-id-b",
-                                            label="Marker ID B",
-                                            value=SESSION.config.marker_ids[1],
-                                            min=0,
-                                            max=49,
+                                dmc.Accordion(
+                                    children=[
+                                        dmc.AccordionItem(
+                                            children=[
+                                                dmc.AccordionControl(
+                                                    "Advanced options"),
+                                                dmc.AccordionPanel(
+                                                    dmc.Stack(
+                                                        [
+                                                            dmc.Group(
+                                                                [
+                                                                    dmc.NumberInput(
+                                                                        id="marker-id-a",
+                                                                        label="Marker ID A",
+                                                                        value=SESSION.config.marker_ids[0],
+                                                                        min=0,
+                                                                        max=49,
+                                                                    ),
+                                                                    dmc.NumberInput(
+                                                                        id="marker-id-b",
+                                                                        label="Marker ID B",
+                                                                        value=SESSION.config.marker_ids[1],
+                                                                        min=0,
+                                                                        max=49,
+                                                                    ),
+                                                                ],
+                                                                grow=True,
+                                                            ),
+                                                            dmc.NumberInput(
+                                                                id="marker-size",
+                                                                label="Marker size (mm)",
+                                                                value=SESSION.config.marker_size_mm,
+                                                                min=1,
+                                                                max=100,
+                                                            ),
+                                                        ],
+                                                        gap="sm",
+                                                    ),
+                                                ),
+                                            ],
+                                            value="workspace-advanced",
                                         ),
                                     ],
-                                    grow=True,
-                                ),
-                                dmc.NumberInput(
-                                    id="marker-size",
-                                    label="Marker size (mm)",
-                                    value=SESSION.config.marker_size_mm,
-                                    min=1,
-                                    max=100,
+                                    variant="separated",
                                 ),
                                 dmc.Button(
                                     "Compute workspace", id="compute-workspace", variant="light"),
+                                dmc.Button(
+                                    "Use saved workspace",
+                                    id="use-existing-workspace",
+                                    variant="outline",
+                                    style={"display": "none"},
+                                ),
                                 dmc.Text(id="workspace-action-status",
                                          size="sm", c="dimmed"),
                                 dmc.Text(id="workspace-metrics", size="sm"),
@@ -1631,15 +1851,27 @@ def register_callbacks(app: Dash) -> None:
         Output("calibration-stepper", "active"),
         Input("step-prev", "n_clicks"),
         Input("step-next", "n_clicks"),
+        Input("use-existing-calibration", "n_clicks"),
+        Input("use-existing-workspace", "n_clicks"),
         State("calibration-stepper", "active"),
     )
-    def _update_stepper(prev_clicks: int, next_clicks: int, active: Optional[int]) -> int:
+    def _update_stepper(
+        prev_clicks: int,
+        next_clicks: int,
+        use_saved_calib: int,
+        use_saved_workspace: int,
+        active: Optional[int],
+    ) -> int:
         current = active or 0
         trigger = callback_context.triggered_id
         if trigger == "step-next":
             return min(current + 1, 2)
         if trigger == "step-prev":
             return max(current - 1, 0)
+        if trigger == "use-existing-calibration":
+            return 1  # Advance to workspace step
+        if trigger == "use-existing-workspace":
+            return 2  # Advance to robot calibration step
         return current
 
     @app.callback(
@@ -1978,15 +2210,19 @@ def register_callbacks(app: Dash) -> None:
         Output("monitor-system-summary", "children"),
         Output("monitor-detection-summary", "children"),
         Output("monitor-pick-summary", "children"),
+        Output("use-existing-calibration", "style"),
+        Output("use-existing-workspace", "style"),
         Input("camera-interval", "n_intervals"),
         State("camera-connection-state", "data"),
         State("robot-connection-state", "data"),
+        State("calibration-bundle-path", "value"),
     )
     def _update_monitoring_summary(
         _ticks: int,
         camera_state: Optional[dict],
         robot_state: Optional[dict],
-    ) -> Tuple[list, list, list]:
+        bundle_path_value: Optional[str],
+    ) -> Tuple[list, list, list, dict, dict]:
         camera_status = camera_state.get("status") if camera_state else "off"
         robot_status = robot_state.get("status") if robot_state else "offline"
         calibration_state = "loaded" if SESSION.calibration_bundle is not None else "missing"
@@ -2028,7 +2264,12 @@ def register_callbacks(app: Dash) -> None:
                     size="sm",
                 )
             )
-        return system_items, detection_items, pick_items
+        bundle_path = _safe_path(bundle_path_value, DEFAULT_BUNDLE_PATH)
+        bundle_style = {} if bundle_path.exists() else {"display": "none"}
+        workspace_style = {} if DEFAULT_WORKSPACE_PATH.exists() else {
+            "display": "none"}
+
+        return system_items, detection_items, pick_items, bundle_style, workspace_style
 
     @app.callback(
         Output("app-notifications", "sendNotifications"),
@@ -2103,6 +2344,7 @@ def register_callbacks(app: Dash) -> None:
         Output("calibration-progress-store", "data"),
         Input("calibrate-camera", "n_clicks"),
         Input("load-calibration", "n_clicks"),
+        Input("use-existing-calibration", "n_clicks"),
         State("calibration-output-dir", "value"),
         State("calibration-board-path", "value"),
         State("calibration-bundle-path", "value"),
@@ -2111,6 +2353,7 @@ def register_callbacks(app: Dash) -> None:
     def _handle_camera_calibration_actions(
         _calibrate: int,
         _load: int,
+        _use_existing: int,
         output_dir: str,
         board_path: str,
         bundle_path: str,
@@ -2134,6 +2377,27 @@ def register_callbacks(app: Dash) -> None:
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error loading bundle: {exc}", exc_info=True)
+                alert = dmc.Alert(
+                    str(exc)[:200],
+                    icon="!",
+                    title="Load error",
+                    color="red",
+                )
+                return alert, {"progress": 0}
+
+        if trigger == "use-existing-calibration":
+            try:
+                result = load_calibration_bundle(bundle_path)
+                alert = dmc.Alert(
+                    result,
+                    icon="✓",
+                    title="Using saved calibration",
+                    color="green",
+                )
+                return alert, {"progress": 0}
+            except Exception as exc:
+                logging.error(
+                    f"[CALIBRATE] Error loading saved calibration: {exc}", exc_info=True)
                 alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
@@ -2229,6 +2493,7 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("workspace-action-status", "children"),
         Input("compute-workspace", "n_clicks"),
+        Input("use-existing-workspace", "n_clicks"),
         State("marker-id-a", "value"),
         State("marker-id-b", "value"),
         State("marker-size", "value"),
@@ -2236,6 +2501,7 @@ def register_callbacks(app: Dash) -> None:
     )
     def _handle_workspace_action(
         _clicks: int,
+        _use_existing: int,
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
@@ -2247,8 +2513,20 @@ def register_callbacks(app: Dash) -> None:
         marker_size_mm = _safe_float(
             marker_size, SESSION.config.marker_size_mm)
         try:
+            # Load calibration bundle from disk if not already in memory
+            if SESSION.calibration_bundle is None and DEFAULT_BUNDLE_PATH.exists():
+                load_calibration_bundle(DEFAULT_BUNDLE_PATH)
+            if callback_context.triggered_id == "use-existing-workspace":
+                ws = load_workspace_definition(DEFAULT_WORKSPACE_PATH)
+                return (
+                    f"Workspace loaded from {DEFAULT_WORKSPACE_PATH}: "
+                    f"{ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+                )
             ws = compute_workspace_from_latest(marker_ids, marker_size_mm)
-            return f"Workspace computed: {ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+            return (
+                f"Workspace computed and saved ({DEFAULT_WORKSPACE_PATH}): "
+                f"{ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+            )
         except Exception as exc:
             return f"Workspace error: {exc}"
 
@@ -2317,6 +2595,7 @@ def register_callbacks(app: Dash) -> None:
         if tab == "calibration":
             if step == 0:
                 vis, status, metric = draw_charuco_overlay(frame, board_path)
+                _apply_workspace_overlay(vis)
                 MJPEG_STREAM.add_frame(vis)
                 return (
                     status,
@@ -2329,6 +2608,7 @@ def register_callbacks(app: Dash) -> None:
             if step == 1:
                 vis, status, metric = draw_workspace_overlay(
                     frame, marker_ids, marker_size_mm)
+                _apply_workspace_overlay(vis)
                 MJPEG_STREAM.add_frame(vis)
                 return (
                     status,
@@ -2339,6 +2619,7 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                 )
             vis, status, metric = draw_plate_overlay(frame, plate_path)
+            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
             return (
                 status,
@@ -2351,6 +2632,7 @@ def register_callbacks(app: Dash) -> None:
 
         if tab == "detection":
             vis, status, metric = draw_detection_overlay(frame)
+            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
             return (
                 status,
@@ -2363,6 +2645,7 @@ def register_callbacks(app: Dash) -> None:
 
         if tab == "pick-place":
             vis, status, metric = draw_drop_marker_overlay(frame, drop_marker)
+            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
             return (
                 status,
