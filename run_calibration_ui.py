@@ -28,6 +28,8 @@ def main() -> None:
 
     # Suppress asyncio debug spam even in debug mode
     logging.getLogger('asyncio').setLevel(logging.INFO)
+    logging.getLogger('websockets').setLevel(logging.INFO)
+    logging.getLogger('websockets.client').setLevel(logging.INFO)
 
     app = create_app()
     app.run(host=args.host, port=args.port, debug=args.debug)

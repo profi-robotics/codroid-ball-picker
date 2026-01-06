@@ -58,6 +58,10 @@ DEFAULT_DROP_MARKER_ID = 30
 ROBOT_COORDINATE_ID = 5
 MIN_PLATE_MARKERS = 2
 FLANGE_BUTTON_PORT = 41
+FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
+GRIPPER_FORCE_MIN = 20
+GRIPPER_FORCE_MAX = 140
+GRIPPER_FORCE_DEFAULT = 80
 
 
 def _load_codroid_defaults() -> dict:
@@ -132,6 +136,7 @@ class UISession:
     detection_iou: float = 0.45
     detection_max: int = 10
     detection_classes: Optional[str] = None
+    gripper_sync: dict = field(default_factory=dict)
 
 
 SESSION = UISession(
@@ -151,6 +156,7 @@ def _get_robot_session() -> RobotSession:
         SESSION.robot_session = RobotSession(
             CodroidSettings(),
             flange_button_port=FLANGE_BUTTON_PORT,
+            flange_button_ports=FLANGE_BUTTON_PORTS,
         )
     return SESSION.robot_session
 
@@ -167,37 +173,6 @@ def _set_robot_guidance(
     if status is not None:
         ROBOT_CALIBRATION_GUIDANCE["status"] = status
     ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
-
-
-def _format_robot_status_line(robot_conn_state: Optional[dict]) -> str:
-    status = (robot_conn_state or {}).get("status") or "offline"
-    pieces: list[str] = []
-    if status == "online":
-        pieces.append("Robot online")
-    elif status == "error":
-        pieces.append("Robot error")
-    else:
-        pieces.append("Robot offline")
-
-    session = _get_robot_session()
-    pos = session.position_snapshot()
-    if not session.posture_seen() and status == "online":
-        pieces.append("Awaiting posture stream")
-    elif pos.age_seconds() < 2.0:
-        pieces.append(
-            f"Pos X={pos.x:.1f} "
-            f"Y={pos.y:.1f} "
-            f"Z={pos.z:.1f}"
-        )
-    elif status == "online":
-        pieces.append(f"Pos stale {pos.age_seconds():.1f}s")
-
-    calib_status = ROBOT_CALIBRATION_GUIDANCE.get("status")
-    if calib_status and calib_status != "idle":
-        pieces.append(f"Calib {calib_status}")
-
-    line = " · ".join(pieces)
-    return line or "Robot offline"
 
 
 PLATE_STATUS = {"count": 0, "ok": False,
@@ -391,6 +366,37 @@ def _safe_path(value: Optional[str], fallback: Path) -> Path:
         return fallback
     candidate = str(value).strip()
     return Path(candidate) if candidate else fallback
+
+
+def _recent_gripper_sync(
+    key: str,
+    value: Optional[float],
+    *,
+    window_s: float = 0.75,
+) -> bool:
+    sync_data = SESSION.gripper_sync
+    if not sync_data or value is None:
+        return False
+    try:
+        updated = float(sync_data.get("updated", 0.0))
+        if time.time() - updated > window_s:
+            return False
+        synced_value = sync_data.get(key)
+        if synced_value is None:
+            return False
+        return abs(float(value) - float(synced_value)) < 0.01
+    except (TypeError, ValueError):
+        return False
+
+
+def _record_gripper_sync(width: Optional[float], force: Optional[float]) -> None:
+    payload = dict(SESSION.gripper_sync)
+    payload["updated"] = time.time()
+    if width is not None:
+        payload["width"] = width
+    if force is not None:
+        payload["force"] = force
+    SESSION.gripper_sync = payload
 
 
 def get_gpu_info() -> dict:
@@ -1721,21 +1727,9 @@ def build_header() -> dmc.AppShellHeader:
         ],
         className="header-badges",
     )
-    status_line = dmc.Text(
-        id="header-robot-status",
-        size="xs",
-        c="dimmed",
-        style={
-            "maxWidth": "520px",
-            "whiteSpace": "nowrap",
-            "overflow": "hidden",
-            "textOverflow": "ellipsis",
-        },
-    )
-    status_block = dmc.Stack([badges, status_line], gap=4)
     actions = dmc.Group(
         [
-            status_block,
+            badges,
             dmc.Button("Setup", id="open-setup", variant="filled",
                        color="brand", radius="xl", size="md"),
         ],
@@ -1767,16 +1761,16 @@ def build_footer() -> dmc.AppShellFooter:
         "STOP",
         id="safety-stop",
         color="red",
-        size="xl",
+        size="md",
         radius="xl",
         variant="filled",
         fullWidth=False,
         style={
             "fontWeight": 800,
-            "letterSpacing": "0.08em",
-            "padding": "22px 40px",
-            "minWidth": "300px",
-            "fontSize": "22px",
+            "letterSpacing": "0.06em",
+            "padding": "14px 26px",
+            "minWidth": "210px",
+            "fontSize": "16px",
             "backgroundImage": "repeating-linear-gradient(45deg, #ff4747 0, #ff4747 12px, #ffd447 12px, #ffd447 24px)",
             "color": "#1f1f1f",
             "border": "2px solid #8b0000",
@@ -1789,7 +1783,8 @@ def build_footer() -> dmc.AppShellFooter:
         max=100,
         step=5,
         value=50,
-        labelAlwaysOn=True,
+        labelAlwaysOn=False,
+        size="sm",
         marks=[
             {"value": 0, "label": "0"},
             {"value": 50, "label": "50"},
@@ -1806,7 +1801,7 @@ def build_footer() -> dmc.AppShellFooter:
                 variant="filled",
                 color="gray",
                 radius="xl",
-                size="lg",
+                size="md",
             ),
             robot_speed_slider,
             dmc.ActionIcon(
@@ -1815,7 +1810,7 @@ def build_footer() -> dmc.AppShellFooter:
                 variant="filled",
                 color="gray",
                 radius="xl",
-                size="lg",
+                size="md",
             ),
         ],
         gap="sm",
@@ -1828,7 +1823,7 @@ def build_footer() -> dmc.AppShellFooter:
         "Start Auto",
         id="auto-start",
         color="green",
-        size="lg",
+        size="sm",
         radius="md",
         variant="filled",
         leftSection=dmc.ActionIcon(
@@ -1839,7 +1834,7 @@ def build_footer() -> dmc.AppShellFooter:
         ),
         style={
             "fontWeight": 700,
-            "minWidth": "140px",
+            "minWidth": "110px",
         },
     )
 
@@ -1847,7 +1842,7 @@ def build_footer() -> dmc.AppShellFooter:
         "Stop Auto",
         id="auto-stop",
         color="orange",
-        size="lg",
+        size="sm",
         radius="md",
         variant="filled",
         leftSection=dmc.ActionIcon(
@@ -1858,7 +1853,7 @@ def build_footer() -> dmc.AppShellFooter:
         ),
         style={
             "fontWeight": 700,
-            "minWidth": "140px",
+            "minWidth": "110px",
         },
     )
 
@@ -1883,121 +1878,92 @@ def build_footer() -> dmc.AppShellFooter:
         align="center",
     )
 
-    stop_speed_block = dmc.Stack(
+    robot_speed_block = dmc.Stack(
         [
-            dmc.Text("Safety & robot speed", fw=700, size="sm"),
-            dmc.Group(
-                [
-                    stop_column,
-                    dmc.Space(w=24),
-                    auto_control_column,
-                    dmc.Space(w=24),
-                    dmc.Stack(
-                        [
-                            dmc.Text("Robot speed", fw=600, size="sm"),
-                            robot_speed_controls,
-                        ],
-                        gap=6,
-                        align="flex-start",
-                        style={"minWidth": "380px"},
-                    ),
-                ],
-                gap="md",
-                align="flex-start",
-                justify="flex-start",
-                wrap="wrap",
-            ),
+            dmc.Text("Robot speed", fw=600, size="sm"),
+            robot_speed_controls,
         ],
-        gap=6,
+        gap=4,
         align="flex-start",
-        style={"flexGrow": 1, "minWidth": "440px"},
+        style={"minWidth": "280px"},
     )
 
     fine_width_slider = dmc.Slider(
         id="footer-gripper-width",
-        label="Width (mm)",
         min=0,
         max=40,
         step=0.5,
         value=10.0,
-        labelAlwaysOn=True,
-        marks=[
-            {"value": 0, "label": "0"},
-            {"value": 20, "label": "20"},
-            {"value": 40, "label": "40"},
-        ],
-        style={"minWidth": "340px"},
+        labelAlwaysOn=False,
+        size="sm",
+        marks=[],
+        style={"minWidth": "220px"},
     )
 
     fine_force_slider = dmc.Slider(
         id="footer-gripper-force",
-        label="Force (N)",
-        min=20,
-        max=140,
+        min=GRIPPER_FORCE_MIN,
+        max=GRIPPER_FORCE_MAX,
         step=5,
-        value=80,
-        labelAlwaysOn=True,
-        marks=[
-            {"value": 20, "label": "20"},
-            {"value": 80, "label": "80"},
-            {"value": 140, "label": "140"},
-        ],
-        style={"minWidth": "340px"},
+        value=GRIPPER_FORCE_DEFAULT,
+        labelAlwaysOn=False,
+        size="sm",
+        marks=[],
+        style={"minWidth": "220px"},
     )
 
     fine_speed_slider = dmc.Slider(
         id="footer-gripper-speed",
-        label="Speed (%)",
         min=10,
         max=100,
         step=5,
         value=60,
-        labelAlwaysOn=True,
-        marks=[
-            {"value": 10, "label": "10"},
-            {"value": 60, "label": "60"},
-            {"value": 100, "label": "100"},
-        ],
-        style={"minWidth": "340px"},
+        labelAlwaysOn=False,
+        size="sm",
+        marks=[],
+        style={"minWidth": "220px"},
     )
 
     width_controls = dmc.Group(
         [
             dmc.ActionIcon("-", id="footer-gripper-width-decrease",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
             fine_width_slider,
             dmc.ActionIcon("+", id="footer-gripper-width-increase",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
         ],
-        gap="sm",
+        gap="xs",
         align="center",
         justify="flex-start",
+        className="footer-slider-controls",
     )
 
     force_controls = dmc.Group(
         [
             dmc.ActionIcon("-", id="footer-gripper-force-decrease",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
             fine_force_slider,
             dmc.ActionIcon("+", id="footer-gripper-force-increase",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
         ],
-        gap="sm",
+        gap="xs",
         align="center",
         justify="flex-start",
+        className="footer-slider-controls",
     )
 
     speed_controls = dmc.Group(
         [
             dmc.ActionIcon("-", id="footer-gripper-speed-decrease",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
             fine_speed_slider,
             dmc.ActionIcon("+", id="footer-gripper-speed-increase",
-                           variant="light", color="gray", radius="xl", size="lg"),
+                           variant="light", color="gray", radius="xl", size="md"),
         ],
-        gap="sm",
+        gap="xs",
         align="center",
         justify="flex-start",
+        className="footer-slider-controls",
     )
 
     gripper_block = dmc.Stack(
@@ -2010,56 +1976,143 @@ def build_footer() -> dmc.AppShellFooter:
                         id="footer-gripper-open",
                         variant="outline",
                         color="teal",
-                        size="md",
+                        size="sm",
                     ),
                     dmc.Button(
                         "Close",
                         id="footer-gripper-close",
                         variant="filled",
                         color="teal",
-                        size="md",
+                        size="sm",
                     ),
                 ],
                 gap="xs",
                 align="center",
             ),
             dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
-            dmc.Divider(variant="dashed", mt=6, mb=4),
-            dmc.Text("Fine control", fw=600, size="sm"),
-            width_controls,
-            force_controls,
-            speed_controls,
+            dmc.Divider(variant="dashed", mt=4, mb=2),
+            dmc.Text("Fine control", fw=600, size="xs"),
+            html.Div(
+                [
+                    dmc.Text("Width (mm)", size="xs", fw=600),
+                    width_controls,
+                ],
+                className="footer-fine-row",
+            ),
+            html.Div(
+                [
+                    dmc.Text("Force (N)", size="xs", fw=600),
+                    force_controls,
+                ],
+                className="footer-fine-row",
+            ),
+            html.Div(
+                [
+                    dmc.Text("Speed (%)", size="xs", fw=600),
+                    speed_controls,
+                ],
+                className="footer-fine-row",
+            ),
         ],
-        gap=8,
+        gap=6,
         align="flex-start",
-        style={"flexGrow": 1, "minWidth": "440px"},
+        style={"flexGrow": 1, "minWidth": "320px"},
+    )
+
+    robot_position_text = dmc.Text(
+        id="footer-robot-position",
+        size="sm",
+        className="footer-robot-position",
+    )
+
+    flange_indicators = html.Div(
+        [
+            html.Div(id="footer-flange-indicator-1",
+                     className="footer-flange-indicator"),
+            html.Div(id="footer-flange-indicator-2",
+                     className="footer-flange-indicator"),
+            html.Div(id="footer-flange-indicator-3",
+                     className="footer-flange-indicator"),
+            html.Div(id="footer-flange-indicator-4",
+                     className="footer-flange-indicator"),
+        ],
+        className="footer-flange-indicators",
+    )
+
+    flange_block = html.Div(
+        [
+            dmc.Text("Flange press", fw=600, size="sm"),
+            flange_indicators,
+        ],
+        className="footer-flange-block",
+    )
+
+    footer_toggle = dmc.Button(
+        "Hide footer",
+        id="footer-toggle",
+        variant="light",
+        color="gray",
+        size="sm",
+        radius="xl",
     )
 
     footer_grid = html.Div(
-        [stop_speed_block, gripper_block],
-        style={
-            "display": "grid",
-            "gridTemplateColumns": "repeat(auto-fit, minmax(560px, 1fr))",
-            "columnGap": "56px",
-            "rowGap": "28px",
-            "alignItems": "flex-start",
-            "width": "100%",
-        },
+        [robot_speed_block, gripper_block],
+        className="footer-body-grid",
+    )
+
+    telemetry_block = dmc.Stack(
+        [
+            dmc.Text("Robot telemetry", fw=600, size="xs"),
+            robot_position_text,
+        ],
+        gap=2,
+    )
+
+    status_group = dmc.Group(
+        [telemetry_block, flange_block],
+        gap="md",
+        align="center",
+        className="footer-status-group",
+        wrap="wrap",
+    )
+
+    footer_header = html.Div(
+        [
+            dmc.Group(
+                [stop_column, auto_control_column],
+                gap="lg",
+                align="center",
+                wrap="wrap",
+            ),
+            dmc.Group(
+                [status_group, footer_toggle],
+                gap="md",
+                align="center",
+                wrap="wrap",
+            ),
+        ],
+        className="footer-header",
+    )
+
+    footer_body = html.Div(
+        footer_grid,
+        className="footer-body",
     )
 
     return dmc.AppShellFooter(
         dmc.Container(
             dmc.Card(
-                footer_grid,
+                [footer_header, footer_body],
                 className="footer-panel",
-                padding="xl",
+                padding="sm",
             ),
             fluid=True,
-            px="xl",
-            py="xl",
+            px="lg",
+            py="sm",
         ),
+        id="app-footer",
         className="app-footer",
-        style={"minHeight": "380px", "paddingTop": "8px"},
     )
 
 
@@ -2859,6 +2912,10 @@ def build_layout() -> dmc.MantineProvider:
                         "gripper_ready": False,
                     },
                 ),
+                dcc.Store(
+                    id="footer-visibility",
+                    data={"collapsed": False},
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
@@ -2878,7 +2935,7 @@ def build_layout() -> dmc.MantineProvider:
                     padding="md",
                     className="app-shell",
                     header={"height": 90},
-                    footer={"height": 120},
+                    footer={"height": 340},
                     children=[
                         build_header(),
                         dmc.AppShellMain(
@@ -2938,6 +2995,8 @@ def build_layout() -> dmc.MantineProvider:
                                 mt="sm",
                                 className="main-panel",
                             ),
+                            id="app-main",
+                            className="app-main footer-expanded",
                         ),
                         build_footer(),
                     ],
@@ -3318,7 +3377,10 @@ def register_callbacks(app: Dash) -> None:
                     if safe_width < current_width:
                         safe_width = current_width
 
-            applied_force = _safe_int(force, 100)
+            applied_force = _safe_int(force, GRIPPER_FORCE_DEFAULT)
+            applied_force = min(
+                max(applied_force, GRIPPER_FORCE_MIN), GRIPPER_FORCE_MAX
+            )
             applied_speed = _safe_int(speed, 80)
 
             SESSION.gripper.grip(
@@ -3545,6 +3607,75 @@ def register_callbacks(app: Dash) -> None:
             disabled,
             disabled,
         )
+
+    @app.callback(
+        Output("footer-visibility", "data"),
+        Input("footer-toggle", "n_clicks"),
+        State("footer-visibility", "data"),
+        prevent_initial_call=True,
+    )
+    def _toggle_footer_visibility(
+        _clicks: int,
+        state: Optional[dict],
+    ) -> dict:
+        collapsed = bool((state or {}).get("collapsed", False))
+        return {"collapsed": not collapsed}
+
+    @app.callback(
+        Output("app-footer", "className"),
+        Output("footer-toggle", "children"),
+        Output("app-main", "className"),
+        Input("footer-visibility", "data"),
+    )
+    def _sync_footer_visibility(state: Optional[dict]) -> Tuple[str, str, str]:
+        collapsed = bool((state or {}).get("collapsed", False))
+        class_name = "app-footer is-collapsed" if collapsed else "app-footer"
+        label = "Show footer" if collapsed else "Hide footer"
+        main_class = "app-main footer-collapsed" if collapsed else "app-main footer-expanded"
+        return class_name, label, main_class
+
+    @app.callback(
+        Output("footer-robot-position", "children"),
+        Input("robot-connection-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+    )
+    def _update_footer_robot_position(
+        robot_conn_state: Optional[dict],
+        _intervals: int,
+    ) -> str:
+        session = _get_robot_session()
+        if not session.posture_seen():
+            if (robot_conn_state or {}).get("status") == "online":
+                return "X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---"
+            return "X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---"
+
+        pos = session.position_snapshot()
+        text = (
+            f"X={pos.x:.3f} Y={pos.y:.3f} Z={pos.z:.3f}  "
+            f"A={pos.a:.3f} B={pos.b:.3f} C={pos.c:.3f}"
+        )
+        age_s = pos.age_seconds()
+        if age_s > 2.0:
+            text = f"{text} · stale {age_s:.1f}s"
+        return text
+
+    @app.callback(
+        Output("footer-flange-indicator-1", "className"),
+        Output("footer-flange-indicator-2", "className"),
+        Output("footer-flange-indicator-3", "className"),
+        Output("footer-flange-indicator-4", "className"),
+        Input("robot-status-interval", "n_intervals"),
+    )
+    def _update_footer_flange_indicators(_intervals: int) -> Tuple[str, str, str, str]:
+        session = _get_robot_session()
+        states = session.flange_button_states()
+        classes = []
+        for port in FLANGE_BUTTON_PORTS:
+            active = states.get(port, 0) == 1
+            classes.append(
+                "footer-flange-indicator active" if active else "footer-flange-indicator"
+            )
+        return tuple(classes)
 
     @app.callback(
         Output("model-status", "children"),
@@ -3884,7 +4015,17 @@ def register_callbacks(app: Dash) -> None:
     ) -> str:
         try:
             trigger = callback_context.triggered_id
-            applied_force = _safe_int(footer_force, 100)
+            if trigger == "footer-gripper-width":
+                if _recent_gripper_sync("width", footer_width):
+                    return no_update
+            if trigger == "footer-gripper-force":
+                if _recent_gripper_sync("force", footer_force):
+                    return no_update
+
+            applied_force = _safe_int(footer_force, GRIPPER_FORCE_DEFAULT)
+            applied_force = min(
+                max(applied_force, GRIPPER_FORCE_MIN), GRIPPER_FORCE_MAX
+            )
             applied_speed = _safe_int(footer_speed, 80)
             if trigger == "footer-gripper-open":
                 width = _safe_float(gripper_open_value,
@@ -3918,6 +4059,53 @@ def register_callbacks(app: Dash) -> None:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Footer gripper action failed")
             return f"Robot action failed: {exc}"
+
+    @app.callback(
+        Output("footer-gripper-width", "value"),
+        Output("footer-gripper-force", "value"),
+        Input("robot-status-interval", "n_intervals"),
+        State("gripper-connection-state", "data"),
+        State("footer-gripper-width", "value"),
+        State("footer-gripper-force", "value"),
+    )
+    def _sync_footer_gripper_values(
+        _intervals: int,
+        gripper_state: Optional[dict],
+        current_width: Optional[float],
+        current_force: Optional[float],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        if (gripper_state or {}).get("status") != "online":
+            return no_update, no_update
+        if SESSION.gripper is None:
+            return no_update, no_update
+
+        try:
+            t_index = GRIPPER_DEFAULTS["t_index"]
+            width = SESSION.gripper.get_ext_width(t_index=t_index)
+            force = SESSION.gripper.get_force(t_index=t_index)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to poll gripper values: %s", exc)
+            return no_update, no_update
+
+        width_update: Optional[float] = no_update
+        force_update: Optional[float] = no_update
+        if isinstance(width, (int, float)) and width > -2:
+            if current_width is None or abs(width - current_width) > 0.05:
+                width_update = float(width)
+        if (
+            isinstance(force, (int, float))
+            and GRIPPER_FORCE_MIN <= force <= GRIPPER_FORCE_MAX
+        ):
+            if current_force is None or abs(force - current_force) > 0.1:
+                force_update = float(force)
+
+        if width_update is no_update and force_update is no_update:
+            return no_update, no_update
+
+        width_value = None if width_update is no_update else float(width_update)
+        force_value = None if force_update is no_update else float(force_update)
+        _record_gripper_sync(width_value, force_value)
+        return width_update, force_update
 
     @app.callback(
         Output("monitor-system-summary", "children"),
@@ -4551,17 +4739,6 @@ def register_callbacks(app: Dash) -> None:
             return f"Robot: Position stale (last seen {age_s:.1f}s ago)"
 
         return "Robot: --"
-
-    @app.callback(
-        Output("header-robot-status", "children"),
-        Input("robot-connection-state", "data"),
-        Input("robot-status-interval", "n_intervals"),
-    )
-    def _update_header_robot_status(
-        robot_conn_state: Optional[dict],
-        _intervals: int,
-    ) -> str:
-        return _format_robot_status_line(robot_conn_state)
 
     @app.callback(
         Output("robot-calibration-status", "children"),
