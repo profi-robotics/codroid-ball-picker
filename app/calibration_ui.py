@@ -32,6 +32,20 @@ from vision import aruco_board, calibration, markers, plate, workspace
 from vision.camera_check import list_oak_devices
 from vision.stream import DepthAIFrameStream, StreamConfig
 
+try:
+    import pynvml
+    NVML_AVAILABLE = True
+except ImportError:
+    NVML_AVAILABLE = False
+    LOGGER = logging.getLogger(__name__)
+    LOGGER.warning("pynvml not available; GPU monitoring disabled")
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BOARD_PATH = Path(
@@ -113,6 +127,7 @@ class UISession:
     drop_target_mm: Optional[Tuple[float, float]] = None
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
+    last_frame_id: int = 0  # Track frame changes to avoid duplicate stream pushes
 
 
 SESSION = UISession(
@@ -311,6 +326,191 @@ def _safe_path(value: Optional[str], fallback: Path) -> Path:
         return fallback
     candidate = str(value).strip()
     return Path(candidate) if candidate else fallback
+
+
+def get_gpu_info() -> dict:
+    """Get GPU status information including availability, clock speed, usage, and memory."""
+    info = {
+        "available": False,
+        "name": "N/A",
+        "driver_version": "N/A",
+        "cuda_available": False,
+        "cuda_version": "N/A",
+        "gpu_count": 0,
+        "devices": [],
+    }
+    
+    # Check CUDA availability via PyTorch
+    if TORCH_AVAILABLE:
+        info["cuda_available"] = torch.cuda.is_available()
+        if info["cuda_available"]:
+            info["cuda_version"] = torch.version.cuda or "N/A"
+            info["gpu_count"] = torch.cuda.device_count()
+    
+    # Get detailed GPU info via NVML
+    if not NVML_AVAILABLE:
+        return info
+    
+    try:
+        pynvml.nvmlInit()
+        device_count = pynvml.nvmlDeviceGetCount()
+        info["available"] = device_count > 0
+        
+        for i in range(device_count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode("utf-8")
+            
+            # Get memory info
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            mem_used_mb = mem_info.used / (1024 ** 2)
+            mem_total_mb = mem_info.total / (1024 ** 2)
+            mem_percent = (mem_info.used / mem_info.total) * 100 if mem_info.total > 0 else 0
+            
+            # Get utilization
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                gpu_util = util.gpu
+            except Exception:
+                gpu_util = 0
+            
+            # Get clock speeds
+            try:
+                clock_graphics = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
+                clock_mem = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+            except Exception:
+                clock_graphics = 0
+                clock_mem = 0
+            
+            # Get temperature
+            try:
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            except Exception:
+                temp = 0
+            
+            # Get power usage
+            try:
+                power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # mW to W
+            except Exception:
+                power = 0
+            
+            device_info = {
+                "index": i,
+                "name": name,
+                "memory_used_mb": round(mem_used_mb, 1),
+                "memory_total_mb": round(mem_total_mb, 1),
+                "memory_percent": round(mem_percent, 1),
+                "gpu_utilization": gpu_util,
+                "clock_graphics_mhz": clock_graphics,
+                "clock_memory_mhz": clock_mem,
+                "temperature_c": temp,
+                "power_watts": round(power, 1),
+            }
+            info["devices"].append(device_info)
+            
+            if i == 0:
+                info["name"] = name
+                try:
+                    driver_version = pynvml.nvmlSystemGetDriverVersion()
+                    if isinstance(driver_version, bytes):
+                        driver_version = driver_version.decode("utf-8")
+                    info["driver_version"] = driver_version
+                except Exception:
+                    pass
+        
+        pynvml.nvmlShutdown()
+    except Exception as exc:
+        LOGGER.warning("Failed to get GPU info via NVML: %s", exc)
+    
+    return info
+
+
+def format_gpu_status() -> list:
+    """Format GPU status for display in the UI."""
+    gpu_info = get_gpu_info()
+    
+    if not gpu_info["available"]:
+        return [
+            dmc.Alert(
+                "No NVIDIA GPU detected or NVML not available",
+                color="yellow",
+                title="GPU Status",
+            )
+        ]
+    
+    elements = []
+    
+    # Overall status
+    cuda_status = "✓ Available" if gpu_info["cuda_available"] else "✗ Not available"
+    elements.append(
+        dmc.Group(
+            [
+                dmc.Badge(f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
+                dmc.Badge(f"Driver: {gpu_info['driver_version']}", color="blue"),
+                dmc.Badge(f"{gpu_info['gpu_count']} GPU(s)", color="teal"),
+            ],
+            gap="xs",
+        )
+    )
+    
+    # Per-device info
+    for dev in gpu_info["devices"]:
+        elements.append(
+            dmc.Card(
+                [
+                    dmc.Text(f"GPU {dev['index']}: {dev['name']}", fw=600, size="sm"),
+                    dmc.Group(
+                        [
+                            dmc.Stack(
+                                [
+                                    dmc.Text("Memory", size="xs", c="dimmed"),
+                                    dmc.Text(
+                                        f"{dev['memory_used_mb']:.0f} / {dev['memory_total_mb']:.0f} MB ({dev['memory_percent']:.1f}%)",
+                                        size="sm",
+                                    ),
+                                ],
+                                gap=2,
+                            ),
+                            dmc.Stack(
+                                [
+                                    dmc.Text("GPU Usage", size="xs", c="dimmed"),
+                                    dmc.Text(f"{dev['gpu_utilization']}%", size="sm"),
+                                ],
+                                gap=2,
+                            ),
+                            dmc.Stack(
+                                [
+                                    dmc.Text("Clock", size="xs", c="dimmed"),
+                                    dmc.Text(f"{dev['clock_graphics_mhz']} MHz", size="sm"),
+                                ],
+                                gap=2,
+                            ),
+                            dmc.Stack(
+                                [
+                                    dmc.Text("Temp", size="xs", c="dimmed"),
+                                    dmc.Text(f"{dev['temperature_c']}°C", size="sm"),
+                                ],
+                                gap=2,
+                            ),
+                            dmc.Stack(
+                                [
+                                    dmc.Text("Power", size="xs", c="dimmed"),
+                                    dmc.Text(f"{dev['power_watts']:.1f} W", size="sm"),
+                                ],
+                                gap=2,
+                            ),
+                        ],
+                        gap="md",
+                    ),
+                ],
+                withBorder=True,
+                padding="sm",
+                radius="md",
+            )
+        )
+    
+    return elements
 
 
 def _frame_index(path: Path) -> int:
@@ -1340,71 +1540,277 @@ def build_footer() -> dmc.AppShellFooter:
         },
     )
 
-    speed_slider = dmc.Slider(
+    robot_speed_slider = dmc.Slider(
         id="robot-speed-slider",
         min=0,
         max=100,
         step=5,
         value=50,
         labelAlwaysOn=True,
-        marks=[{"value": 0, "label": "0"}, {"value": 50,
-                                            "label": "50"}, {"value": 100, "label": "100"}],
-        style={"flexGrow": 1, "minWidth": "200px"},
+        marks=[
+            {"value": 0, "label": "0"},
+            {"value": 50, "label": "50"},
+            {"value": 100, "label": "100"},
+        ],
+        style={"flexGrow": 1, "minWidth": "220px"},
+    )
+
+    robot_speed_controls = dmc.Group(
+        [
+            dmc.ActionIcon(
+                "-",
+                id="robot-speed-decrease",
+                variant="filled",
+                color="gray",
+                radius="xl",
+                size="lg",
+            ),
+            robot_speed_slider,
+            dmc.ActionIcon(
+                "+",
+                id="robot-speed-increase",
+                variant="filled",
+                color="gray",
+                radius="xl",
+                size="lg",
+            ),
+        ],
+        gap="sm",
+        align="center",
+        justify="flex-start",
+        style={"flexGrow": 1},
+    )
+
+    auto_start_button = dmc.Button(
+        "Start Auto",
+        id="auto-start",
+        color="green",
+        size="lg",
+        radius="md",
+        variant="filled",
+        leftSection=dmc.ActionIcon(
+            "▶",
+            size="sm",
+            variant="transparent",
+            color="white",
+        ),
+        style={
+            "fontWeight": 700,
+            "minWidth": "140px",
+        },
+    )
+
+    auto_stop_button = dmc.Button(
+        "Stop Auto",
+        id="auto-stop",
+        color="orange",
+        size="lg",
+        radius="md",
+        variant="filled",
+        leftSection=dmc.ActionIcon(
+            "■",
+            size="sm",
+            variant="transparent",
+            color="white",
+        ),
+        style={
+            "fontWeight": 700,
+            "minWidth": "140px",
+        },
+    )
+
+    stop_column = dmc.Stack(
+        [
+            dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
+            stop_button,
+        ],
+        gap=6,
+        align="center",
+    )
+
+    auto_control_column = dmc.Stack(
+        [
+            dmc.Text("Auto pick & place", fw=700, size="sm", c="blue"),
+            dmc.Group(
+                [auto_start_button, auto_stop_button],
+                gap="xs",
+            ),
+        ],
+        gap=6,
+        align="center",
+    )
+
+    stop_speed_block = dmc.Stack(
+        [
+            dmc.Text("Safety & robot speed", fw=700, size="sm"),
+            dmc.Group(
+                [
+                    stop_column,
+                    dmc.Space(w=24),
+                    auto_control_column,
+                    dmc.Space(w=24),
+                    dmc.Stack(
+                        [
+                            dmc.Text("Robot speed", fw=600, size="sm"),
+                            robot_speed_controls,
+                        ],
+                        gap=6,
+                        align="flex-start",
+                        style={"minWidth": "380px"},
+                    ),
+                ],
+                gap="md",
+                align="flex-start",
+                justify="flex-start",
+                wrap="wrap",
+            ),
+        ],
+        gap=6,
+        align="flex-start",
+        style={"flexGrow": 1, "minWidth": "440px"},
+    )
+
+    fine_width_slider = dmc.Slider(
+        id="footer-gripper-width",
+        label="Width (mm)",
+        min=0,
+        max=40,
+        step=0.5,
+        value=10.0,
+        labelAlwaysOn=True,
+        marks=[
+            {"value": 0, "label": "0"},
+            {"value": 20, "label": "20"},
+            {"value": 40, "label": "40"},
+        ],
+        style={"minWidth": "340px"},
+    )
+
+    fine_force_slider = dmc.Slider(
+        id="footer-gripper-force",
+        label="Force (N)",
+        min=20,
+        max=140,
+        step=5,
+        value=80,
+        labelAlwaysOn=True,
+        marks=[
+            {"value": 20, "label": "20"},
+            {"value": 80, "label": "80"},
+            {"value": 140, "label": "140"},
+        ],
+        style={"minWidth": "340px"},
+    )
+
+    fine_speed_slider = dmc.Slider(
+        id="footer-gripper-speed",
+        label="Speed (%)",
+        min=10,
+        max=100,
+        step=5,
+        value=60,
+        labelAlwaysOn=True,
+        marks=[
+            {"value": 10, "label": "10"},
+            {"value": 60, "label": "60"},
+            {"value": 100, "label": "100"},
+        ],
+        style={"minWidth": "340px"},
+    )
+
+    width_controls = dmc.Group(
+        [
+            dmc.ActionIcon("-", id="footer-gripper-width-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            fine_width_slider,
+            dmc.ActionIcon("+", id="footer-gripper-width-increase", variant="light", color="gray", radius="xl", size="lg"),
+        ],
+        gap="sm",
+        align="center",
+        justify="flex-start",
+    )
+
+    force_controls = dmc.Group(
+        [
+            dmc.ActionIcon("-", id="footer-gripper-force-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            fine_force_slider,
+            dmc.ActionIcon("+", id="footer-gripper-force-increase", variant="light", color="gray", radius="xl", size="lg"),
+        ],
+        gap="sm",
+        align="center",
+        justify="flex-start",
     )
 
     speed_controls = dmc.Group(
         [
-            dmc.ActionIcon("-", id="robot-speed-decrease",
-                           variant="filled", color="gray", radius="xl", size="lg"),
-            speed_slider,
-            dmc.ActionIcon("+", id="robot-speed-increase",
-                           variant="filled", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("-", id="footer-gripper-speed-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            fine_speed_slider,
+            dmc.ActionIcon("+", id="footer-gripper-speed-increase", variant="light", color="gray", radius="xl", size="lg"),
         ],
         gap="sm",
         align="center",
-        justify="flex-end",
-        style={"flexGrow": 1},
+        justify="flex-start",
     )
 
-    left_block = dmc.Stack(
+    gripper_block = dmc.Stack(
         [
-            dmc.Text("Safety controls", fw=700, size="sm"),
-            stop_button,
-        ],
-        gap="xs",
-        align="flex-start",
-    )
-
-    right_block = dmc.Stack(
-        [
-            dmc.Text("Robot speed", fw=600, size="sm", ta="right"),
+            dmc.Text("Gripper control", fw=600, size="sm"),
+            dmc.Group(
+                [
+                    dmc.Button(
+                        "Open",
+                        id="footer-gripper-open",
+                        variant="outline",
+                        color="teal",
+                        size="md",
+                    ),
+                    dmc.Button(
+                        "Close",
+                        id="footer-gripper-close",
+                        variant="filled",
+                        color="teal",
+                        size="md",
+                    ),
+                ],
+                gap="xs",
+                align="center",
+            ),
+            dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
+            dmc.Divider(variant="dashed", mt=6, mb=4),
+            dmc.Text("Fine control", fw=600, size="sm"),
+            width_controls,
+            force_controls,
             speed_controls,
         ],
-        align="flex-end",
-        style={"flexGrow": 1, "minWidth": "320px"},
+        gap=8,
+        align="flex-start",
+        style={"flexGrow": 1, "minWidth": "440px"},
+    )
+
+    footer_grid = html.Div(
+        [stop_speed_block, gripper_block],
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fit, minmax(560px, 1fr))",
+            "columnGap": "56px",
+            "rowGap": "28px",
+            "alignItems": "flex-start",
+            "width": "100%",
+        },
     )
 
     return dmc.AppShellFooter(
         dmc.Container(
             dmc.Card(
-                dmc.Group(
-                    [
-                        left_block,
-                        right_block,
-                    ],
-                    justify="space-between",
-                    gap="lg",
-                    align="center",
-                    style={"flexWrap": "wrap"},
-                    wrap="wrap",
-                ),
+                footer_grid,
                 className="footer-panel",
+                padding="xl",
             ),
             fluid=True,
-            px=0,
+            px="xl",
+            py="xl",
         ),
-        h=120,
         className="app-footer",
+        style={"minHeight": "380px", "paddingTop": "8px"},
     )
 
 
@@ -1858,6 +2264,16 @@ def build_calibration_tab() -> dmc.Stack:
 
 
 def build_detection_tab() -> dmc.Stack:
+    gpu_card = dmc.Card(
+        [
+            dmc.Text("GPU Status", fw=600, size="lg"),
+            dmc.Stack(id="gpu-status-display", gap="xs", children=format_gpu_status()),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
     model_card = dmc.Card(
         [
             dmc.Text("Model Loader", fw=600, size="lg"),
@@ -1894,7 +2310,7 @@ def build_detection_tab() -> dmc.Stack:
                     dmc.NumberInput(
                         id="detection-confidence",
                         label="Confidence",
-                        value=0.4,
+                        value=0.7,
                         min=0.0,
                         max=1.0,
                         step=0.05,
@@ -1946,7 +2362,7 @@ def build_detection_tab() -> dmc.Stack:
         className="panel-card",
     )
 
-    return dmc.Stack([model_card, detection_card, detections_card], gap="md")
+    return dmc.Stack([gpu_card, model_card, detection_card, detections_card], gap="md")
 
 
 def build_pick_place_tab() -> dmc.Stack:
@@ -2133,6 +2549,10 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(id="camera-connection-state"),
                 dcc.Store(id="robot-connection-state"),
                 dcc.Store(
+                    id="gripper-connection-state",
+                    data={"status": "offline", "message": ""},
+                ),
+                dcc.Store(
                     id="notification-state",
                     data={"camera": None, "robot": None},
                 ),
@@ -2146,6 +2566,20 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(
                     id="robot-calibration-state",
                     data={"status": "idle", "message": ""},
+                ),
+                dcc.Store(
+                    id="auto-operation-state",
+                    data={"running": False, "message": ""},
+                ),
+                dcc.Store(
+                    id="prerequisites-state",
+                    data={
+                        "camera_calibrated": False,
+                        "workspace_defined": False,
+                        "robot_calibrated": False,
+                        "model_loaded": False,
+                        "gripper_ready": False,
+                    },
                 ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
@@ -2589,11 +3023,53 @@ def register_callbacks(app: Dash) -> None:
             error = f"Robot connection failed: {exc}"
             return error, "Robot: error", "red", {"status": "error", "message": error}
 
+    def _command_gripper(
+        target_width: float,
+        action_label: str,
+        *,
+        force: Optional[int] = None,
+        speed: Optional[int] = None,
+        prevent_overclose: bool = False,
+    ) -> str:
+        """Move gripper to target width and return status text."""
+        if SESSION.gripper is None or not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+            return "Gripper is not connected. Enable gripper in Setup menu."
+
+        try:
+            safe_width = float(target_width)
+            if prevent_overclose:
+                current_width = SESSION.gripper.get_ext_width(
+                    t_index=GRIPPER_DEFAULTS["t_index"]
+                )
+                if isinstance(current_width, (int, float)) and current_width >= 0:
+                    if safe_width < current_width:
+                        safe_width = current_width
+
+            applied_force = _safe_int(force, 100)
+            applied_speed = _safe_int(speed, 80)
+
+            SESSION.gripper.grip(
+                t_index=GRIPPER_DEFAULTS["t_index"],
+                t_width=safe_width,
+                n_force=applied_force,
+                p_speed=applied_speed,
+                f_wait=True,
+            )
+            SESSION.last_action = (
+                f"Gripper {action_label} to {safe_width:.1f} mm @ "
+                f"{applied_force} N / {applied_speed}% speed."
+            )
+            return SESSION.last_action
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Gripper command failed")
+            return f"Gripper action failed: {exc}"
+
     @app.callback(
         Output("gripper-status-text", "children"),
         Output("gripper-device-info", "children"),
         Output("header-gripper-badge", "children"),
         Output("header-gripper-badge", "color"),
+        Output("gripper-connection-state", "data"),
         Input("gripper-test", "n_clicks"),
         Input("gripper-enable", "checked"),
         Input("auto-init", "n_intervals"),
@@ -2604,7 +3080,7 @@ def register_callbacks(app: Dash) -> None:
         enabled: bool,
         _init: int,
         cb_ip: str,
-    ) -> Tuple[str, html.Div, str, str]:
+    ) -> Tuple[str, html.Div, str, str, dict]:
         """Handle gripper connection and testing."""
         trigger = callback_context.triggered_id
 
@@ -2613,13 +3089,19 @@ def register_callbacks(app: Dash) -> None:
             if SESSION.gripper is not None:
                 SESSION.gripper = None
                 SESSION.gripper_device = None
-            return "Gripper disabled", html.Div(), "Gripper: off", "gray"
+            return (
+                "Gripper disabled",
+                html.Div(),
+                "Gripper: off",
+                "gray",
+                {"status": "disabled", "message": "Gripper disabled"},
+            )
 
         # Auto-connect once on load
         if trigger == "auto-init":
             enabled = True
         if not enabled:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         # Enable or test gripper
         try:
@@ -2640,6 +3122,10 @@ def register_callbacks(app: Dash) -> None:
                         ),
                         "Gripper: error",
                         "red",
+                        {
+                            "status": "error",
+                            "message": f"Failed to connect to Compute Box at {cb_ip}",
+                        },
                     )
 
                 SESSION.gripper_device = device
@@ -2664,6 +3150,10 @@ def register_callbacks(app: Dash) -> None:
                     ),
                     "Gripper: error",
                     "red",
+                    {
+                        "status": "error",
+                        "message": f"Failed to query gripper at {cb_ip}: {exc}",
+                    },
                 )
 
             if not is_connected:
@@ -2680,6 +3170,10 @@ def register_callbacks(app: Dash) -> None:
                     ),
                     "Gripper: error",
                     "yellow",
+                    {
+                        "status": "error",
+                        "message": f"No 2FG7 gripper detected at Compute Box {cb_ip}",
+                    },
                 )
 
             # Get gripper status and information
@@ -2742,7 +3236,13 @@ def register_callbacks(app: Dash) -> None:
                 )
             )
 
-            return status_text, info_card, "Gripper: online", "teal"
+            return (
+                status_text,
+                info_card,
+                "Gripper: online",
+                "teal",
+                {"status": "online", "message": status_text},
+            )
 
         except Exception as exc:
             LOGGER.exception("Gripper test failed")
@@ -2751,7 +3251,27 @@ def register_callbacks(app: Dash) -> None:
                 html.Div(),
                 "Gripper: error",
                 "red",
+                {"status": "error", "message": f"Gripper test failed: {exc}"},
             )
+
+    @app.callback(
+        Output("footer-gripper-open", "disabled"),
+        Output("footer-gripper-close", "disabled"),
+        Output("footer-gripper-width", "disabled"),
+        Output("footer-gripper-force", "disabled"),
+        Output("footer-gripper-speed", "disabled"),
+        Input("gripper-connection-state", "data"),
+    )
+    def _sync_footer_gripper_disabled(gripper_state: Optional[dict]) -> Tuple[bool, bool, bool, bool, bool]:
+        status = (gripper_state or {}).get("status", "offline")
+        disabled = status != "online"
+        return (
+            disabled,
+            disabled,
+            disabled,
+            disabled,
+            disabled,
+        )
 
     @app.callback(
         Output("model-status", "children"),
@@ -2790,6 +3310,14 @@ def register_callbacks(app: Dash) -> None:
             status = activate_model(None)
             return status, options, None
         return no_update, options, no_update
+
+    @app.callback(
+        Output("gpu-status-display", "children"),
+        Input("camera-interval", "n_intervals"),
+    )
+    def _update_gpu_status(_n: int) -> list:
+        """Update GPU status display periodically."""
+        return format_gpu_status()
 
     @app.callback(
         Output("detection-status", "children"),
@@ -2908,27 +3436,11 @@ def register_callbacks(app: Dash) -> None:
             except Exception as exc:
                 return f"Drop marker detection failed: {exc}"
 
-        if trigger in ("gripper-open", "gripper-close"):
-            # Check if gripper is connected
-            if SESSION.gripper is None or not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
-                return "Gripper is not connected. Enable gripper in Setup menu."
+        if trigger == "gripper-open":
+            return _command_gripper(gripper_open_val, "opened")
 
-            # Determine target width
-            value = gripper_open_val if trigger == "gripper-open" else gripper_close_val
-            t_index = GRIPPER_DEFAULTS["t_index"]
-
-            try:
-                # Command gripper to move to target width (move without grip detection)
-                SESSION.gripper.move(
-                    t_index=t_index, t_width=value, f_wait=True)
-
-                action = "opened" if trigger == "gripper-open" else "closed"
-                SESSION.last_action = f"Gripper {action} to {value:.1f} mm."
-                return f"Gripper {action} to {value:.1f} mm."
-
-            except Exception as exc:
-                LOGGER.exception("Gripper command failed")
-                return f"Gripper action failed: {exc}"
+        if trigger == "gripper-close":
+            return _command_gripper(gripper_close_val, "closed")
 
         if SESSION.workspace_definition is None:
             return "Workspace is not defined; run workspace calibration first."
@@ -3014,10 +3526,63 @@ def register_callbacks(app: Dash) -> None:
                     robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action))
                 SESSION.last_action = "Pick & drop command sent."
                 return "Pick & drop command sent."
-        except Exception as exc:
-            return f"Robot action failed: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Pick/place action failed")
+            return f"Pick/place action failed: {exc}"
 
-        return "Awaiting pick & place action."
+    @app.callback(
+        Output("footer-gripper-status", "children"),
+        Input("footer-gripper-open", "n_clicks"),
+        Input("footer-gripper-close", "n_clicks"),
+        Input("footer-gripper-width", "value"),
+        Input("footer-gripper-force", "value"),
+        Input("footer-gripper-speed", "value"),
+        State("gripper-open-value", "value"),
+        State("gripper-close-value", "value"),
+        prevent_initial_call=True,
+    )
+    def _footer_gripper_actions(
+        _open_clicks: int,
+        _close_clicks: int,
+        footer_width: Optional[float],
+        footer_force: Optional[float],
+        footer_speed: Optional[float],
+        gripper_open_value: Optional[float],
+        gripper_close_value: Optional[float],
+    ) -> str:
+        try:
+            trigger = callback_context.triggered_id
+            applied_force = _safe_int(footer_force, 100)
+            applied_speed = _safe_int(footer_speed, 80)
+            if trigger == "footer-gripper-open":
+                width = _safe_float(gripper_open_value, _safe_float(footer_width, 1.0))
+                return _command_gripper(
+                    width,
+                    "opened",
+                    force=applied_force,
+                    speed=applied_speed,
+                )
+            if trigger == "footer-gripper-close":
+                width = _safe_float(gripper_close_value, _safe_float(footer_width, 0.0))
+                return _command_gripper(
+                    width,
+                    "closed",
+                    force=applied_force,
+                    speed=applied_speed,
+                    prevent_overclose=True,
+                )
+            if trigger in {"footer-gripper-width", "footer-gripper-force", "footer-gripper-speed"}:
+                width = _safe_float(footer_width, _safe_float(gripper_close_value, 0.0))
+                return _command_gripper(
+                    width,
+                    "moved",
+                    force=applied_force,
+                    speed=applied_speed,
+                )
+            return no_update
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Footer gripper action failed")
+            return f"Robot action failed: {exc}"
 
     @app.callback(
         Output("monitor-system-summary", "children"),
@@ -3449,6 +4014,12 @@ def register_callbacks(app: Dash) -> None:
                 plate_state,
             )
 
+        # Check if this is a new frame by comparing object identity
+        current_frame_id = id(frame)
+        is_new_frame = current_frame_id != SESSION.last_frame_id
+        if is_new_frame:
+            SESSION.last_frame_id = current_frame_id
+
         # Frame received, dispatch to background processor for heavy overlays.
         step = active_step or 0
         tab = active_tab or "calibration"
@@ -3483,7 +4054,8 @@ def register_callbacks(app: Dash) -> None:
 
         if tab == "calibration":
             if step == 0:
-                MJPEG_STREAM.add_frame(vis)
+                if is_new_frame:
+                    MJPEG_STREAM.add_frame(vis)
                 overlay_fps_text = _format_fps(
                     capture_fps, MJPEG_STREAM.get_fps())
                 return (
@@ -3497,7 +4069,8 @@ def register_callbacks(app: Dash) -> None:
                     plate_state,
                 )
             if step == 1:
-                MJPEG_STREAM.add_frame(vis)
+                if is_new_frame:
+                    MJPEG_STREAM.add_frame(vis)
                 overlay_fps_text = _format_fps(
                     capture_fps, MJPEG_STREAM.get_fps())
                 return (
@@ -3510,7 +4083,8 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                     plate_state,
                 )
-            MJPEG_STREAM.add_frame(vis)
+            if is_new_frame:
+                MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
                 capture_fps, MJPEG_STREAM.get_fps())
             return (
@@ -3525,7 +4099,8 @@ def register_callbacks(app: Dash) -> None:
             )
 
         if tab == "detection":
-            MJPEG_STREAM.add_frame(vis)
+            if is_new_frame:
+                MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
                 capture_fps, MJPEG_STREAM.get_fps())
             return (
@@ -3540,7 +4115,8 @@ def register_callbacks(app: Dash) -> None:
             )
 
         if tab == "pick-place":
-            MJPEG_STREAM.add_frame(vis)
+            if is_new_frame:
+                MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
                 capture_fps, MJPEG_STREAM.get_fps())
             return (
@@ -3555,7 +4131,8 @@ def register_callbacks(app: Dash) -> None:
             )
 
         # Monitoring or any other tab: keep stream alive and surface metrics.
-        MJPEG_STREAM.add_frame(vis)
+        if is_new_frame:
+            MJPEG_STREAM.add_frame(vis)
         overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
         return (
             status_text,
@@ -3649,6 +4226,97 @@ def create_app() -> Dash:
     app._favicon = "favicon.ico"
     app.layout = build_layout()
     register_callbacks(app)
+
+    @app.callback(
+        Output("prerequisites-state", "data"),
+        Input("camera-interval", "n_intervals"),
+        Input("gripper-connection-state", "data"),
+    )
+    def _update_prerequisites(_n: int, gripper_state: Optional[dict]) -> dict:
+        """Update prerequisites state based on current system status."""
+        return {
+            "camera_calibrated": SESSION.calibration_bundle is not None,
+            "workspace_defined": SESSION.workspace_definition is not None,
+            "robot_calibrated": SESSION.plate_calibration is not None,
+            "model_loaded": SESSION.model_loaded,
+            "gripper_ready": (gripper_state or {}).get("status") == "online",
+        }
+
+    @app.callback(
+        Output("auto-start", "disabled"),
+        Output("auto-stop", "disabled"),
+        Input("prerequisites-state", "data"),
+        Input("auto-operation-state", "data"),
+    )
+    def _update_auto_buttons(
+        prerequisites: Optional[dict],
+        auto_state: Optional[dict],
+    ) -> Tuple[bool, bool]:
+        """Enable/disable auto operation buttons based on prerequisites and operation state."""
+        prereqs = prerequisites or {}
+        all_ready = all([
+            prereqs.get("camera_calibrated", False),
+            prereqs.get("workspace_defined", False),
+            prereqs.get("robot_calibrated", False),
+            prereqs.get("model_loaded", False),
+            prereqs.get("gripper_ready", False),
+        ])
+        
+        running = (auto_state or {}).get("running", False)
+        
+        # Start button: enabled only when all prerequisites met and not running
+        start_disabled = not all_ready or running
+        # Stop button: enabled only when running
+        stop_disabled = not running
+        
+        return start_disabled, stop_disabled
+
+    @app.callback(
+        Output("auto-operation-state", "data"),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("auto-start", "n_clicks"),
+        Input("auto-stop", "n_clicks"),
+        State("auto-operation-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _handle_auto_operation(
+        start_clicks: int,
+        stop_clicks: int,
+        current_state: Optional[dict],
+    ) -> Tuple[dict, dmc.Notification]:
+        """Handle auto operation start/stop."""
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update, no_update
+        
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        
+        if trigger_id == "auto-start":
+            # TODO: Start the auto pick & place operation
+            LOGGER.info("Starting auto pick & place operation")
+            return (
+                {"running": True, "message": "Auto operation started"},
+                dmc.Notification(
+                    title="Auto Operation",
+                    message="Auto pick & place operation started",
+                    color="green",
+                    action="show",
+                ),
+            )
+        elif trigger_id == "auto-stop":
+            # TODO: Stop the auto pick & place operation
+            LOGGER.info("Stopping auto pick & place operation")
+            return (
+                {"running": False, "message": "Auto operation stopped"},
+                dmc.Notification(
+                    title="Auto Operation",
+                    message="Auto pick & place operation stopped",
+                    color="orange",
+                    action="show",
+                ),
+            )
+        
+        return no_update, no_update
 
     @app.server.route("/video_feed")
     def video_feed():
