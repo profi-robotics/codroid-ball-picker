@@ -7,12 +7,13 @@ robot motion commands.
 
 ## Layout
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
-- `robot/` – legacy WebSocket notes and command catalog extracted from browser traffic.
+- `robot/` – WebSocket client, gripper control (OnRobot 2FG7), and command catalog extracted from browser traffic.
 - `app/` – orchestration logic that ties vision outputs to robot commands.
 - `run_bootstrap_demo.py` – entry point that runs the end-to-end flow using a
   frame provider stub.
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
+- `docs/` – integration guides for gripper and other peripherals.
 
 ## Quickstart
 1. Install dependencies (Python 3.11+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
@@ -158,3 +159,22 @@ A concise command catalog derived from DevTools captures is available at
 `robot/command_catalog.md`. If new commands are discovered, extend that file and
 mirror the behaviour in `codroid-api` (the legacy `robot/websocket_client.py`
 remains for reference only).
+
+## OnRobot 2FG7 Gripper Integration
+
+The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Compute Box using XML-RPC. The gripper integration is available in the calibration UI for manual control and pick-place operations.
+
+**Quick Setup:**
+1. Connect the 2FG7 gripper to the OnRobot Compute Box
+2. Note the Compute Box IP address (default: `192.168.1.1`)
+3. In the calibration UI, click **Setup** → **OnRobot 2FG7 Gripper**
+4. Enter the Compute Box IP and enable the connection
+5. Click **Test gripper** to verify
+
+**Features:**
+- Real-time gripper status monitoring (width, force, grip detection)
+- Manual open/close control from the Pick & Place tab
+- Automatic grip/release during pick-drop sequences
+- No authentication required (direct TCP/IP connection)
+
+For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_integration.md).

@@ -1,48 +1,94 @@
 @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
 
 :root {
-  --app-bg: #f5efe4;
-  --app-ink: #1f2a32;
-  --panel-bg: rgba(255, 252, 246, 0.94);
-  --panel-border: rgba(31, 42, 50, 0.12);
-  --panel-shadow: 0 24px 60px rgba(31, 42, 50, 0.12);
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.12);
+  --app-bg: #f7fbff;
+  --app-ink: #101828;
+  --panel-bg: #ffffff;
+  --panel-border: rgba(8, 105, 97, 0.15);
+  --panel-shadow: 0 35px 60px rgba(0, 0, 0, 0.05);
+  --brand-primary: #0ea397;
+  --brand-secondary: #0b7f75;
+  --brand-accent: #f15b5f;
+  --brand-soft: rgba(14, 163, 151, 0.18);
 }
 
 body {
   margin: 0;
   color: var(--app-ink);
-  background: radial-gradient(circle at 10% 10%, #fff4d6, transparent 45%),
-    radial-gradient(circle at 90% 20%, #d7f3ef, transparent 40%),
-    radial-gradient(circle at 80% 90%, #ffe3d0, transparent 50%), var(--app-bg);
+  background: linear-gradient(180deg, #fbfdff 0%, #f1f7ff 55%, #e6eff8 100%);
+  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
 }
 
 .app-title {
-  font-size: 1.2rem;
+  font-size: 1.3rem;
   font-weight: 700;
   letter-spacing: -0.02em;
+  color: var(--app-ink);
+}
+
+.app-tagline {
+  font-size: 0.85rem;
+  color: rgba(16, 24, 40, 0.65);
+}
+
+.header-logo {
+  height: 48px;
+  width: auto;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(14, 163, 151, 0.35);
+}
+
+.header-bar {
+  width: 100%;
+  gap: 0.5rem;
+}
+
+.header-actions {
+  gap: 0.75rem;
+}
+
+.header-badges {
+  gap: 0.5rem;
+}
+
+.app-shell {
+  background: transparent;
+}
+
+.app-header {
+  background: rgba(255, 255, 255, 0.98);
+  border-bottom: 1px solid rgba(8, 105, 97, 0.12);
+  box-shadow: 0 18px 38px rgba(14, 163, 151, 0.12);
+  padding: 0;
+}
+
+.app-footer {
+  background: transparent;
+  padding: 0 0 24px;
+}
+
+.main-panel {
+  animation: rise-in 0.45s ease;
+  color: var(--app-ink);
 }
 
 .panel-card {
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   box-shadow: var(--panel-shadow);
+  border-radius: 18px;
 }
 
 .camera-panel {
-  background: linear-gradient(
-    140deg,
-    rgba(15, 118, 110, 0.08),
-    rgba(255, 255, 255, 0.9)
-  );
+  background: linear-gradient(135deg, rgba(14, 163, 151, 0.08), rgba(255, 255, 255, 0.95));
 }
 
 .camera-feed {
   width: 100%;
   height: auto;
-  border-radius: 16px;
-  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 18px;
+  border: 1px solid rgba(14, 163, 151, 0.35);
   margin-top: 12px;
   background: #0b0f14;
   display: block;
@@ -52,43 +98,56 @@ body {
 .camera-feed-container {
   position: relative;
   width: 100%;
-  transition: all 0.3s ease;
 }
 
-.camera-feed-container[style*="position: fixed"] {
-  padding: 0;
+.mantine-Tabs-tabsList {
+  padding: 0 !important;
   margin: 0;
-  border-radius: 0;
-  border: none;
+  gap: 8px;
+}
+
+.mantine-Tabs-tab {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.mantine-Tabs-tab.mantine-Tabs-tabActive {
+  color: var(--panel-bg);
+}
+
+.footer-panel {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(8, 105, 97, 0.12);
+  box-shadow: 0 24px 45px rgba(18, 27, 38, 0.08);
+  border-radius: 20px;
+  padding: 16px;
+}
+
+.footer-panel p {
+  margin: 0;
+  color: rgba(18, 27, 38, 0.65);
+}
+
+.setup-drawer .mantine-Drawer-inner {
+  border-radius: 16px;
+}
+
+.app-tab-bar-wrapper {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
-.camera-feed-container[style*="position: fixed"] .camera-feed {
-  width: 100%;
-  height: 100%;
-  border-radius: 0;
-  border: none;
-  margin: 0;
-  object-fit: contain;
-}
-
-.main-panel {
-  animation: rise-in 0.55s ease;
-}
-
-#camera-device-info ul {
-  padding-left: 1.1rem;
-  margin: 0;
-  color: rgba(31, 42, 50, 0.7);
-  font-size: 0.85rem;
+.tab-card {
+  background: var(--panel-bg);
+  border-radius: 20px;
+  padding: 16px;
+  border: 1px solid rgba(13, 110, 130, 0.08);
 }
 
 @keyframes rise-in {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;

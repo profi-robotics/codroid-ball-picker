@@ -25,6 +25,8 @@ import dash_mantine_components as dmc
 
 from app.orchestrator import BootstrapDemo, DemoConfig
 from codroid_api import CodroidAPI, CodroidSettings
+from onrobot.device import Device as GripperDevice
+from onrobot.twofg import TWOFG as TwoFG7Gripper
 from vision import aruco_board, calibration, markers, plate, workspace
 from vision.camera_check import list_oak_devices
 from vision.stream import DepthAIFrameStream, StreamConfig
@@ -72,6 +74,18 @@ CODROID_DEFAULTS = _load_codroid_defaults()
 DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
 
 
+def _load_gripper_defaults() -> dict:
+    """Load OnRobot gripper default configuration."""
+    return {
+        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.1.1"),
+        "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
+    }
+
+
+GRIPPER_DEFAULTS = _load_gripper_defaults()
+DEFAULT_GRIPPER_IP = GRIPPER_DEFAULTS["compute_box_ip"]
+
+
 @dataclass
 class CaptureState:
     output_dir: Path = DEFAULT_CAPTURE_DIR
@@ -83,6 +97,8 @@ class CaptureState:
 class UISession:
     config: DemoConfig = field(default_factory=DemoConfig)
     camera_stream: Optional[DepthAIFrameStream] = None
+    gripper_device: Optional[GripperDevice] = None
+    gripper: Optional[TwoFG7Gripper] = None
     capture: CaptureState = field(default_factory=CaptureState)
     calibration_bundle: Optional[calibration.CalibrationBundle] = None
     workspace_definition: Optional[workspace.WorkspaceDefinition] = None
@@ -105,6 +121,9 @@ SESSION = UISession(
         user_port=CODROID_DEFAULTS["ws_port"],
     )
 )
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+ASSETS_DIR = ROOT_DIR / "assets"
 
 PLATE_STATUS = {"count": 0, "ok": False,
                 "timestamp": 0.0, "message": "Waiting for plate markers"}
@@ -436,7 +455,8 @@ def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.Rigi
     if from_pts.shape != to_pts.shape:
         raise ValueError("Point clouds must have the same shape.")
     if from_pts.shape[0] < 3:
-        raise ValueError("At least 3 points are required for a rigid transform.")
+        raise ValueError(
+            "At least 3 points are required for a rigid transform.")
     a = np.asarray(from_pts, dtype=np.float64)
     b = np.asarray(to_pts, dtype=np.float64)
     centroid_a = np.mean(a, axis=0)
@@ -458,7 +478,8 @@ def _ensure_plate_visible(max_age_s: float = 1.0) -> None:
     if not PLATE_STATUS.get("ok"):
         raise RuntimeError("Calibration plate markers are not visible.")
     if now - PLATE_STATUS.get("timestamp", 0.0) > max_age_s:
-        raise RuntimeError("Calibration plate markers are stale; keep them visible.")
+        raise RuntimeError(
+            "Calibration plate markers are stale; keep them visible.")
 
 
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float]) -> str:
@@ -693,7 +714,8 @@ async def _run_robot_plate_calibration(
     plate_layout: plate.CalibrationPlate,
 ) -> Tuple[list[dict], dict]:
     """Capture three robot poses via flange button 1 and calibrate coord ID 5."""
-    settings = _apply_robot_uri(CodroidSettings(), robot_uri or DEFAULT_ROBOT_URI)
+    settings = _apply_robot_uri(
+        CodroidSettings(), robot_uri or DEFAULT_ROBOT_URI)
     robot_config = settings.build_robot_config()
     async with CodroidAPI(robot_config) as robot_api:
         await robot_api.robot_login()
@@ -736,14 +758,16 @@ async def _run_robot_plate_calibration(
         try:
             calib_points = plate_layout.robot_calibration_points()
             if len(calib_points) < 3:
-                raise RuntimeError("Calibration plate layout is missing calibration points.")
+                raise RuntimeError(
+                    "Calibration plate layout is missing calibration points.")
 
             for idx in range(3):
                 _ensure_plate_visible()
                 try:
                     posture = await asyncio.wait_for(press_queue.get(), timeout=90.0)
                 except asyncio.TimeoutError:
-                    raise RuntimeError("Timed out waiting for flange button 1 press.")
+                    raise RuntimeError(
+                        "Timed out waiting for flange button 1 press.")
                 robot_points.append(posture)
 
             # Persist user coordinate 5 using the captured points.
@@ -1052,7 +1076,8 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
     vis = frame.copy()
     if not layout_path.exists():
         PLATE_STATUS.update(
-            {"count": 0, "ok": False, "timestamp": time.time(), "message": "Layout not found"}
+            {"count": 0, "ok": False, "timestamp": time.time(),
+             "message": "Layout not found"}
         )
         return vis, "Calibration plate layout not found.", "Plate error: --"
     plate_layout = plate.load_plate_layout(layout_path)
@@ -1144,35 +1169,140 @@ def draw_monitor_overlay(frame: np.ndarray, marker_id: int) -> Tuple[np.ndarray,
 
 
 def build_header() -> dmc.AppShellHeader:
+    branding = dmc.Stack(
+        [
+            dmc.Text("Estun Codroid Pick-and-Place", className="app-title"),
+            dmc.Text("Vision + robot bring-up dashboard", size="sm", c="dimmed",
+                     className="app-tagline"),
+        ],
+        gap="xs",
+    )
+    badges = dmc.Group(
+        [
+            dmc.Badge("Camera: off", id="header-camera-badge",
+                      color="gray", variant="light"),
+            dmc.Badge("Robot: idle", id="header-robot-badge",
+                      color="gray", variant="light"),
+            dmc.Badge("Gripper: off", id="header-gripper-badge",
+                      color="gray", variant="light"),
+        ],
+        className="header-badges",
+    )
+    actions = dmc.Group(
+        [
+            badges,
+            dmc.Button("Setup", id="open-setup", variant="filled",
+                       color="brand", radius="xl", size="md"),
+        ],
+        className="header-actions",
+        align="center",
+    )
     return dmc.AppShellHeader(
         dmc.Group(
             [
-                dmc.Stack(
-                    [
-                        dmc.Text("Codroid Calibration Console",
-                                 className="app-title"),
-                        dmc.Text("Vision + robot bring-up dashboard",
-                                 size="sm", c="dimmed"),
-                    ],
-                    gap=2,
-                ),
                 dmc.Group(
-                    [
-                        dmc.Badge("Camera: off", id="header-camera-badge",
-                                  color="gray", variant="light"),
-                        dmc.Badge("Robot: idle", id="header-robot-badge",
-                                  color="gray", variant="light"),
-                        dmc.Button("Setup", id="open-setup",
-                                   variant="outline"),
-                    ],
+                    [branding],
+                    align="center",
                     gap="sm",
                 ),
+                actions,
             ],
             justify="space-between",
             align="center",
-            h=64,
-            px="md",
-        )
+            className="header-bar",
+        ),
+        className="app-header",
+        px="lg",
+        h=90,
+    )
+
+
+def build_footer() -> dmc.AppShellFooter:
+    stop_button = dmc.Button(
+        "STOP",
+        id="safety-stop",
+        color="red",
+        size="xl",
+        radius="xl",
+        variant="filled",
+        fullWidth=False,
+        style={
+            "fontWeight": 800,
+            "letterSpacing": "0.08em",
+            "padding": "22px 40px",
+            "minWidth": "300px",
+            "fontSize": "22px",
+            "backgroundImage": "repeating-linear-gradient(45deg, #ff4747 0, #ff4747 12px, #ffd447 12px, #ffd447 24px)",
+            "color": "#1f1f1f",
+            "border": "2px solid #8b0000",
+        },
+    )
+
+    speed_slider = dmc.Slider(
+        id="robot-speed-slider",
+        min=0,
+        max=100,
+        step=5,
+        value=50,
+        labelAlwaysOn=True,
+        marks=[{"value": 0, "label": "0"}, {"value": 50,
+                                            "label": "50"}, {"value": 100, "label": "100"}],
+        style={"flexGrow": 1, "minWidth": "200px"},
+    )
+
+    speed_controls = dmc.Group(
+        [
+            dmc.ActionIcon("-", id="robot-speed-decrease",
+                           variant="filled", color="gray", radius="xl", size="lg"),
+            speed_slider,
+            dmc.ActionIcon("+", id="robot-speed-increase",
+                           variant="filled", color="gray", radius="xl", size="lg"),
+        ],
+        gap="sm",
+        align="center",
+        justify="flex-end",
+        style={"flexGrow": 1},
+    )
+
+    left_block = dmc.Stack(
+        [
+            dmc.Text("Safety controls", fw=700, size="sm"),
+            stop_button,
+        ],
+        gap="xs",
+        align="flex-start",
+    )
+
+    right_block = dmc.Stack(
+        [
+            dmc.Text("Robot speed", fw=600, size="sm", ta="right"),
+            speed_controls,
+        ],
+        align="flex-end",
+        style={"flexGrow": 1, "minWidth": "320px"},
+    )
+
+    return dmc.AppShellFooter(
+        dmc.Container(
+            dmc.Card(
+                dmc.Group(
+                    [
+                        left_block,
+                        right_block,
+                    ],
+                    justify="space-between",
+                    gap="lg",
+                    align="center",
+                    style={"flexWrap": "wrap"},
+                    wrap="wrap",
+                ),
+                className="footer-panel",
+            ),
+            fluid=True,
+            px=0,
+        ),
+        h=120,
+        className="app-footer",
     )
 
 
@@ -1242,6 +1372,30 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Button("Test robot connection",
                            id="robot-test", variant="light"),
                 dmc.Text(id="robot-status-text", size="sm", c="dimmed"),
+                dmc.Divider(),
+                dmc.Text("OnRobot 2FG7 Gripper", fw=600),
+                dmc.TextInput(
+                    id="gripper-cb-ip",
+                    label="Compute Box IP Address",
+                    value=DEFAULT_GRIPPER_IP,
+                    placeholder="192.168.1.1",
+                    description="IP address of the OnRobot Compute Box",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Switch(
+                            id="gripper-enable",
+                            label="Enable gripper connection",
+                            checked=False,
+                            color="teal",
+                        ),
+                        dmc.Button("Test gripper",
+                                   id="gripper-test", variant="light"),
+                    ],
+                    gap="md",
+                ),
+                dmc.Text(id="gripper-status-text", size="sm", c="dimmed"),
+                html.Div(id="gripper-device-info"),
                 dmc.Group(
                     [
                         dmc.Button("Close", id="setup-close",
@@ -1840,10 +1994,23 @@ def build_monitoring_tab() -> dmc.Stack:
 
 
 def build_layout() -> dmc.MantineProvider:
+    brand_palette = [
+        "#e6f7f5",
+        "#c2f0ea",
+        "#99e2dd",
+        "#67d5d0",
+        "#3cc9c5",
+        "#22b3a7",
+        "#188f88",
+        "#0f6b66",
+        "#0a4b4a",
+        "#062b2e",
+    ]
     theme = {
         "fontFamily": "Space Grotesk, IBM Plex Sans, sans-serif",
         "headings": {"fontFamily": "Space Grotesk, IBM Plex Sans, sans-serif"},
-        "primaryColor": "teal",
+        "primaryColor": "brand",
+        "colors": {"brand": brand_palette},
     }
     return dmc.MantineProvider(
         theme=theme,
@@ -1855,13 +2022,16 @@ def build_layout() -> dmc.MantineProvider:
                     id="app-notifications", position="top-right", limit=3),
                 dcc.Store(id="camera-connection-state"),
                 dcc.Store(id="robot-connection-state"),
-                dcc.Store(id="notification-state",
-                          data={"camera": None, "robot": None}),
+                dcc.Store(
+                    id="notification-state",
+                    data={"camera": None, "robot": None},
+                ),
                 dcc.Store(id="calibration-progress-store",
                           data={"progress": 0}),
                 dcc.Store(
                     id="plate-detection-state",
-                    data={"count": 0, "ok": False, "timestamp": 0.0, "message": ""},
+                    data={"count": 0, "ok": False,
+                          "timestamp": 0.0, "message": ""},
                 ),
                 dcc.Store(
                     id="robot-calibration-state",
@@ -1869,15 +2039,23 @@ def build_layout() -> dmc.MantineProvider:
                 ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
-                dcc.Interval(id="camera-interval",
-                             interval=300, n_intervals=0),
+                dcc.Interval(
+                    id="camera-interval",
+                    interval=1000,  # throttle refresh to ~1 FPS to reduce browser churn
+                    n_intervals=0,
+                    disabled=True,
+                ),
                 dcc.Interval(id="calibration-progress-interval",
                              interval=100, n_intervals=0),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
                 build_setup_drawer(),
                 dmc.AppShell(
-                    [
+                    padding="md",
+                    className="app-shell",
+                    header={"height": 90},
+                    footer={"height": 120},
+                    children=[
                         build_header(),
                         dmc.AppShellMain(
                             dmc.Container(
@@ -1916,7 +2094,7 @@ def build_layout() -> dmc.MantineProvider:
                                                 id="main-tabs",
                                                 value="calibration",
                                                 variant="pills",
-                                                color="teal",
+                                                color="brand",
                                                 style={"width": "100%",
                                                        "marginBottom": "12px"},
                                             ),
@@ -1937,11 +2115,8 @@ def build_layout() -> dmc.MantineProvider:
                                 className="main-panel",
                             ),
                         ),
+                        build_footer(),
                     ],
-                    header={"height": 64},
-                    navbar={"width": 220, "breakpoint": "md",
-                            "collapsed": {"mobile": True}},
-                    padding="md",
                 ),
             ]
         ),
@@ -2063,7 +2238,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
 
-    # Auto-refresh camera image every 300ms
+    # Auto-refresh camera image (enabled only when camera is live)
     app.clientside_callback(
         """
         function(interval) {
@@ -2121,6 +2296,7 @@ def register_callbacks(app: Dash) -> None:
         Output("header-camera-badge", "color"),
         Output("camera-enable", "checked"),
         Output("camera-connection-state", "data"),
+        Output("camera-interval", "disabled"),
         Input("camera-enable", "checked"),
         Input("auto-init", "n_intervals"),
         State("camera-width", "value"),
@@ -2133,7 +2309,7 @@ def register_callbacks(app: Dash) -> None:
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
-    ) -> Tuple[str, str, str, bool, dict]:
+    ) -> Tuple[str, str, str, bool, dict, bool]:
         trigger = callback_context.triggered_id
         desired_checked = checked
         if trigger == "auto-init":
@@ -2141,14 +2317,52 @@ def register_callbacks(app: Dash) -> None:
         if desired_checked:
             try:
                 status = start_camera_stream(width, height, fps)
-                return status, "Camera: live", "teal", True, {"status": "live", "message": status}
+                return (
+                    status,
+                    "Camera: live",
+                    "teal",
+                    True,
+                    {"status": "live", "message": status},
+                    False,
+                )
             except Exception as exc:
                 stop_camera_stream()
                 error = f"Camera error: {exc}"
-                return error, "Camera: error", "red", False, {"status": "error", "message": error}
+                return (
+                    error,
+                    "Camera: error",
+                    "red",
+                    False,
+                    {"status": "error", "message": error},
+                    True,
+                )
         stop_camera_stream()
         stopped = "Camera stream stopped."
-        return stopped, "Camera: off", "gray", False, {"status": "off", "message": stopped}
+        return (
+            stopped,
+            "Camera: off",
+            "gray",
+            False,
+            {"status": "off", "message": stopped},
+            True,
+        )
+
+    @app.callback(
+        Output("robot-speed-slider", "value"),
+        Input("robot-speed-decrease", "n_clicks"),
+        Input("robot-speed-increase", "n_clicks"),
+        State("robot-speed-slider", "value"),
+        prevent_initial_call=True,
+    )
+    def _nudge_robot_speed(dec_clicks: Optional[int], inc_clicks: Optional[int], current: Optional[float]) -> float:
+        current_value = float(current or 0.0)
+        trigger = callback_context.triggered_id
+        step = 5.0
+        if trigger == "robot-speed-decrease":
+            return max(0.0, current_value - step)
+        if trigger == "robot-speed-increase":
+            return min(100.0, current_value + step)
+        return current_value
 
     @app.callback(
         Output("robot-status-text", "children"),
@@ -2177,6 +2391,140 @@ def register_callbacks(app: Dash) -> None:
         except Exception as exc:
             error = f"Robot connection failed: {exc}"
             return error, "Robot: error", "red", {"status": "error", "message": error}
+
+    @app.callback(
+        Output("gripper-status-text", "children"),
+        Output("gripper-device-info", "children"),
+        Output("header-gripper-badge", "children"),
+        Output("header-gripper-badge", "color"),
+        Input("gripper-test", "n_clicks"),
+        Input("gripper-enable", "checked"),
+        State("gripper-cb-ip", "value"),
+        prevent_initial_call=True,
+    )
+    def _handle_gripper(
+        _test_clicks: int,
+        enabled: bool,
+        cb_ip: str,
+    ) -> Tuple[str, html.Div, str, str]:
+        """Handle gripper connection and testing."""
+        trigger = callback_context.triggered_id
+
+        if not enabled and trigger == "gripper-enable":
+            # Disable gripper
+            if SESSION.gripper is not None:
+                SESSION.gripper = None
+                SESSION.gripper_device = None
+            return "Gripper disabled", html.Div(), "Gripper: off", "gray"
+
+        if not enabled:
+            return no_update, no_update, no_update, no_update
+
+        # Enable or test gripper
+        try:
+            if SESSION.gripper_device is None or SESSION.gripper_device.Global_cbip != cb_ip:
+                # Create new connection
+                device = GripperDevice(Global_cbip=cb_ip)
+                cb = device.getCB()
+
+                if cb is None:
+                    return (
+                        f"Failed to connect to Compute Box at {cb_ip}",
+                        html.Div(),
+                        "Gripper: error",
+                        "red",
+                    )
+
+                SESSION.gripper_device = device
+                SESSION.gripper = TwoFG7Gripper(device=device)
+
+            # Check gripper connection
+            if not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+                return (
+                    f"No 2FG7 gripper detected at Compute Box {cb_ip}",
+                    html.Div(
+                        dmc.Alert(
+                            "Ensure the 2FG7 gripper is connected to the Compute Box "
+                            "and powered on. Check the tool index setting if using "
+                            "a dual gripper setup.",
+                            title="Gripper Not Detected",
+                            color="yellow",
+                        )
+                    ),
+                    "Gripper: error",
+                    "yellow",
+                )
+
+            # Get gripper status and information
+            status_text = f"2FG7 connected at {cb_ip}"
+            t_index = GRIPPER_DEFAULTS["t_index"]
+
+            # Query gripper state
+            width = SESSION.gripper.get_ext_width(t_index=t_index)
+            force = SESSION.gripper.get_force(t_index=t_index)
+            is_gripped = SESSION.gripper.isGripped(t_index=t_index)
+
+            info_card = html.Div(
+                dmc.Card(
+                    [
+                        dmc.Group(
+                            [
+                                dmc.Stack(
+                                    [
+                                        dmc.Text(
+                                            "Width", size="sm", c="dimmed"),
+                                        dmc.Text(
+                                            f"{width:.1f} mm" if isinstance(
+                                                width, (int, float)) and width > -2 else "N/A",
+                                            fw=500,
+                                        ),
+                                    ],
+                                    gap=0,
+                                ),
+                                dmc.Stack(
+                                    [
+                                        dmc.Text(
+                                            "Force", size="sm", c="dimmed"),
+                                        dmc.Text(
+                                            f"{force:.1f} N" if isinstance(
+                                                force, (int, float)) and force > -2 else "N/A",
+                                            fw=500,
+                                        ),
+                                    ],
+                                    gap=0,
+                                ),
+                                dmc.Stack(
+                                    [
+                                        dmc.Text(
+                                            "Status", size="sm", c="dimmed"),
+                                        dmc.Badge(
+                                            "Gripped" if is_gripped else "Open",
+                                            color="teal" if is_gripped else "gray",
+                                            variant="light",
+                                        ),
+                                    ],
+                                    gap=0,
+                                ),
+                            ],
+                            grow=True,
+                        ),
+                    ],
+                    withBorder=True,
+                    padding="sm",
+                    mt="xs",
+                )
+            )
+
+            return status_text, info_card, "Gripper: online", "teal"
+
+        except Exception as exc:
+            LOGGER.exception("Gripper test failed")
+            return (
+                f"Gripper test failed: {exc}",
+                html.Div(),
+                "Gripper: error",
+                "red",
+            )
 
     @app.callback(
         Output("model-status", "children"),
@@ -2334,19 +2682,25 @@ def register_callbacks(app: Dash) -> None:
                 return f"Drop marker detection failed: {exc}"
 
         if trigger in ("gripper-open", "gripper-close"):
-            if not gripper_path:
-                return "Gripper path is empty; configure a control path."
-            value = gripper_open_val if trigger == "gripper-open" else gripper_close_val
+            # Check if gripper is connected
+            if SESSION.gripper is None or not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+                return "Gripper is not connected. Enable gripper in Setup menu."
 
-            async def _action(robot_api: CodroidAPI) -> None:
-                await robot_api.set_param(gripper_path, value)
+            # Determine target width
+            value = gripper_open_val if trigger == "gripper-open" else gripper_close_val
+            t_index = GRIPPER_DEFAULTS["t_index"]
 
             try:
-                asyncio.run(_with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _action))
-                SESSION.last_action = f"Gripper command sent ({value})."
-                return f"Gripper command sent ({value})."
+                # Command gripper to move to target width (move without grip detection)
+                SESSION.gripper.move(
+                    t_index=t_index, t_width=value, f_wait=True)
+
+                action = "opened" if trigger == "gripper-open" else "closed"
+                SESSION.last_action = f"Gripper {action} to {value:.1f} mm."
+                return f"Gripper {action} to {value:.1f} mm."
+
             except Exception as exc:
+                LOGGER.exception("Gripper command failed")
                 return f"Gripper action failed: {exc}"
 
         if SESSION.workspace_definition is None:
@@ -2789,7 +3143,8 @@ def register_callbacks(app: Dash) -> None:
                 return f"Plate detection failed: {exc}", "Plate error: --"
         if trigger == "attach-plate":
             try:
-                status = attach_plate_calibration(DEFAULT_BUNDLE_PATH, layout_path)
+                status = attach_plate_calibration(
+                    DEFAULT_BUNDLE_PATH, layout_path)
                 return status, "Plate attached to bundle."
             except Exception as exc:
                 return f"Attach failed: {exc}", "Plate error: --"
@@ -2985,7 +3340,8 @@ def register_callbacks(app: Dash) -> None:
             calib_state = {"status": "running", "message": message}
             # Run calibration synchronously for now.
             robot_points, coord_frame = asyncio.run(
-                _run_robot_plate_calibration(robot_uri or DEFAULT_ROBOT_URI, plate_layout)
+                _run_robot_plate_calibration(
+                    robot_uri or DEFAULT_ROBOT_URI, plate_layout)
             )
             transform = _apply_robot_calibration_results(
                 robot_points,
@@ -3006,8 +3362,13 @@ def register_callbacks(app: Dash) -> None:
 
 
 def create_app() -> Dash:
-    app = Dash(__name__)
-    app.title = "Codroid Calibration Console"
+    app = Dash(
+        __name__,
+        assets_folder=str(ASSETS_DIR),
+        suppress_callback_exceptions=True,
+    )
+    app.title = "Estun Codroid Pick-and-Place"
+    app._favicon = "favicon.ico"
     app.layout = build_layout()
     register_callbacks(app)
 
