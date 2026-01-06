@@ -43,7 +43,8 @@ except Exception as e:
 # Test 4: Verify TWOFG methods
 print("\n4. Testing TWOFG class methods...")
 twofg_methods = [m for m in dir(TWOFG) if not m.startswith('_')]
-required_methods = ['isConnected', 'isGripped', 'get_ext_width', 'get_force', 'move', 'grip']
+required_methods = ['isConnected', 'isGripped',
+                    'get_ext_width', 'get_force', 'move', 'grip']
 for method in required_methods:
     if method in twofg_methods:
         print(f"   ✓ {method}() available")
@@ -71,7 +72,7 @@ try:
         else:
             print("   ✗ GripperDevice import not found")
             sys.exit(1)
-        
+
         if 'from onrobot.twofg import TWOFG as TwoFG7Gripper' in content:
             print("   ✓ TwoFG7Gripper import found")
         else:
