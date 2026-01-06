@@ -344,62 +344,67 @@ def get_gpu_info() -> dict:
         "gpu_count": 0,
         "devices": [],
     }
-    
+
     # Check CUDA availability via PyTorch
     if TORCH_AVAILABLE:
         info["cuda_available"] = torch.cuda.is_available()
         if info["cuda_available"]:
             info["cuda_version"] = torch.version.cuda or "N/A"
             info["gpu_count"] = torch.cuda.device_count()
-    
+
     # Get detailed GPU info via NVML
     if not NVML_AVAILABLE:
         return info
-    
+
     try:
         pynvml.nvmlInit()
         device_count = pynvml.nvmlDeviceGetCount()
         info["available"] = device_count > 0
-        
+
         for i in range(device_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
             name = pynvml.nvmlDeviceGetName(handle)
             if isinstance(name, bytes):
                 name = name.decode("utf-8")
-            
+
             # Get memory info
             mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             mem_used_mb = mem_info.used / (1024 ** 2)
             mem_total_mb = mem_info.total / (1024 ** 2)
-            mem_percent = (mem_info.used / mem_info.total) * 100 if mem_info.total > 0 else 0
-            
+            mem_percent = (mem_info.used / mem_info.total) * \
+                100 if mem_info.total > 0 else 0
+
             # Get utilization
             try:
                 util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                 gpu_util = util.gpu
             except Exception:
                 gpu_util = 0
-            
+
             # Get clock speeds
             try:
-                clock_graphics = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
-                clock_mem = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+                clock_graphics = pynvml.nvmlDeviceGetClockInfo(
+                    handle, pynvml.NVML_CLOCK_GRAPHICS)
+                clock_mem = pynvml.nvmlDeviceGetClockInfo(
+                    handle, pynvml.NVML_CLOCK_MEM)
             except Exception:
                 clock_graphics = 0
                 clock_mem = 0
-            
+
             # Get temperature
             try:
-                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                temp = pynvml.nvmlDeviceGetTemperature(
+                    handle, pynvml.NVML_TEMPERATURE_GPU)
             except Exception:
                 temp = 0
-            
+
             # Get power usage
             try:
-                power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # mW to W
+                power = pynvml.nvmlDeviceGetPowerUsage(
+                    handle) / 1000.0  # mW to W
             except Exception:
                 power = 0
-            
+
             device_info = {
                 "index": i,
                 "name": name,
@@ -413,7 +418,7 @@ def get_gpu_info() -> dict:
                 "power_watts": round(power, 1),
             }
             info["devices"].append(device_info)
-            
+
             if i == 0:
                 info["name"] = name
                 try:
@@ -423,18 +428,18 @@ def get_gpu_info() -> dict:
                     info["driver_version"] = driver_version
                 except Exception:
                     pass
-        
+
         pynvml.nvmlShutdown()
     except Exception as exc:
         LOGGER.warning("Failed to get GPU info via NVML: %s", exc)
-    
+
     return info
 
 
 def format_gpu_status() -> list:
     """Format GPU status for display in the UI."""
     gpu_info = get_gpu_info()
-    
+
     if not gpu_info["available"]:
         return [
             dmc.Alert(
@@ -443,28 +448,31 @@ def format_gpu_status() -> list:
                 title="GPU Status",
             )
         ]
-    
+
     elements = []
-    
+
     # Overall status
     cuda_status = "✓ Available" if gpu_info["cuda_available"] else "✗ Not available"
     elements.append(
         dmc.Group(
             [
-                dmc.Badge(f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
-                dmc.Badge(f"Driver: {gpu_info['driver_version']}", color="blue"),
+                dmc.Badge(
+                    f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
+                dmc.Badge(
+                    f"Driver: {gpu_info['driver_version']}", color="blue"),
                 dmc.Badge(f"{gpu_info['gpu_count']} GPU(s)", color="teal"),
             ],
             gap="xs",
         )
     )
-    
+
     # Per-device info
     for dev in gpu_info["devices"]:
         elements.append(
             dmc.Card(
                 [
-                    dmc.Text(f"GPU {dev['index']}: {dev['name']}", fw=600, size="sm"),
+                    dmc.Text(
+                        f"GPU {dev['index']}: {dev['name']}", fw=600, size="sm"),
                     dmc.Group(
                         [
                             dmc.Stack(
@@ -479,29 +487,34 @@ def format_gpu_status() -> list:
                             ),
                             dmc.Stack(
                                 [
-                                    dmc.Text("GPU Usage", size="xs", c="dimmed"),
-                                    dmc.Text(f"{dev['gpu_utilization']}%", size="sm"),
+                                    dmc.Text(
+                                        "GPU Usage", size="xs", c="dimmed"),
+                                    dmc.Text(
+                                        f"{dev['gpu_utilization']}%", size="sm"),
                                 ],
                                 gap=2,
                             ),
                             dmc.Stack(
                                 [
                                     dmc.Text("Clock", size="xs", c="dimmed"),
-                                    dmc.Text(f"{dev['clock_graphics_mhz']} MHz", size="sm"),
+                                    dmc.Text(
+                                        f"{dev['clock_graphics_mhz']} MHz", size="sm"),
                                 ],
                                 gap=2,
                             ),
                             dmc.Stack(
                                 [
                                     dmc.Text("Temp", size="xs", c="dimmed"),
-                                    dmc.Text(f"{dev['temperature_c']}°C", size="sm"),
+                                    dmc.Text(
+                                        f"{dev['temperature_c']}°C", size="sm"),
                                 ],
                                 gap=2,
                             ),
                             dmc.Stack(
                                 [
                                     dmc.Text("Power", size="xs", c="dimmed"),
-                                    dmc.Text(f"{dev['power_watts']:.1f} W", size="sm"),
+                                    dmc.Text(
+                                        f"{dev['power_watts']:.1f} W", size="sm"),
                                 ],
                                 gap=2,
                             ),
@@ -514,7 +527,7 @@ def format_gpu_status() -> list:
                 radius="md",
             )
         )
-    
+
     return elements
 
 
@@ -649,12 +662,12 @@ def _run_detection(
     if class_filter:
         classes = [int(val.strip())
                    for val in class_filter.split(",") if val.strip().isdigit()]
-    
+
     # Crop to workspace region if workspace is defined
     crop_offset_x = 0
     crop_offset_y = 0
     detection_frame = frame
-    
+
     if SESSION.workspace_definition is not None:
         try:
             corners = _workspace_corners_px(SESSION.workspace_definition)
@@ -663,20 +676,21 @@ def _run_detection(
             y_min = int(np.min(corners[:, 1]))
             x_max = int(np.max(corners[:, 0]))
             y_max = int(np.max(corners[:, 1]))
-            
+
             # Clamp to frame bounds
             x_min = max(0, x_min)
             y_min = max(0, y_min)
             x_max = min(frame.shape[1], x_max)
             y_max = min(frame.shape[0], y_max)
-            
+
             # Crop frame to workspace region
             detection_frame = frame[y_min:y_max, x_min:x_max]
             crop_offset_x = x_min
             crop_offset_y = y_min
         except Exception as exc:
-            logging.debug("Could not crop to workspace, using full frame: %s", exc)
-    
+            logging.debug(
+                "Could not crop to workspace, using full frame: %s", exc)
+
     results = SESSION.yolo_model.predict(
         detection_frame,
         conf=confidence,
@@ -1103,22 +1117,27 @@ async def _run_robot_plate_calibration(
 
             for idx in range(3):
                 _ensure_plate_visible()
-                point_labels = ["Point 1 (Origin)", "Point 2 (+X)", "Point 3 (+X/+Y)"]
-                point_label = point_labels[idx] if idx < len(point_labels) else f"Point {idx + 1}"
-                LOGGER.info(f"Step {idx + 1}/3: Waiting for gripper to align with {point_label}...")
-                
+                point_labels = [
+                    "Point 1 (Origin)", "Point 2 (+X)", "Point 3 (+X/+Y)"]
+                point_label = point_labels[idx] if idx < len(
+                    point_labels) else f"Point {idx + 1}"
+                LOGGER.info(
+                    f"Step {idx + 1}/3: Waiting for gripper to align with {point_label}...")
+
                 try:
                     posture = await asyncio.wait_for(press_queue.get(), timeout=90.0)
                 except asyncio.TimeoutError:
                     raise RuntimeError(
                         f"Timed out waiting for flange button 1 press at {point_label}. "
                         f"Move gripper to the groove target and press the flange button.")
-                
-                LOGGER.info(f"✓ {point_label} captured. Position: X={posture.get('x'):.1f}, Y={posture.get('y'):.1f}, Z={posture.get('z'):.1f}")
+
+                LOGGER.info(
+                    f"✓ {point_label} captured. Position: X={posture.get('x'):.1f}, Y={posture.get('y'):.1f}, Z={posture.get('z'):.1f}")
                 robot_points.append(posture)
 
             # Persist user coordinate 5 using the captured points.
-            LOGGER.info("Computing coordinate transformation from 3 calibration points...")
+            LOGGER.info(
+                "Computing coordinate transformation from 3 calibration points...")
             cpos_points = [
                 CodroidAPI.build_target_cpos(
                     x=float(pt["x"]),
@@ -1137,7 +1156,8 @@ async def _run_robot_plate_calibration(
             )
             if coord_frame:
                 await robot_api.change_coordinate_parameter(ROBOT_COORDINATE_ID, coord_frame)
-            LOGGER.info("✓ Robot calibration complete. Coordinate ID 5 is now active.")
+            LOGGER.info(
+                "✓ Robot calibration complete. Coordinate ID 5 is now active.")
             return robot_points, coord_frame or {}
         finally:
             poll_task.cancel()
@@ -1200,22 +1220,26 @@ def _workspace_corners_px(workspace_def: workspace.WorkspaceDefinition) -> np.nd
     # We need calibration to convert mm back to pixels
     if SESSION.calibration_bundle is None:
         raise RuntimeError("Calibration bundle required to display workspace")
-    
+
     scale = SESSION.calibration_bundle.pixel_to_mm
     if scale == 0:
-        raise RuntimeError("Workspace scale is zero; recompute workspace markers.")
-    
+        raise RuntimeError(
+            "Workspace scale is zero; recompute workspace markers.")
+
     # Convert origin from mm to pixels
-    origin_px = np.array([workspace_def.origin_camera[0], workspace_def.origin_camera[1]]) / scale
-    
+    origin_px = np.array([workspace_def.origin_camera[0],
+                         workspace_def.origin_camera[1]]) / scale
+
     # Convert width and height from mm to pixels
     width_px = workspace_def.width_mm / scale
     height_px = workspace_def.height_mm / scale
-    
+
     # Extract 2D axes (they are already normalized directions in mm-space)
-    x_dir = np.array([workspace_def.x_axis_camera[0], workspace_def.x_axis_camera[1]])
-    y_dir = np.array([workspace_def.y_axis_camera[0], workspace_def.y_axis_camera[1]])
-    
+    x_dir = np.array([workspace_def.x_axis_camera[0],
+                     workspace_def.x_axis_camera[1]])
+    y_dir = np.array([workspace_def.y_axis_camera[0],
+                     workspace_def.y_axis_camera[1]])
+
     # Normalize to ensure they are unit vectors
     x_len = np.linalg.norm(x_dir)
     y_len = np.linalg.norm(y_dir)
@@ -1223,12 +1247,12 @@ def _workspace_corners_px(workspace_def: workspace.WorkspaceDefinition) -> np.nd
         x_dir = x_dir / x_len
     if y_len > 0:
         y_dir = y_dir / y_len
-    
+
     # Build rotated rectangle corners
     points = np.asarray(
         [
             origin_px,  # top-left
-            origin_px + width_px * x_dir,  # top-right  
+            origin_px + width_px * x_dir,  # top-right
             origin_px + width_px * x_dir + height_px * y_dir,  # bottom-right
             origin_px + height_px * y_dir,  # bottom-left
         ],
@@ -1335,6 +1359,7 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
 _workspace_rect_buffer = []
 _WORKSPACE_SMOOTH_FRAMES = 5
 
+
 def draw_workspace_overlay(
     frame: np.ndarray,
     marker_ids: Tuple[int, int],
@@ -1400,21 +1425,24 @@ def draw_workspace_overlay(
         if marker_a_center is not None and marker_b_center is not None:
             # Use marker_a orientation to define the rectangle axes
             marker_a_corners = detected_map[marker_ids[0]]['corners']
-            
+
             # X-axis: direction from left edge to right edge of marker_a
-            x_axis_px = marker_a_corners[1] - marker_a_corners[0]  # top-right - top-left
-            x_axis_norm = x_axis_px / np.linalg.norm(x_axis_px) if np.linalg.norm(x_axis_px) > 0 else np.array([1.0, 0.0])
-            
+            # top-right - top-left
+            x_axis_px = marker_a_corners[1] - marker_a_corners[0]
+            x_axis_norm = x_axis_px / \
+                np.linalg.norm(x_axis_px) if np.linalg.norm(
+                    x_axis_px) > 0 else np.array([1.0, 0.0])
+
             # Y-axis: perpendicular to x-axis (rotate 90 degrees)
             y_axis_norm = np.array([-x_axis_norm[1], x_axis_norm[0]])
-            
+
             # Diagonal from marker_a to marker_b
             diagonal = np.array(marker_b_center) - np.array(marker_a_center)
-            
+
             # Project diagonal onto the rotated axes
             width_px = np.dot(diagonal, x_axis_norm)
             height_px = np.dot(diagonal, y_axis_norm)
-            
+
             # Compute the four corners of the rotated rectangle
             # Start at marker_a center and build rectangle using the projected dimensions
             origin = np.array(marker_a_center, dtype=float)
@@ -1422,27 +1450,30 @@ def draw_workspace_overlay(
             corner_tr = origin + width_px * x_axis_norm  # move right
             corner_br = origin + width_px * x_axis_norm + height_px * y_axis_norm  # diagonal
             corner_bl = origin + height_px * y_axis_norm  # move down
-            
+
             # Compute current rectangle corners
-            rect_corners_float = np.array([corner_tl, corner_tr, corner_br, corner_bl], dtype=np.float64)
-            
+            rect_corners_float = np.array(
+                [corner_tl, corner_tr, corner_br, corner_bl], dtype=np.float64)
+
             # Apply temporal smoothing to reduce jitter
             _workspace_rect_buffer.append(rect_corners_float)
             if len(_workspace_rect_buffer) > _WORKSPACE_SMOOTH_FRAMES:
                 _workspace_rect_buffer.pop(0)
-            
+
             # Average the buffered corner positions
             if len(_workspace_rect_buffer) > 0:
                 rect_corners_smoothed = np.mean(_workspace_rect_buffer, axis=0)
                 rect_corners = np.round(rect_corners_smoothed).astype(np.int32)
             else:
                 rect_corners = np.round(rect_corners_float).astype(np.int32)
-            
+
             # Draw the rotated rectangle
-            cv2.polylines(vis, [rect_corners], isClosed=True, color=(0, 255, 255), thickness=2)
-            
+            cv2.polylines(vis, [rect_corners], isClosed=True,
+                          color=(0, 255, 255), thickness=2)
+
             # Draw diagonal for reference
-            cv2.line(vis, tuple(rect_corners[0]), tuple(rect_corners[2]), (0, 255, 255), 1)
+            cv2.line(vis, tuple(rect_corners[0]), tuple(
+                rect_corners[2]), (0, 255, 255), 1)
 
         status = "Workspace markers detected."
 
@@ -1526,7 +1557,7 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
 
 def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     vis = frame.copy()
-    
+
     # Run detection continuously if enabled and model is loaded
     if SESSION.continuous_detection and SESSION.model_loaded and SESSION.yolo_model is not None:
         try:
@@ -1542,12 +1573,12 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
         except Exception as exc:
             SESSION.last_detection_error = str(exc)
             LOGGER.warning("Continuous detection failed: %s", exc)
-    
+
     detections = SESSION.detections or []
     if not detections:
         msg = "Continuous detection: waiting..." if SESSION.continuous_detection else "No detections available."
         return vis, msg, "Detections: 0"
-    
+
     for det in detections:
         x1, y1, x2, y2 = [int(val) for val in det["bbox"]]
         label = det.get("label", "object")
@@ -1849,9 +1880,11 @@ def build_footer() -> dmc.AppShellFooter:
 
     width_controls = dmc.Group(
         [
-            dmc.ActionIcon("-", id="footer-gripper-width-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("-", id="footer-gripper-width-decrease",
+                           variant="light", color="gray", radius="xl", size="lg"),
             fine_width_slider,
-            dmc.ActionIcon("+", id="footer-gripper-width-increase", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("+", id="footer-gripper-width-increase",
+                           variant="light", color="gray", radius="xl", size="lg"),
         ],
         gap="sm",
         align="center",
@@ -1860,9 +1893,11 @@ def build_footer() -> dmc.AppShellFooter:
 
     force_controls = dmc.Group(
         [
-            dmc.ActionIcon("-", id="footer-gripper-force-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("-", id="footer-gripper-force-decrease",
+                           variant="light", color="gray", radius="xl", size="lg"),
             fine_force_slider,
-            dmc.ActionIcon("+", id="footer-gripper-force-increase", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("+", id="footer-gripper-force-increase",
+                           variant="light", color="gray", radius="xl", size="lg"),
         ],
         gap="sm",
         align="center",
@@ -1871,9 +1906,11 @@ def build_footer() -> dmc.AppShellFooter:
 
     speed_controls = dmc.Group(
         [
-            dmc.ActionIcon("-", id="footer-gripper-speed-decrease", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("-", id="footer-gripper-speed-decrease",
+                           variant="light", color="gray", radius="xl", size="lg"),
             fine_speed_slider,
-            dmc.ActionIcon("+", id="footer-gripper-speed-increase", variant="light", color="gray", radius="xl", size="lg"),
+            dmc.ActionIcon("+", id="footer-gripper-speed-increase",
+                           variant="light", color="gray", radius="xl", size="lg"),
         ],
         gap="sm",
         align="center",
@@ -2397,7 +2434,8 @@ def build_detection_tab() -> dmc.Stack:
     gpu_card = dmc.Card(
         [
             dmc.Text("GPU Status", fw=600, size="lg"),
-            dmc.Stack(id="gpu-status-display", gap="xs", children=format_gpu_status()),
+            dmc.Stack(id="gpu-status-display", gap="xs",
+                      children=format_gpu_status()),
         ],
         withBorder=True,
         radius="lg",
@@ -2480,7 +2518,8 @@ def build_detection_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
-            dmc.Button("Run detection once", id="run-detection", variant="light"),
+            dmc.Button("Run detection once",
+                       id="run-detection", variant="light"),
             dmc.Text(id="detection-status", size="sm", c="dimmed"),
             dmc.Text(id="detection-metrics", size="sm"),
         ],
@@ -3556,20 +3595,21 @@ def register_callbacks(app: Dash) -> None:
         """Update detection display from continuous detection results."""
         if not continuous_enabled:
             return no_update, no_update, no_update
-        
+
         detections = SESSION.detections or []
         detection_list = _format_detection_list(detections)
-        
+
         options = []
         for idx, det in enumerate(detections):
             label = det.get("label", "object")
             conf = det.get("confidence", 0.0)
-            options.append({"value": str(idx), "label": f"{idx + 1}: {label} ({conf:.2f})"})
-        
+            options.append(
+                {"value": str(idx), "label": f"{idx + 1}: {label} ({conf:.2f})"})
+
         metrics = f"Live: {len(detections)} object(s)"
         if SESSION.last_detection_error:
             metrics = f"Error: {SESSION.last_detection_error}"
-        
+
         return detection_list, options, metrics
 
     @app.callback(
@@ -3750,7 +3790,8 @@ def register_callbacks(app: Dash) -> None:
             applied_force = _safe_int(footer_force, 100)
             applied_speed = _safe_int(footer_speed, 80)
             if trigger == "footer-gripper-open":
-                width = _safe_float(gripper_open_value, _safe_float(footer_width, 1.0))
+                width = _safe_float(gripper_open_value,
+                                    _safe_float(footer_width, 1.0))
                 return _command_gripper(
                     width,
                     "opened",
@@ -3758,7 +3799,8 @@ def register_callbacks(app: Dash) -> None:
                     speed=applied_speed,
                 )
             if trigger == "footer-gripper-close":
-                width = _safe_float(gripper_close_value, _safe_float(footer_width, 0.0))
+                width = _safe_float(gripper_close_value,
+                                    _safe_float(footer_width, 0.0))
                 return _command_gripper(
                     width,
                     "closed",
@@ -3767,7 +3809,8 @@ def register_callbacks(app: Dash) -> None:
                     prevent_overclose=True,
                 )
             if trigger in {"footer-gripper-width", "footer-gripper-force", "footer-gripper-speed"}:
-                width = _safe_float(footer_width, _safe_float(gripper_close_value, 0.0))
+                width = _safe_float(
+                    footer_width, _safe_float(gripper_close_value, 0.0))
                 return _command_gripper(
                     width,
                     "moved",
@@ -4197,7 +4240,8 @@ def register_callbacks(app: Dash) -> None:
             # Only log every 30 calls to reduce noise
             if _ticks % 30 == 0:
                 is_running = SESSION.camera_stream and SESSION.camera_stream.is_running()
-                logging.info("No frame from camera. Stream running: %s", is_running)
+                logging.info(
+                    "No frame from camera. Stream running: %s", is_running)
             return (
                 "Camera stream is stopped.",
                 overlay_fps_text,
@@ -4359,7 +4403,7 @@ def register_callbacks(app: Dash) -> None:
         ok = bool(state.get("ok"))
         in_progress = (calib_state or {}).get("status") == "running"
         robot_online = (robot_conn_state or {}).get("status") == "online"
-        
+
         # Determine message based on the actual blocking issue
         if in_progress:
             message = "Calibration in progress..."
@@ -4373,7 +4417,7 @@ def register_callbacks(app: Dash) -> None:
         else:
             message = "Plate markers stable. Ready to calibrate."
             color = "green"
-        
+
         disabled = not ok or in_progress or not robot_online
         variant = "filled" if not disabled else "light"
         return message, color, disabled, variant
@@ -4402,11 +4446,12 @@ def register_callbacks(app: Dash) -> None:
             layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
             plate_layout = plate.load_plate_layout(layout_path)
             _ensure_plate_visible()
-            
+
             # Initial guidance message
             initial_message = "🤖 Robot Calibration Started\n\nStep 1/3: Move to Point 1 (origin), then press flange button 1..."
-            initial_state = {"status": "running", "message": initial_message, "current_point": 1}
-            
+            initial_state = {"status": "running",
+                             "message": initial_message, "current_point": 1}
+
             # Run calibration synchronously for now.
             robot_points, coord_frame = asyncio.run(
                 _run_robot_plate_calibration(
@@ -4483,14 +4528,14 @@ def create_app() -> Dash:
             prereqs.get("model_loaded", False),
             prereqs.get("gripper_ready", False),
         ])
-        
+
         running = (auto_state or {}).get("running", False)
-        
+
         # Start button: enabled only when all prerequisites met and not running
         start_disabled = not all_ready or running
         # Stop button: enabled only when running
         stop_disabled = not running
-        
+
         return start_disabled, stop_disabled
 
     @app.callback(
@@ -4510,9 +4555,9 @@ def create_app() -> Dash:
         ctx = callback_context
         if not ctx.triggered:
             return no_update, no_update
-        
+
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        
+
         if trigger_id == "auto-start":
             # TODO: Start the auto pick & place operation
             LOGGER.info("Starting auto pick & place operation")
@@ -4537,7 +4582,7 @@ def create_app() -> Dash:
                     action="show",
                 ),
             )
-        
+
         return no_update, no_update
 
     @app.server.route("/video_feed")
