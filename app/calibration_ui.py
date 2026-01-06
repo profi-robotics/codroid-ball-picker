@@ -4431,7 +4431,7 @@ def register_callbacks(app: Dash) -> None:
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
-    def _start_robot_calibration(
+    async def _start_robot_calibration(
         _clicks: int,
         plate_layout_path: str,
         plate_state: Optional[dict],
@@ -4452,11 +4452,9 @@ def register_callbacks(app: Dash) -> None:
             initial_state = {"status": "running",
                              "message": initial_message, "current_point": 1}
 
-            # Run calibration synchronously for now.
-            robot_points, coord_frame = asyncio.run(
-                _run_robot_plate_calibration(
-                    robot_uri or DEFAULT_ROBOT_URI, plate_layout)
-            )
+            # Run calibration asynchronously (await works in async callback)
+            robot_points, coord_frame = await _run_robot_plate_calibration(
+                robot_uri or DEFAULT_ROBOT_URI, plate_layout)
             _transform = _apply_robot_calibration_results(
                 robot_points,
                 plate_layout,

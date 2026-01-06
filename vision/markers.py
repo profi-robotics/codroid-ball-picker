@@ -44,6 +44,29 @@ def _detect_all_markers(
     dictionary = _get_dictionary(dictionary_name)
     parameters = cv2.aruco.DetectorParameters()
     parameters.detectInvertedMarker = True
+
+    # Optimize detection for small markers (20mm) by using smaller adaptive threshold windows
+    # This prevents the threshold window from being too large and "breaking" small markers
+    # Smaller minimum for small markers (default: 3)
+    parameters.adaptiveThreshWinSizeMin = 3
+    # Reasonable maximum (default: 23)
+    parameters.adaptiveThreshWinSizeMax = 23
+    # More granular steps (default: 10)
+    parameters.adaptiveThreshWinSizeStep = 4
+
+    # Lower the minimum marker perimeter rate to detect smaller markers more reliably
+    # This is the ratio of marker perimeter to image perimeter
+    parameters.minMarkerPerimeterRate = 0.01  # More lenient (default: 0.03)
+
+    # Improve corner refinement for more accurate detection
+    parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    # Small window for precision (default: 5)
+    parameters.cornerRefinementWinSize = 3
+
+    # Relax polygon approximation to better handle slightly distorted markers
+    # More lenient (default: 0.03)
+    parameters.polygonalApproxAccuracyRate = 0.05
+
     detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
