@@ -128,6 +128,11 @@ class UISession:
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
     last_frame_id: int = 0  # Track frame changes to avoid duplicate stream pushes
+    continuous_detection: bool = False  # Enable continuous detection mode
+    detection_confidence: float = 0.7
+    detection_iou: float = 0.45
+    detection_max: int = 10
+    detection_classes: Optional[str] = None
 
 
 SESSION = UISession(
@@ -644,8 +649,36 @@ def _run_detection(
     if class_filter:
         classes = [int(val.strip())
                    for val in class_filter.split(",") if val.strip().isdigit()]
+    
+    # Crop to workspace region if workspace is defined
+    crop_offset_x = 0
+    crop_offset_y = 0
+    detection_frame = frame
+    
+    if SESSION.workspace_definition is not None:
+        try:
+            corners = _workspace_corners_px(SESSION.workspace_definition)
+            # Get bounding box of workspace region
+            x_min = int(np.min(corners[:, 0]))
+            y_min = int(np.min(corners[:, 1]))
+            x_max = int(np.max(corners[:, 0]))
+            y_max = int(np.max(corners[:, 1]))
+            
+            # Clamp to frame bounds
+            x_min = max(0, x_min)
+            y_min = max(0, y_min)
+            x_max = min(frame.shape[1], x_max)
+            y_max = min(frame.shape[0], y_max)
+            
+            # Crop frame to workspace region
+            detection_frame = frame[y_min:y_max, x_min:x_max]
+            crop_offset_x = x_min
+            crop_offset_y = y_min
+        except Exception as exc:
+            logging.debug("Could not crop to workspace, using full frame: %s", exc)
+    
     results = SESSION.yolo_model.predict(
-        frame,
+        detection_frame,
         conf=confidence,
         iou=iou,
         max_det=max_detections,
@@ -663,7 +696,12 @@ def _run_detection(
         confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else boxes.conf
         clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else boxes.cls
         for box, conf, cls_idx in zip(xyxy, confs, clss):
+            # Adjust coordinates back to full frame
             x1, y1, x2, y2 = [float(val) for val in box]
+            x1 += crop_offset_x
+            y1 += crop_offset_y
+            x2 += crop_offset_x
+            y2 += crop_offset_y
             center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
             label = str(int(cls_idx))
             if hasattr(SESSION.yolo_model, "names"):
@@ -1148,20 +1186,42 @@ def _draw_label(frame: np.ndarray, text: str, origin: Tuple[int, int], color: Tu
 
 
 def _workspace_corners_px(workspace_def: workspace.WorkspaceDefinition) -> np.ndarray:
-    scale = float(workspace_def.x_axis_camera[0])
+    # Workspace definition stores everything in mm in camera coordinates
+    # The axes are normalized direction vectors
+    # We need calibration to convert mm back to pixels
+    if SESSION.calibration_bundle is None:
+        raise RuntimeError("Calibration bundle required to display workspace")
+    
+    scale = SESSION.calibration_bundle.pixel_to_mm
     if scale == 0:
-        raise RuntimeError(
-            "Workspace scale is zero; recompute workspace markers.")
-    origin_px_x = workspace_def.origin_camera[0] / scale
-    origin_px_y = workspace_def.origin_camera[1] / scale
+        raise RuntimeError("Workspace scale is zero; recompute workspace markers.")
+    
+    # Convert origin from mm to pixels
+    origin_px = np.array([workspace_def.origin_camera[0], workspace_def.origin_camera[1]]) / scale
+    
+    # Convert width and height from mm to pixels
     width_px = workspace_def.width_mm / scale
     height_px = workspace_def.height_mm / scale
+    
+    # Extract 2D axes (they are already normalized directions in mm-space)
+    x_dir = np.array([workspace_def.x_axis_camera[0], workspace_def.x_axis_camera[1]])
+    y_dir = np.array([workspace_def.y_axis_camera[0], workspace_def.y_axis_camera[1]])
+    
+    # Normalize to ensure they are unit vectors
+    x_len = np.linalg.norm(x_dir)
+    y_len = np.linalg.norm(y_dir)
+    if x_len > 0:
+        x_dir = x_dir / x_len
+    if y_len > 0:
+        y_dir = y_dir / y_len
+    
+    # Build rotated rectangle corners
     points = np.asarray(
         [
-            [origin_px_x, origin_px_y],
-            [origin_px_x + width_px, origin_px_y],
-            [origin_px_x + width_px, origin_px_y + height_px],
-            [origin_px_x, origin_px_y + height_px],
+            origin_px,  # top-left
+            origin_px + width_px * x_dir,  # top-right  
+            origin_px + width_px * x_dir + height_px * y_dir,  # bottom-right
+            origin_px + height_px * y_dir,  # bottom-left
         ],
         dtype=np.float64,
     )
@@ -1262,11 +1322,16 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
         return vis, f"Detection error: {exc}", "ChArUco corners: --"
 
 
+# Global buffer for smoothing workspace rectangle (reduce jitter)
+_workspace_rect_buffer = []
+_WORKSPACE_SMOOTH_FRAMES = 5
+
 def draw_workspace_overlay(
     frame: np.ndarray,
     marker_ids: Tuple[int, int],
     marker_size_mm: float,
 ) -> Tuple[np.ndarray, str, str]:
+    global _workspace_rect_buffer
     vis = frame.copy()
     try:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -1322,18 +1387,53 @@ def draw_workspace_overlay(
                 elif mid == marker_ids[1]:
                     marker_b_center = center
 
-        # Draw rectangle between the two marker centers
+        # Draw rotated rectangle between the two marker centers
         if marker_a_center is not None and marker_b_center is not None:
-            # Draw line connecting the markers
-            cv2.line(vis, marker_a_center, marker_b_center, (255, 255, 0), 2)
-
-            # Draw a rectangle with the markers as opposite corners
-            pt1 = marker_a_center
-            pt2 = marker_b_center
-            cv2.rectangle(vis, pt1, pt2, (255, 255, 0), 2)
-
-            # Draw the diagonal for clarity
-            cv2.line(vis, pt1, pt2, (255, 255, 0), 1)
+            # Use marker_a orientation to define the rectangle axes
+            marker_a_corners = detected_map[marker_ids[0]]['corners']
+            
+            # X-axis: direction from left edge to right edge of marker_a
+            x_axis_px = marker_a_corners[1] - marker_a_corners[0]  # top-right - top-left
+            x_axis_norm = x_axis_px / np.linalg.norm(x_axis_px) if np.linalg.norm(x_axis_px) > 0 else np.array([1.0, 0.0])
+            
+            # Y-axis: perpendicular to x-axis (rotate 90 degrees)
+            y_axis_norm = np.array([-x_axis_norm[1], x_axis_norm[0]])
+            
+            # Diagonal from marker_a to marker_b
+            diagonal = np.array(marker_b_center) - np.array(marker_a_center)
+            
+            # Project diagonal onto the rotated axes
+            width_px = np.dot(diagonal, x_axis_norm)
+            height_px = np.dot(diagonal, y_axis_norm)
+            
+            # Compute the four corners of the rotated rectangle
+            # Start at marker_a center and build rectangle using the projected dimensions
+            origin = np.array(marker_a_center, dtype=float)
+            corner_tl = origin  # top-left at marker_a
+            corner_tr = origin + width_px * x_axis_norm  # move right
+            corner_br = origin + width_px * x_axis_norm + height_px * y_axis_norm  # diagonal
+            corner_bl = origin + height_px * y_axis_norm  # move down
+            
+            # Compute current rectangle corners
+            rect_corners_float = np.array([corner_tl, corner_tr, corner_br, corner_bl], dtype=np.float64)
+            
+            # Apply temporal smoothing to reduce jitter
+            _workspace_rect_buffer.append(rect_corners_float)
+            if len(_workspace_rect_buffer) > _WORKSPACE_SMOOTH_FRAMES:
+                _workspace_rect_buffer.pop(0)
+            
+            # Average the buffered corner positions
+            if len(_workspace_rect_buffer) > 0:
+                rect_corners_smoothed = np.mean(_workspace_rect_buffer, axis=0)
+                rect_corners = np.round(rect_corners_smoothed).astype(np.int32)
+            else:
+                rect_corners = np.round(rect_corners_float).astype(np.int32)
+            
+            # Draw the rotated rectangle
+            cv2.polylines(vis, [rect_corners], isClosed=True, color=(0, 255, 255), thickness=2)
+            
+            # Draw diagonal for reference
+            cv2.line(vis, tuple(rect_corners[0]), tuple(rect_corners[2]), (0, 255, 255), 1)
 
         status = "Workspace markers detected."
 
@@ -1417,9 +1517,28 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
 
 def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     vis = frame.copy()
+    
+    # Run detection continuously if enabled and model is loaded
+    if SESSION.continuous_detection and SESSION.model_loaded and SESSION.yolo_model is not None:
+        try:
+            detections = _run_detection(
+                frame,
+                SESSION.detection_confidence,
+                SESSION.detection_iou,
+                SESSION.detection_max,
+                SESSION.detection_classes,
+            )
+            SESSION.detections = detections
+            SESSION.last_detection_error = None
+        except Exception as exc:
+            SESSION.last_detection_error = str(exc)
+            LOGGER.warning("Continuous detection failed: %s", exc)
+    
     detections = SESSION.detections or []
     if not detections:
-        return vis, "No detections available.", "Detections: 0"
+        msg = "Continuous detection: waiting..." if SESSION.continuous_detection else "No detections available."
+        return vis, msg, "Detections: 0"
+    
     for det in detections:
         x1, y1, x2, y2 = [int(val) for val in det["bbox"]]
         label = det.get("label", "object")
@@ -1436,7 +1555,8 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
         )
     metric = f"Detections: {len(detections)}"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
-    return vis, "Detection overlay ready.", metric
+    status = "Continuous detection active." if SESSION.continuous_detection else "Detection overlay ready."
+    return vis, status, metric
 
 
 def draw_drop_marker_overlay(frame: np.ndarray, marker_id: int) -> Tuple[np.ndarray, str, str]:
@@ -2305,6 +2425,13 @@ def build_detection_tab() -> dmc.Stack:
     detection_card = dmc.Card(
         [
             dmc.Text("Detection Controls", fw=600, size="lg"),
+            dmc.Switch(
+                id="continuous-detection-toggle",
+                label="Continuous detection",
+                checked=False,
+                color="teal",
+                size="md",
+            ),
             dmc.Group(
                 [
                     dmc.NumberInput(
@@ -2343,7 +2470,7 @@ def build_detection_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
-            dmc.Button("Run detection", id="run-detection"),
+            dmc.Button("Run detection once", id="run-detection", variant="light"),
             dmc.Text(id="detection-status", size="sm", c="dimmed"),
             dmc.Text(id="detection-metrics", size="sm"),
         ],
@@ -3320,6 +3447,33 @@ def register_callbacks(app: Dash) -> None:
         return format_gpu_status()
 
     @app.callback(
+        Output("continuous-detection-toggle", "checked"),
+        Input("continuous-detection-toggle", "checked"),
+        State("detection-confidence", "value"),
+        State("detection-iou", "value"),
+        State("detection-max", "value"),
+        State("detection-classes", "value"),
+    )
+    def _toggle_continuous_detection(
+        enabled: bool,
+        confidence: Optional[float],
+        iou: Optional[float],
+        max_detections: Optional[float],
+        class_filter: Optional[str],
+    ) -> bool:
+        """Enable/disable continuous detection and store parameters."""
+        SESSION.continuous_detection = enabled
+        SESSION.detection_confidence = _safe_float(confidence, 0.7)
+        SESSION.detection_iou = _safe_float(iou, 0.45)
+        SESSION.detection_max = _safe_int(max_detections, 10)
+        SESSION.detection_classes = class_filter
+        if enabled:
+            LOGGER.info("Continuous detection enabled")
+        else:
+            LOGGER.info("Continuous detection disabled")
+        return enabled
+
+    @app.callback(
         Output("detection-status", "children"),
         Output("detection-list", "children"),
         Output("pick-detection-select", "data"),
@@ -3376,6 +3530,37 @@ def register_callbacks(app: Dash) -> None:
             options,
             selected,
         )
+
+    @app.callback(
+        Output("detection-list", "children", allow_duplicate=True),
+        Output("pick-detection-select", "data", allow_duplicate=True),
+        Output("detection-metrics", "children", allow_duplicate=True),
+        Input("camera-interval", "n_intervals"),
+        State("continuous-detection-toggle", "checked"),
+        prevent_initial_call=True,
+    )
+    def _update_detection_display(
+        _n: int,
+        continuous_enabled: bool,
+    ) -> Tuple[list, list, str]:
+        """Update detection display from continuous detection results."""
+        if not continuous_enabled:
+            return no_update, no_update, no_update
+        
+        detections = SESSION.detections or []
+        detection_list = _format_detection_list(detections)
+        
+        options = []
+        for idx, det in enumerate(detections):
+            label = det.get("label", "object")
+            conf = det.get("confidence", 0.0)
+            options.append({"value": str(idx), "label": f"{idx + 1}: {label} ({conf:.2f})"})
+        
+        metrics = f"Live: {len(detections)} object(s)"
+        if SESSION.last_detection_error:
+            metrics = f"Error: {SESSION.last_detection_error}"
+        
+        return detection_list, options, metrics
 
     @app.callback(
         Output("pick-place-status", "children"),

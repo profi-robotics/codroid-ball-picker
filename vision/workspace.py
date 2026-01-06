@@ -96,8 +96,14 @@ def compute_workspace(
     scale_multiplier: float = 1.0,
 ) -> WorkspaceDefinition:
     """
-    Build a workspace representation given marker detections and calibration data.
+    Build a workspace representation given two diagonal corner markers.
 
+    The workspace is a rectangle defined by two markers placed at opposite corners
+    (diagonal). The function computes:
+    1. The scale from marker size
+    2. The workspace bounding rectangle from diagonal corners
+    3. Axis-aligned coordinate system with origin at marker_a corner
+    
     Scale is estimated from the detected marker edge length (more reliable than
     a static pixel_to_mm when the camera standoff changes) and falls back to the
     calibration bundle if marker-derived scale is unavailable.
@@ -128,18 +134,55 @@ def compute_workspace(
         mm_per_px_x = mm_per_px_x or fallback
         mm_per_px_y = mm_per_px_y or fallback
 
-    # Use axis-aligned projection in pixel space but mix both scales to reduce skew impact.
-    delta = np.asarray(marker_b.center) - np.asarray(marker_a.center)
-    width_px = abs(delta[0])
-    height_px = abs(delta[1])
-    # Blend scales to mitigate axis misalignment from rotation.
+    # Compute workspace as a rectangle with diagonal corners at marker_a and marker_b
     scale_avg = (mm_per_px_x + mm_per_px_y) / 2.0
     scale_avg *= scale_multiplier
-    width_mm = width_px * scale_avg
-    height_mm = height_px * scale_avg
-
-    x_dir = np.array([1.0, 0.0, 0.0]) * scale_avg
-    y_dir = np.array([0.0, 1.0, 0.0]) * scale_avg
+    
+    # Get the diagonal vector from marker_a to marker_b in pixel space
+    diagonal_px = np.asarray(marker_b.center) - np.asarray(marker_a.center)
+    
+    # Compute workspace axes aligned with the marker orientations (table surface orientation)
+    # Use marker_a's edge vectors to define the workspace coordinate frame
+    # Marker corners: [0]=top-left, [1]=top-right, [2]=bottom-right, [3]=bottom-left
+    
+    # X-axis: direction from left edge to right edge of marker_a (normalized)
+    x_axis_px = (marker_a.corners[1] - marker_a.corners[0])  # top-right - top-left
+    x_axis_px_len = np.linalg.norm(x_axis_px)
+    if x_axis_px_len > 0:
+        x_axis_px = x_axis_px / x_axis_px_len
+    else:
+        x_axis_px = np.array([1.0, 0.0])
+    
+    # Y-axis: direction from top edge to bottom edge of marker_a (normalized)
+    y_axis_px = (marker_a.corners[3] - marker_a.corners[0])  # bottom-left - top-left
+    y_axis_px_len = np.linalg.norm(y_axis_px)
+    if y_axis_px_len > 0:
+        y_axis_px = y_axis_px / y_axis_px_len
+    else:
+        y_axis_px = np.array([0.0, 1.0])
+    
+    # Ensure orthogonality: recompute y as perpendicular to x
+    y_axis_px = y_axis_px - (np.dot(y_axis_px, x_axis_px) * x_axis_px)
+    y_axis_px_len = np.linalg.norm(y_axis_px)
+    if y_axis_px_len > 0:
+        y_axis_px = y_axis_px / y_axis_px_len
+    else:
+        # Fallback: rotate x by 90 degrees
+        y_axis_px = np.array([-x_axis_px[1], x_axis_px[0]])
+    
+    # Project diagonal vector onto the rotated axes to get width and height
+    width_px = np.dot(diagonal_px, x_axis_px)
+    height_px = np.dot(diagonal_px, y_axis_px)
+    
+    # Convert to mm
+    width_mm = abs(width_px * scale_avg)
+    height_mm = abs(height_px * scale_avg)
+    
+    # Convert pixel axes to mm space (normalized directions in 3D)
+    x_dir = np.array([x_axis_px[0], x_axis_px[1], 0.0])
+    y_dir = np.array([y_axis_px[0], y_axis_px[1], 0.0])
+    
+    # Origin at marker_a position in camera coordinates (mm)
     origin = np.array([marker_a.center[0] * scale_avg,
                       marker_a.center[1] * scale_avg, 0.0])
 

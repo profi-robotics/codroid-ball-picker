@@ -13,6 +13,9 @@ __pycache__/
 # Calibration files
 data/calibration/*
 
+# Model files
+data/models/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
