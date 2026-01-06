@@ -166,7 +166,7 @@ The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Comp
 
 **Quick Setup:**
 1. Connect the 2FG7 gripper to the OnRobot Compute Box
-2. Note the Compute Box IP address (default: `192.168.101.95`)
+2. Note the Compute Box IP address (default: `192.168.101.180`)
 3. In the calibration UI, click **Setup** → **OnRobot 2FG7 Gripper**
 4. Enter the Compute Box IP and enable the connection
 5. Click **Test gripper** to verify

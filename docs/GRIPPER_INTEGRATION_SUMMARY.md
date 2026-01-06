@@ -71,7 +71,7 @@ Multiple enhancements:
 
 ```bash
 # OnRobot Compute Box IP address
-export ONROBOT_CB_IP="192.168.101.95"
+export ONROBOT_CB_IP="192.168.101.180"
 
 # Tool index (0=single, 1=dual primary, 2=dual secondary)
 export ONROBOT_T_INDEX="0"
@@ -79,7 +79,7 @@ export ONROBOT_T_INDEX="0"
 
 ### Default Values
 
-- **Compute Box IP:** `192.168.101.95`
+- **Compute Box IP:** `192.168.101.180`
 - **XML-RPC Port:** `41414` (hardcoded, OnRobot standard)
 - **Tool Index:** `0` (single gripper configuration)
 
@@ -90,7 +90,7 @@ export ONROBOT_T_INDEX="0"
 1. Launch calibration UI: `python run_calibration_ui.py`
 2. Click **Setup** button in header
 3. Scroll to **OnRobot 2FG7 Gripper** section
-4. Enter Compute Box IP address (default: 192.168.101.95)
+4. Enter Compute Box IP address (default: 192.168.101.180)
 5. Toggle **Enable gripper connection**
 6. Click **Test gripper** to verify connection
 7. Observe:

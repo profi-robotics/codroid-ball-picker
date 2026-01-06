@@ -3,10 +3,16 @@ Dash calibration UI for the Codroid bring-up workflow.
 """
 
 from __future__ import annotations
+from vision.stream import DepthAIFrameStream, StreamConfig
+from vision.camera_check import list_oak_devices
+from vision import aruco_board, calibration, markers, plate, workspace
+from onrobot.twofg import TWOFG as TwoFG7Gripper
+from onrobot.device import Device as GripperDevice
+from codroid_api import CodroidAPI, CodroidSettings, RobotSession
+from app.orchestrator import BootstrapDemo, DemoConfig
 
 import asyncio
 import base64
-import contextlib
 import io
 import logging
 import os
@@ -17,36 +23,26 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Deque, Optional, Tuple
-from urllib.parse import urlparse
 
 import cv2
 import numpy as np
 from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
 import dash_mantine_components as dmc
 
-from app.orchestrator import BootstrapDemo, DemoConfig
-from codroid_api import CodroidAPI, CodroidSettings
-from onrobot.device import Device as GripperDevice
-from onrobot.twofg import TWOFG as TwoFG7Gripper
-from vision import aruco_board, calibration, markers, plate, workspace
-from vision.camera_check import list_oak_devices
-from vision.stream import DepthAIFrameStream, StreamConfig
+LOGGER = logging.getLogger(__name__)
+
 
 try:
     import pynvml
     NVML_AVAILABLE = True
 except ImportError:
     NVML_AVAILABLE = False
-    LOGGER = logging.getLogger(__name__)
-    LOGGER.warning("pynvml not available; GPU monitoring disabled")
 
 try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-
-LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BOARD_PATH = Path(
     "data/markers/camera_calibration/camera_calibration_board.json")
@@ -60,7 +56,7 @@ DEFAULT_FPS = 30.0
 DEFAULT_MODEL_DIR = Path("data/models")
 DEFAULT_DROP_MARKER_ID = 30
 ROBOT_COORDINATE_ID = 5
-MIN_PLATE_MARKERS = 4
+MIN_PLATE_MARKERS = 2
 FLANGE_BUTTON_PORT = 41
 
 
@@ -92,7 +88,7 @@ DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
 def _load_gripper_defaults() -> dict:
     """Load OnRobot gripper default configuration."""
     return {
-        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.101.95"),
+        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.101.180"),
         "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
     }
 
@@ -125,6 +121,9 @@ class UISession:
     last_detection_error: Optional[str] = None
     drop_marker_id: int = DEFAULT_DROP_MARKER_ID
     drop_target_mm: Optional[Tuple[float, float]] = None
+    robot_session: Optional[RobotSession] = None
+    robot_connection_attempted: bool = False
+    robot_last_connection_error: Optional[str] = None
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
     last_frame_id: int = 0  # Track frame changes to avoid duplicate stream pushes
@@ -146,8 +145,69 @@ SESSION = UISession(
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT_DIR / "assets"
 
+
+def _get_robot_session() -> RobotSession:
+    if SESSION.robot_session is None:
+        SESSION.robot_session = RobotSession(
+            CodroidSettings(),
+            flange_button_port=FLANGE_BUTTON_PORT,
+        )
+    return SESSION.robot_session
+
+
+def _set_robot_guidance(
+    message: str,
+    *,
+    step: Optional[int] = None,
+    status: Optional[str] = None,
+) -> None:
+    ROBOT_CALIBRATION_GUIDANCE["message"] = message
+    if step is not None:
+        ROBOT_CALIBRATION_GUIDANCE["step"] = step
+    if status is not None:
+        ROBOT_CALIBRATION_GUIDANCE["status"] = status
+    ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
+
+
+def _format_robot_status_line(robot_conn_state: Optional[dict]) -> str:
+    status = (robot_conn_state or {}).get("status") or "offline"
+    pieces: list[str] = []
+    if status == "online":
+        pieces.append("Robot online")
+    elif status == "error":
+        pieces.append("Robot error")
+    else:
+        pieces.append("Robot offline")
+
+    session = _get_robot_session()
+    pos = session.position_snapshot()
+    if not session.posture_seen() and status == "online":
+        pieces.append("Awaiting posture stream")
+    elif pos.age_seconds() < 2.0:
+        pieces.append(
+            f"Pos X={pos.x:.1f} "
+            f"Y={pos.y:.1f} "
+            f"Z={pos.z:.1f}"
+        )
+    elif status == "online":
+        pieces.append(f"Pos stale {pos.age_seconds():.1f}s")
+
+    calib_status = ROBOT_CALIBRATION_GUIDANCE.get("status")
+    if calib_status and calib_status != "idle":
+        pieces.append(f"Calib {calib_status}")
+
+    line = " · ".join(pieces)
+    return line or "Robot offline"
+
+
 PLATE_STATUS = {"count": 0, "ok": False,
-                "timestamp": 0.0, "message": "Waiting for plate markers"}
+                "timestamp": time.time(), "message": "Waiting for plate markers"}
+ROBOT_CALIBRATION_GUIDANCE = {
+    "status": "idle",
+    "step": 0,
+    "message": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
+    "timestamp": time.time(),
+}
 
 
 def _restore_persisted_state() -> None:
@@ -334,13 +394,17 @@ def _safe_path(value: Optional[str], fallback: Path) -> Path:
 
 
 def get_gpu_info() -> dict:
-    """Get GPU status information including availability, clock speed, usage, and memory."""
+    """Get GPU status information including availability, clock speed, usage, and memory.
+
+    Supports CUDA (NVIDIA), Metal Performance Shaders (Apple Silicon), and CPU fallback.
+    """
     info = {
         "available": False,
         "name": "N/A",
         "driver_version": "N/A",
         "cuda_available": False,
         "cuda_version": "N/A",
+        "mps_available": False,
         "gpu_count": 0,
         "devices": [],
     }
@@ -351,9 +415,17 @@ def get_gpu_info() -> dict:
         if info["cuda_available"]:
             info["cuda_version"] = torch.version.cuda or "N/A"
             info["gpu_count"] = torch.cuda.device_count()
+            info["available"] = True
 
-    # Get detailed GPU info via NVML
-    if not NVML_AVAILABLE:
+        # Check for Metal Performance Shaders (Apple Silicon)
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            info["mps_available"] = True
+            info["available"] = True
+            info["name"] = "Metal Performance Shaders"
+            info["gpu_count"] = 1
+
+    # Get detailed GPU info via NVML (NVIDIA only)
+    if not NVML_AVAILABLE or not info["cuda_available"]:
         return info
 
     try:
@@ -431,7 +503,9 @@ def get_gpu_info() -> dict:
 
         pynvml.nvmlShutdown()
     except Exception as exc:
-        LOGGER.warning("Failed to get GPU info via NVML: %s", exc)
+        # Only log at debug level for expected failures on non-NVIDIA platforms
+        LOGGER.debug(
+            "NVML GPU detection failed (expected on non-NVIDIA systems): %s", exc)
 
     return info
 
@@ -1068,104 +1142,100 @@ async def _run_robot_plate_calibration(
     plate_layout: plate.CalibrationPlate,
 ) -> Tuple[list[dict], dict]:
     """Capture three robot poses via flange button 1 and calibrate coord ID 5."""
-    settings = _apply_robot_uri(
-        CodroidSettings(), robot_uri or DEFAULT_ROBOT_URI)
-    robot_config = settings.build_robot_config()
-    async with CodroidAPI(robot_config) as robot_api:
-        await robot_api.robot_login()
+    session = _get_robot_session()
+
+    async def _runner(robot_api: CodroidAPI) -> Tuple[list[dict], dict]:
         await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
-
-        latest_posture: dict = {}
-        di_state: dict = {}
-        press_queue: asyncio.Queue[dict] = asyncio.Queue()
-
-        async def _listener() -> None:
-            nonlocal latest_posture
-            async for msg in robot_api.listen():
-                action = msg.get("action")
-                if action == "RobotPosture":
-                    data = (msg.get("data") or {}).get("data") or {}
-                    latest_posture = data.get("end") or latest_posture
-                di = CodroidAPI.extract_di_state(msg)
-                if di and FLANGE_BUTTON_PORT in di:
-                    prev = di_state.get(FLANGE_BUTTON_PORT)
-                    di_state[FLANGE_BUTTON_PORT] = di[FLANGE_BUTTON_PORT]
-                    if prev != di[FLANGE_BUTTON_PORT] and di[FLANGE_BUTTON_PORT] == 1:
-                        if latest_posture:
-                            press_queue.put_nowait(latest_posture.copy())
-
-        listener_task = asyncio.create_task(_listener())
-
-        async def _poll_io() -> None:
-            while True:
-                request = robot_api.build_message(
-                    message_type="IOManager",
-                    action="GetIOValue",
-                    data=[FLANGE_BUTTON_PORT],
-                )
-                await robot_api.send_message(request)
-                await asyncio.sleep(0.2)
-
-        poll_task = asyncio.create_task(_poll_io())
+        await session.reset_flange_queue()
 
         robot_points: list[dict] = []
-        try:
-            calib_points = plate_layout.robot_calibration_points()
-            if len(calib_points) < 3:
-                raise RuntimeError(
-                    "Calibration plate layout is missing calibration points.")
+        calib_points = plate_layout.robot_calibration_points()
+        if len(calib_points) < 3:
+            raise RuntimeError(
+                "Calibration plate layout is missing calibration points.")
 
-            for idx in range(3):
-                _ensure_plate_visible()
-                point_labels = [
-                    "Point 1 (Origin)", "Point 2 (+X)", "Point 3 (+X/+Y)"]
-                point_label = point_labels[idx] if idx < len(
-                    point_labels) else f"Point {idx + 1}"
-                LOGGER.info(
-                    f"Step {idx + 1}/3: Waiting for gripper to align with {point_label}...")
-
-                try:
-                    posture = await asyncio.wait_for(press_queue.get(), timeout=90.0)
-                except asyncio.TimeoutError:
-                    raise RuntimeError(
-                        f"Timed out waiting for flange button 1 press at {point_label}. "
-                        f"Move gripper to the groove target and press the flange button.")
-
-                LOGGER.info(
-                    f"✓ {point_label} captured. Position: X={posture.get('x'):.1f}, Y={posture.get('y'):.1f}, Z={posture.get('z'):.1f}")
-                robot_points.append(posture)
-
-            # Persist user coordinate 5 using the captured points.
-            LOGGER.info(
-                "Computing coordinate transformation from 3 calibration points...")
-            cpos_points = [
-                CodroidAPI.build_target_cpos(
-                    x=float(pt["x"]),
-                    y=float(pt["y"]),
-                    z=float(pt["z"]),
-                    a=float(pt["a"]),
-                    b=float(pt["b"]),
-                    c=float(pt["c"]),
-                )
-                for pt in robot_points
-            ]
-            coord_frame = await robot_api.coordinate_calibration(
-                cpos_points,
-                coordinate_id=ROBOT_COORDINATE_ID,
-                set_active_coordinate=True,
+        point_labels = [
+            "Point 1 (Origin)",
+            "Point 2 (+X)",
+            "Point 3 (+X/+Y)",
+        ]
+        for idx in range(3):
+            _ensure_plate_visible()
+            point_label = point_labels[idx] if idx < len(
+                point_labels) else f"Point {idx + 1}"
+            _set_robot_guidance(
+                f"Step {idx + 1}/3: Move to {point_label} and press flange button 1.",
+                step=idx + 1,
+                status="running",
             )
-            if coord_frame:
-                await robot_api.change_coordinate_parameter(ROBOT_COORDINATE_ID, coord_frame)
             LOGGER.info(
-                "✓ Robot calibration complete. Coordinate ID 5 is now active.")
-            return robot_points, coord_frame or {}
-        finally:
-            poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poll_task
-            listener_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await listener_task
+                "Step %d/3: Waiting for gripper to align with %s...",
+                idx + 1,
+                point_label,
+            )
+
+            try:
+                posture = await session.next_flange_press(timeout=90.0)
+            except asyncio.TimeoutError as exc:
+                _set_robot_guidance(
+                    f"Timed out waiting for flange button at {point_label}.",
+                    status="error",
+                )
+                raise RuntimeError(
+                    f"Timed out waiting for flange button 1 press at {point_label}. "
+                    f"Move gripper to the groove target and press the flange button."
+                ) from exc
+
+            LOGGER.info(
+                "Captured %s. Position: X=%.1f, Y=%.1f, Z=%.1f",
+                point_label,
+                posture.get("x", 0.0),
+                posture.get("y", 0.0),
+                posture.get("z", 0.0),
+            )
+            robot_points.append(posture)
+            if idx < 2:
+                next_label = point_labels[idx + 1]
+                _set_robot_guidance(
+                    f"Captured {point_label}. Next: move to {next_label}.",
+                    step=idx + 1,
+                    status="running",
+                )
+
+        _set_robot_guidance(
+            "Computing coordinate transform from 3 calibration points...",
+            status="running",
+        )
+        LOGGER.info(
+            "Computing coordinate transformation from 3 calibration points...")
+        cpos_points = [
+            CodroidAPI.build_target_cpos(
+                x=float(pt["x"]),
+                y=float(pt["y"]),
+                z=float(pt["z"]),
+                a=float(pt["a"]),
+                b=float(pt["b"]),
+                c=float(pt["c"]),
+            )
+            for pt in robot_points
+        ]
+        coord_frame = await robot_api.coordinate_calibration(
+            cpos_points,
+            coordinate_id=ROBOT_COORDINATE_ID,
+            set_active_coordinate=True,
+        )
+        if coord_frame:
+            await robot_api.change_coordinate_parameter(
+                ROBOT_COORDINATE_ID, coord_frame)
+        _set_robot_guidance(
+            "Robot calibration complete. Coordinate ID 5 is active.",
+            status="complete",
+            step=3,
+        )
+        LOGGER.info("Robot calibration complete. Coordinate ID 5 is now active.")
+        return robot_points, coord_frame or {}
+
+    return await session.run_with_robot(robot_uri, _runner)
 
 
 def _apply_robot_calibration_results(
@@ -1650,9 +1720,21 @@ def build_header() -> dmc.AppShellHeader:
         ],
         className="header-badges",
     )
+    status_line = dmc.Text(
+        id="header-robot-status",
+        size="xs",
+        c="dimmed",
+        style={
+            "maxWidth": "520px",
+            "whiteSpace": "nowrap",
+            "overflow": "hidden",
+            "textOverflow": "ellipsis",
+        },
+    )
+    status_block = dmc.Stack([badges, status_line], gap=4)
     actions = dmc.Group(
         [
-            badges,
+            status_block,
             dmc.Button("Setup", id="open-setup", variant="filled",
                        color="brand", radius="xl", size="md"),
         ],
@@ -2050,8 +2132,19 @@ def build_setup_drawer() -> dmc.Drawer:
                     label="WebSocket URI",
                     value=DEFAULT_ROBOT_URI,
                 ),
-                dmc.Button("Test robot connection",
-                           id="robot-test", variant="light"),
+                dmc.Group(
+                    [
+                        dmc.Button("Test robot connection",
+                                   id="robot-test", variant="light"),
+                        dmc.Button(
+                            "Disconnect robot",
+                            id="robot-disconnect",
+                            variant="outline",
+                            color="red",
+                        ),
+                    ],
+                    gap="sm",
+                ),
                 dmc.Text(id="robot-status-text", size="sm", c="dimmed"),
                 dmc.Divider(),
                 dmc.Text("OnRobot 2FG7 Gripper", fw=600),
@@ -2350,11 +2443,19 @@ def build_stepper_card() -> dmc.Card:
                                     color="teal",
                                     disabled=True,
                                 ),
+                                dmc.Text(id="current-robot-position",
+                                         size="xs", c="dimmed"),
                                 dmc.Text(id="plate-action-status",
                                          size="sm", c="dimmed"),
                                 dmc.Text(id="plate-metrics", size="sm"),
                                 dmc.Text(
-                                    "Step-by-step calibration guide:\n1. Place the calibration plate on the table\n2. Click 'Begin calibrating robot'\n3. Move the gripper to each groove target (1, 2, then 3)\n4. Press the flange button when aligned\n5. The robot will calculate the coordinate transform",
+                                    "Step-by-step calibration guide:\n"
+                                    "1. Start the camera stream and confirm the plate markers are visible (>= 2)\n"
+                                    "2. Click 'Begin calibrating robot'\n"
+                                    "3. Follow the status line below for each point prompt\n"
+                                    "4. Move the gripper to each groove target (1, 2, then 3)\n"
+                                    "5. Press the flange button when aligned\n"
+                                    "6. The robot will calculate the coordinate transform",
                                     size="xs",
                                     c="dimmed",
                                     style={"whiteSpace": "pre-line"},
@@ -2759,6 +2860,8 @@ def build_layout() -> dmc.MantineProvider:
                 ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
+                dcc.Interval(id="robot-status-interval",
+                             interval=400, n_intervals=0),
                 dcc.Interval(
                     id="camera-interval",
                     interval=33,  # ~30 FPS UI poll; stream push happens each tick
@@ -2862,48 +2965,14 @@ def _format_device_list(devices: list[object]) -> html.Ul:
     return html.Ul(items)
 
 
-def _apply_robot_uri(settings: CodroidSettings, uri: str) -> CodroidSettings:
-    if not uri:
-        return settings
-    parsed = urlparse(uri)
-    if parsed.hostname:
-        settings.host = parsed.hostname
-    if parsed.port:
-        settings.robot_port = parsed.port
-    return settings
-
-
 async def _probe_robot(uri: str) -> dict:
-    settings = _apply_robot_uri(CodroidSettings(), uri)
-    robot_config = settings.build_robot_config()
-    robot_api = CodroidAPI(robot_config)
-    await robot_api.connect()
-    try:
-        await robot_api.robot_login()
-        await robot_api.read_system_data()
-    finally:
-        await robot_api.close()
-    return {"host": settings.host, "port": settings.robot_port}
+    session = _get_robot_session()
+    return await session.probe(uri or DEFAULT_ROBOT_URI)
 
 
 async def _with_robot_api(uri: str, action: Callable[[CodroidAPI], Awaitable[None]]) -> None:
-    settings = _apply_robot_uri(CodroidSettings(), uri)
-    user_config = settings.build_user_config()
-    robot_config = settings.build_robot_config()
-    user_api = CodroidAPI(user_config)
-    robot_api = CodroidAPI(robot_config)
-    await user_api.connect()
-    if user_config.user_password:
-        await user_api.ws_login_with_password()
-    elif user_config.usercode:
-        await user_api.ws_login()
-    await robot_api.connect()
-    await robot_api.robot_login()
-    try:
-        await action(robot_api)
-    finally:
-        await robot_api.close()
-        await user_api.close()
+    session = _get_robot_session()
+    await session.run_with_robot(uri or DEFAULT_ROBOT_URI, action)
 
 
 def _run_charuco_task(board_path: Path) -> Callable[[np.ndarray], OverlayResult]:
@@ -3177,26 +3246,53 @@ def register_callbacks(app: Dash) -> None:
         Output("header-robot-badge", "color"),
         Output("robot-connection-state", "data"),
         Input("robot-test", "n_clicks"),
+        Input("robot-disconnect", "n_clicks"),
         Input("auto-init", "n_intervals"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
-    def _test_robot(_clicks: int, _init: int, uri: str) -> Tuple[str, str, str, dict]:
+    async def _test_robot(
+        _clicks: int,
+        _disconnect_clicks: int,
+        _init: int,
+        uri: str,
+    ) -> Tuple[str, str, str, dict]:
         trigger = callback_context.triggered_id
+        session = _get_robot_session()
+        if trigger == "robot-disconnect":
+            await session.close()
+            SESSION.robot_connection_attempted = False
+            SESSION.robot_last_connection_error = None
+            session.clear_position()
+            _set_robot_guidance(
+                "Robot calibration idle. Click 'Begin calibrating robot' to start.",
+                status="idle",
+                step=0,
+            )
+            status = "Robot disconnected."
+            return status, "Robot: offline", "gray", {"status": "offline", "message": status}
         if trigger == "auto-init":
-            try:
-                response = asyncio.run(_probe_robot(uri))
-                status = f"Robot connected to {response.get('host')}:{response.get('port')}."
+            if session.is_connected(uri or DEFAULT_ROBOT_URI):
+                target = session.resolve_robot_target(uri or DEFAULT_ROBOT_URI)
+                status = f"Robot connected to {target['host']}:{target['port']}."
+                SESSION.robot_connection_attempted = True
+                SESSION.robot_last_connection_error = None
                 return status, "Robot: online", "teal", {"status": "online", "message": status}
-            except Exception as exc:
-                error = f"Robot connection failed: {exc}"
-                return error, "Robot: error", "red", {"status": "error", "message": error}
+            if SESSION.robot_connection_attempted:
+                if SESSION.robot_last_connection_error:
+                    error = SESSION.robot_last_connection_error
+                    return error, "Robot: error", "red", {"status": "error", "message": error}
+                return no_update, no_update, no_update, no_update
         try:
-            response = asyncio.run(_probe_robot(uri))
+            response = await _probe_robot(uri)
             status = f"Robot connected to {response.get('host')}:{response.get('port')}."
+            SESSION.robot_connection_attempted = True
+            SESSION.robot_last_connection_error = None
             return status, "Robot: online", "teal", {"status": "online", "message": status}
         except Exception as exc:
             error = f"Robot connection failed: {exc}"
+            SESSION.robot_connection_attempted = True
+            SESSION.robot_last_connection_error = error
             return error, "Robot: error", "red", {"status": "error", "message": error}
 
     def _command_gripper(
@@ -3631,7 +3727,7 @@ def register_callbacks(app: Dash) -> None:
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
-    def _handle_pick_place(
+    async def _handle_pick_place(
         _drop_clicks: int,
         _pick_clicks: int,
         _drop_action: int,
@@ -3742,8 +3838,8 @@ def register_callbacks(app: Dash) -> None:
 
         try:
             if trigger == "execute-pick":
-                asyncio.run(_with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _pick_action))
+                await _with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _pick_action)
                 SESSION.last_action = "Pick command sent."
                 return "Pick command sent."
             if trigger == "execute-drop":
@@ -3752,13 +3848,13 @@ def register_callbacks(app: Dash) -> None:
                 async def _drop_only(robot_api: CodroidAPI) -> None:
                     await _drop_action(robot_api, drop_target_mm)
 
-                asyncio.run(_with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _drop_only))
+                await _with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _drop_only)
                 SESSION.last_action = "Drop command sent."
                 return "Drop command sent."
             if trigger == "execute-pick-drop":
-                asyncio.run(_with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action))
+                await _with_robot_api(
+                    robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action)
                 SESSION.last_action = "Pick & drop command sent."
                 return "Pick & drop command sent."
         except Exception as exc:  # noqa: BLE001
@@ -4402,6 +4498,8 @@ def register_callbacks(app: Dash) -> None:
         count = state.get("count", 0)
         ok = bool(state.get("ok"))
         in_progress = (calib_state or {}).get("status") == "running"
+        if ROBOT_CALIBRATION_GUIDANCE.get("status") == "running":
+            in_progress = True
         robot_online = (robot_conn_state or {}).get("status") == "online"
 
         # Determine message based on the actual blocking issue
@@ -4423,8 +4521,71 @@ def register_callbacks(app: Dash) -> None:
         return message, color, disabled, variant
 
     @app.callback(
+        Output("current-robot-position", "children"),
+        Input("robot-connection-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+    )
+    def _update_robot_position_display(
+        robot_conn_state: Optional[dict],
+        _intervals: int,
+    ) -> str:
+        """Display current robot position with real-time updates."""
+        session = _get_robot_session()
+        pos = session.position_snapshot()
+        age_s = pos.age_seconds()
+
+        # Show position if we have recent data (from any source)
+        if session.posture_seen() and age_s < 2.0:
+            return (
+                f"🤖 Robot position: "
+                f"X={pos.x:.1f}, "
+                f"Y={pos.y:.1f}, "
+                f"Z={pos.z:.1f}"
+            )
+
+        # Check if robot is connected via test connection
+        if (robot_conn_state or {}).get("status") == "online":
+            if not session.posture_seen():
+                return "Robot: Awaiting posture stream..."
+            return f"Robot: Position stale (last seen {age_s:.1f}s ago)"
+
+        return "Robot: --"
+
+    @app.callback(
+        Output("header-robot-status", "children"),
+        Input("robot-connection-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+    )
+    def _update_header_robot_status(
+        robot_conn_state: Optional[dict],
+        _intervals: int,
+    ) -> str:
+        return _format_robot_status_line(robot_conn_state)
+
+    @app.callback(
         Output("robot-calibration-status", "children"),
-        Output("robot-calibration-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+    )
+    def _update_robot_calibration_guidance(_intervals: int) -> str:
+        return ROBOT_CALIBRATION_GUIDANCE.get("message", "")
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-status-interval", "n_intervals"),
+        State("robot-calibration-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _sync_robot_calibration_state(_intervals: int, current: Optional[dict]) -> dict:
+        desired = {
+            "status": ROBOT_CALIBRATION_GUIDANCE.get("status", "idle"),
+            "message": ROBOT_CALIBRATION_GUIDANCE.get("message", ""),
+        }
+        if current == desired:
+            return no_update
+        return desired
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("start-robot-calibration", "n_clicks"),
         State("plate-layout-path", "value"),
         State("plate-detection-state", "data"),
@@ -4436,49 +4597,62 @@ def register_callbacks(app: Dash) -> None:
         plate_layout_path: str,
         plate_state: Optional[dict],
         robot_uri: Optional[str],
-    ) -> Tuple[str, dict]:
+    ) -> dict:
+        LOGGER.info("=== Robot calibration button clicked ===")
+        LOGGER.info(f"Plate state: {plate_state}")
+        LOGGER.info(f"Robot URI: {robot_uri}")
+
         if not plate_state or not plate_state.get("ok"):
-            return (
-                f"Calibration plate markers not stable (need >= {MIN_PLATE_MARKERS}).",
-                {"status": "idle", "message": ""},
+            LOGGER.warning(
+                f"Plate not ready - markers not stable (need >= {MIN_PLATE_MARKERS})")
+            _set_robot_guidance(
+                f"Plate markers not stable (need >= {MIN_PLATE_MARKERS}).",
+                status="error",
             )
+            return {"status": "idle", "message": ""}
+
+        LOGGER.info("Plate state OK, starting calibration procedure...")
         try:
             layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
+            LOGGER.info(f"Loading plate layout from: {layout_path}")
             plate_layout = plate.load_plate_layout(layout_path)
+            LOGGER.info("Plate layout loaded successfully")
+
             _ensure_plate_visible()
+            LOGGER.info("Plate visibility ensured")
 
-            # Initial guidance message
-            initial_message = "🤖 Robot Calibration Started\n\nStep 1/3: Move to Point 1 (origin), then press flange button 1..."
-            initial_state = {"status": "running",
-                             "message": initial_message, "current_point": 1}
-
-            # Run calibration asynchronously (await works in async callback)
-            robot_points, coord_frame = await _run_robot_plate_calibration(
+            _set_robot_guidance(
+                "Robot calibration started. Step 1/3: Move to Point 1 (origin) "
+                "and press flange button 1.",
+                step=1,
+                status="running",
+            )
+            LOGGER.info(
+                f"Starting robot plate calibration with URI: {robot_uri or DEFAULT_ROBOT_URI}")
+            robot_points, _coord_frame = await _run_robot_plate_calibration(
                 robot_uri or DEFAULT_ROBOT_URI, plate_layout)
-            _transform = _apply_robot_calibration_results(
+            LOGGER.info(
+                f"Robot plate calibration completed. Captured {len(robot_points)} points.")
+
+            LOGGER.info("Applying robot calibration results...")
+            _apply_robot_calibration_results(
                 robot_points,
                 plate_layout,
             )
-            summary = (
-                f"✓ Robot calibration complete!\n"
-                f"📍 Captured 3 calibration points\n"
-                f"🔄 Coordinate ID {ROBOT_COORDINATE_ID} created\n"
-                f"📏 Workspace transform updated\n"
-                f"✨ Ready for autonomous operation!"
+            LOGGER.info("Calibration results applied successfully")
+            _set_robot_guidance(
+                "Robot calibration complete. Coordinate ID 5 is active.",
+                status="complete",
+                step=3,
             )
-            return summary, {"status": "done", "message": summary}
+            return {"status": "complete", "message": "Robot calibration complete."}
         except Exception as exc:
-            error_msg = (
-                f"❌ Robot calibration failed\n{exc}\n\n"
-                f"Troubleshooting:\n"
-                f"• Check robot connection\n"
-                f"• Verify plate markers are visible\n"
-                f"• Ensure flange button is functional"
+            LOGGER.error("Robot calibration failed: %s", exc, exc_info=True)
+            _set_robot_guidance(
+                f"Robot calibration failed: {exc}",
+                status="error",
             )
-            return (
-                error_msg,
-                {"status": "idle", "message": str(exc)},
-            )
+            return {"status": "error", "message": str(exc)}
 
 
 def create_app() -> Dash:
