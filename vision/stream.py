@@ -27,6 +27,7 @@ class StreamConfig:
     queue_size: int = 1
     enable_depth: bool = True
     fast_depth: bool = True
+    lock_af: bool = False
 
 
 class DepthAIFrameStream:
@@ -39,11 +40,13 @@ class DepthAIFrameStream:
         self._device: Optional[dai.Device] = None
         self._color_queue: Optional[dai.DataOutputQueue] = None
         self._depth_queue: Optional[dai.DataOutputQueue] = None
+        self._control_queue: Optional[dai.DataInputQueue] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
         self._last_frame: Optional[np.ndarray] = None
         self._last_depth: Optional[np.ndarray] = None
+        self._last_lens_pos: Optional[int] = None
         self._fps = 0.0
         self._last_ts = 0.0
         self._frame_hook = frame_hook
@@ -62,13 +65,14 @@ class DepthAIFrameStream:
                     "getDefaultDevice() returned None; no camera connected")
             sockets = resolve_camera_sockets(device)
             logging.info("Resolved sockets: %s", sockets)
-            color_out, depth_out = build_pipeline(
+            color_out, depth_out, control_in = build_pipeline(
                 pipeline,
                 sockets,
                 self.config.resolution,
                 self.config.fps,
                 enable_depth=self.config.enable_depth,
                 fast_depth=self.config.fast_depth,
+                lock_af=self.config.lock_af,
             )
             logging.info("Built pipeline, creating queues")
             self._color_queue = color_out.createOutputQueue(
@@ -76,6 +80,16 @@ class DepthAIFrameStream:
             if self.config.enable_depth and depth_out is not None:
                 self._depth_queue = depth_out.createOutputQueue(
                     maxSize=self.config.queue_size, blocking=False)
+            if control_in is not None:
+                try:
+                    self._control_queue = control_in.createInputQueue(
+                        maxSize=1, blocking=False
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning(
+                        "Camera control input unavailable; focus lock changes will restart stream: %s",
+                        exc,
+                    )
             logging.info("Created queues, starting pipeline")
             pipeline.start()
             logging.info("Pipeline started")
@@ -111,10 +125,12 @@ class DepthAIFrameStream:
         self._device = None
         self._color_queue = None
         self._depth_queue = None
+        self._control_queue = None
         self._thread = None
         with self._lock:
             self._last_frame = None
             self._last_depth = None
+            self._last_lens_pos = None
 
     def is_running(self) -> bool:
         return self._running
@@ -164,6 +180,10 @@ class DepthAIFrameStream:
                     packet = next_packet
 
                 frame = packet.getCvFrame()
+                with suppress(Exception):
+                    lens = packet.getLensPosition()
+                    with self._lock:
+                        self._last_lens_pos = int(lens)
                 depth_frame = None
                 if self._depth_queue is not None:
                     while True:
@@ -189,3 +209,34 @@ class DepthAIFrameStream:
                 logging.error(
                     "DepthAIFrameStream reader error: %s", exc, exc_info=True)
                 time.sleep(0.02)
+
+    def set_focus_lock(self, lock: bool, lens_position: Optional[int] = None) -> None:
+        """Dynamically switch AF lock without restarting the stream."""
+
+        if self._control_queue is None:
+            raise RuntimeError("Camera control input not available on this device.")
+
+        ctrl = dai.CameraControl()
+        if lock:
+            pos = lens_position
+            if pos is None:
+                with self._lock:
+                    pos = self._last_lens_pos
+            if pos is None:
+                pos = 130
+            with suppress(Exception):
+                ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            if hasattr(ctrl, "setAutoFocusEnable"):
+                with suppress(Exception):
+                    ctrl.setAutoFocusEnable(False)
+            with suppress(Exception):
+                ctrl.setManualFocus(int(pos))
+        else:
+            with suppress(Exception):
+                ctrl.setAutoFocusMode(
+                    dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO
+                )
+            if hasattr(ctrl, "setAutoFocusEnable"):
+                with suppress(Exception):
+                    ctrl.setAutoFocusEnable(True)
+        self._control_queue.send(ctrl)

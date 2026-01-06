@@ -78,7 +78,7 @@ DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
 def _load_gripper_defaults() -> dict:
     """Load OnRobot gripper default configuration."""
     return {
-        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.1.1"),
+        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.101.95"),
         "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
     }
 
@@ -582,13 +582,13 @@ def _publish_raw_frame(frame: np.ndarray) -> None:
     RAW_STREAM.add_frame(frame)
 
 
-def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float]) -> str:
+def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float], lock_af: bool = False) -> str:
     stop_camera_stream()
     resolution = (_safe_int(width, DEFAULT_RESOLUTION[0]), _safe_int(
         height, DEFAULT_RESOLUTION[1]))
     fps_value = _safe_float(fps, DEFAULT_FPS)
     stream = DepthAIFrameStream(
-        StreamConfig(resolution=resolution, fps=fps_value),
+        StreamConfig(resolution=resolution, fps=fps_value, lock_af=lock_af),
         frame_hook=_publish_raw_frame,
     )
     stream.start()
@@ -1452,7 +1452,7 @@ def build_setup_drawer() -> dmc.Drawer:
                             max=2160,
                         ),
                         dmc.NumberInput(
-                            id="camera-fps",
+                            id="camera-fps-input",
                             label="FPS",
                             value=DEFAULT_FPS,
                             min=1,
@@ -1461,6 +1461,13 @@ def build_setup_drawer() -> dmc.Drawer:
                         ),
                     ],
                     grow=True,
+                ),
+                dmc.Switch(
+                    id="camera-lock-af",
+                    label="Lock autofocus",
+                    checked=False,
+                    color="teal",
+                    size="md",
                 ),
                 dmc.Text(id="camera-status-text", size="sm", c="dimmed"),
                 html.Div(id="camera-device-info"),
@@ -1480,7 +1487,7 @@ def build_setup_drawer() -> dmc.Drawer:
                     id="gripper-cb-ip",
                     label="Compute Box IP Address",
                     value=DEFAULT_GRIPPER_IP,
-                    placeholder="192.168.1.1",
+                    placeholder="192.168.101.95",
                     description="IP address of the OnRobot Compute Box",
                 ),
                 dmc.Group(
@@ -1488,7 +1495,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.Switch(
                             id="gripper-enable",
                             label="Enable gripper connection",
-                            checked=False,
+                            checked=True,
                             color="teal",
                         ),
                         dmc.Button("Test gripper",
@@ -1827,7 +1834,7 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                 id="camera-feed-container",
                 children=html.Img(
                     id="camera-feed",
-                    src="/camera_frame.jpg",
+                    src="/video_feed",  # Use MJPEG stream to avoid per-frame HTTP polling
                     style={
                         "width": "100%",
                         "height": "auto",
@@ -1838,28 +1845,6 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                     },
                 ),
                 style={"position": "relative"}
-            ),
-            dmc.Group(
-                [
-                    dmc.Text("Raw RGB (no overlay)", fw=600, size="sm"),
-                    dmc.Text(id="raw-fps", size="sm", c="dimmed"),
-                ],
-                justify="space-between",
-                align="center",
-                mt="md",
-            ),
-            html.Div(
-                children=html.Img(
-                    id="raw-camera-feed",
-                    src="/raw_camera_frame.jpg",
-                    style={
-                        "width": "100%",
-                        "height": "auto",
-                        "borderRadius": "12px",
-                        "border": "1px solid rgba(15, 118, 110, 0.2)",
-                        "backgroundColor": "#0b0f14",
-                    },
-                ),
             ),
         ],
         withBorder=True,
@@ -2435,20 +2420,7 @@ def register_callbacks(app: Dash) -> None:
     )
 
     # Auto-refresh camera image (enabled only when camera is live)
-    app.clientside_callback(
-        """
-        function(interval) {
-            var img = document.getElementById('camera-feed');
-            if (img && img.tagName === 'IMG') {
-                img.src = '/camera_frame.jpg?t=' + Date.now();
-            }
-            return null;
-        }
-        """,
-        Output("camera-refresh-container", "children"),
-        Input("camera-interval", "n_intervals"),
-        prevent_initial_call=False,
-    )
+    # (Client refresh removed; MJPEG stream handles updates)
 
     @app.callback(
         Output("calibration-stepper", "active"),
@@ -2495,24 +2467,53 @@ def register_callbacks(app: Dash) -> None:
         Output("camera-interval", "disabled"),
         Input("camera-enable", "checked"),
         Input("auto-init", "n_intervals"),
+        Input("camera-lock-af", "checked"),
         State("camera-width", "value"),
         State("camera-height", "value"),
-        State("camera-fps", "value"),
+        State("camera-fps-input", "value"),
     )
     def _toggle_camera(
         checked: bool,
         _init: int,
+        lock_af: Optional[bool],
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
     ) -> Tuple[str, str, str, bool, dict, bool]:
         trigger = callback_context.triggered_id
         desired_checked = checked
+        stream_running = SESSION.camera_stream is not None and SESSION.camera_stream.is_running()
+
+        if trigger == "camera-lock-af" and stream_running:
+            try:
+                assert SESSION.camera_stream is not None
+                SESSION.camera_stream.set_focus_lock(bool(lock_af))
+                state = "locked" if lock_af else "unlocked"
+                status = f"Camera stream running; focus {state}."
+                return (
+                    status,
+                    "Camera: live",
+                    "teal",
+                    True,
+                    {"status": "live", "message": status},
+                    False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                error = f"Camera focus control error: {exc}"
+                return (
+                    error,
+                    "Camera: error",
+                    "red",
+                    True,
+                    {"status": "error", "message": error},
+                    False,
+                )
+
         if trigger == "auto-init":
             desired_checked = True
         if desired_checked:
             try:
-                status = start_camera_stream(width, height, fps)
+                status = start_camera_stream(width, height, fps, bool(lock_af))
                 return (
                     status,
                     "Camera: live",
@@ -2595,12 +2596,13 @@ def register_callbacks(app: Dash) -> None:
         Output("header-gripper-badge", "color"),
         Input("gripper-test", "n_clicks"),
         Input("gripper-enable", "checked"),
+        Input("auto-init", "n_intervals"),
         State("gripper-cb-ip", "value"),
-        prevent_initial_call=True,
     )
     def _handle_gripper(
         _test_clicks: int,
         enabled: bool,
+        _init: int,
         cb_ip: str,
     ) -> Tuple[str, html.Div, str, str]:
         """Handle gripper connection and testing."""
@@ -2613,6 +2615,9 @@ def register_callbacks(app: Dash) -> None:
                 SESSION.gripper_device = None
             return "Gripper disabled", html.Div(), "Gripper: off", "gray"
 
+        # Auto-connect once on load
+        if trigger == "auto-init":
+            enabled = True
         if not enabled:
             return no_update, no_update, no_update, no_update
 
@@ -2626,16 +2631,42 @@ def register_callbacks(app: Dash) -> None:
                 if cb is None:
                     return (
                         f"Failed to connect to Compute Box at {cb_ip}",
-                        html.Div(),
+                        html.Div(
+                            dmc.Alert(
+                                "Cannot reach the gripper control box. Check power and network.",
+                                title="Gripper Unavailable",
+                                color="red",
+                            )
+                        ),
                         "Gripper: error",
                         "red",
                     )
 
                 SESSION.gripper_device = device
-                SESSION.gripper = TwoFG7Gripper(device=device)
+                SESSION.gripper = TwoFG7Gripper(device)
 
             # Check gripper connection
-            if not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+            try:
+                is_connected = SESSION.gripper.isConnected(
+                    t_index=GRIPPER_DEFAULTS["t_index"]
+                )
+            except Exception as exc:  # noqa: BLE001
+                SESSION.gripper = None
+                SESSION.gripper_device = None
+                return (
+                    f"Failed to query gripper at {cb_ip}: {exc}",
+                    html.Div(
+                        dmc.Alert(
+                            "Could not reach the gripper. Verify the Compute Box IP and network connection.",
+                            title="Gripper Unavailable",
+                            color="red",
+                        )
+                    ),
+                    "Gripper: error",
+                    "red",
+                )
+
+            if not is_connected:
                 return (
                     f"No 2FG7 gripper detected at Compute Box {cb_ip}",
                     html.Div(
@@ -3100,6 +3131,18 @@ def register_callbacks(app: Dash) -> None:
         return notifications, current
 
     @app.callback(
+        Output("safety-stop", "disabled"),
+        Output("robot-speed-slider", "disabled"),
+        Output("robot-speed-decrease", "disabled"),
+        Output("robot-speed-increase", "disabled"),
+        Input("robot-connection-state", "data"),
+    )
+    def _sync_robot_controls(robot_state: Optional[dict]) -> Tuple[bool, bool, bool, bool]:
+        status = (robot_state or {}).get("status") or "offline"
+        disabled = status != "online"
+        return disabled, disabled, disabled, disabled
+
+    @app.callback(
         Output("calibrate-camera", "disabled"),
         Output("markers-detected-icon", "color"),
         Input("camera-calibration-metrics", "children"),
@@ -3355,7 +3398,6 @@ def register_callbacks(app: Dash) -> None:
         Output("detection-metrics", "children"),
         Output("drop-marker-metrics", "children"),
         Output("plate-detection-state", "data"),
-        Output("raw-fps", "children"),
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
@@ -3376,7 +3418,7 @@ def register_callbacks(app: Dash) -> None:
         marker_size: Optional[float],
         plate_layout: str,
         drop_marker_id: Optional[float],
-    ) -> Tuple[str, str, str, str, str, str, str, dict, str]:
+    ) -> Tuple[str, str, str, str, str, str, str, dict]:
         frame, _depth = get_latest_frame()
         plate_state = {
             "count": 0,
@@ -3386,18 +3428,16 @@ def register_callbacks(app: Dash) -> None:
         }
         capture_fps = SESSION.camera_stream.get_fps() if SESSION.camera_stream else 0.0
         overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
-        raw_fps_text = _format_fps(capture_fps, RAW_STREAM.get_fps())
         if _ticks % 30 == 0:
-            logging.warning(
-                f"_update_camera_view called, frame is None: {frame is None}")
+            logging.debug(
+                "_update_camera_view tick; frame available=%s", frame is not None)
 
         if frame is None:
             # Don't add placeholder to MJPEG stream - let video element show its poster image
             # Only log every 30 calls to reduce noise
             if _ticks % 30 == 0:
                 is_running = SESSION.camera_stream and SESSION.camera_stream.is_running()
-                logging.warning(
-                    f"No frame from camera. Stream running: {is_running}")
+                logging.info("No frame from camera. Stream running: %s", is_running)
             return (
                 "Camera stream is stopped.",
                 overlay_fps_text,
@@ -3407,7 +3447,6 @@ def register_callbacks(app: Dash) -> None:
                 "Detections: --",
                 "Drop marker: --",
                 plate_state,
-                raw_fps_text,
             )
 
         # Frame received, dispatch to background processor for heavy overlays.
@@ -3437,8 +3476,6 @@ def register_callbacks(app: Dash) -> None:
             FRAME_PROCESSOR.submit(task, frame)
             overlay = FRAME_PROCESSOR.get_latest(task.key)
 
-        RAW_STREAM.add_frame(frame)
-        raw_fps_text = _format_fps(capture_fps, RAW_STREAM.get_fps())
         vis = overlay.vis if overlay else frame
         status_text = overlay.status if overlay else "Processing..."
         metric_text = overlay.metric if overlay else "--"
@@ -3458,7 +3495,6 @@ def register_callbacks(app: Dash) -> None:
                     "Detections: --",
                     "Drop marker: --",
                     plate_state,
-                    raw_fps_text,
                 )
             if step == 1:
                 MJPEG_STREAM.add_frame(vis)
@@ -3473,7 +3509,6 @@ def register_callbacks(app: Dash) -> None:
                     "Detections: --",
                     "Drop marker: --",
                     plate_state,
-                    raw_fps_text,
                 )
             MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
@@ -3487,7 +3522,6 @@ def register_callbacks(app: Dash) -> None:
                 "Detections: --",
                 "Drop marker: --",
                 plate_state,
-                raw_fps_text,
             )
 
         if tab == "detection":
@@ -3503,7 +3537,6 @@ def register_callbacks(app: Dash) -> None:
                 metric_text,
                 "Drop marker: --",
                 plate_state,
-                raw_fps_text,
             )
 
         if tab == "pick-place":
@@ -3519,8 +3552,21 @@ def register_callbacks(app: Dash) -> None:
                 "Detections: --",
                 metric_text,
                 plate_state,
-                raw_fps_text,
             )
+
+        # Monitoring or any other tab: keep stream alive and surface metrics.
+        MJPEG_STREAM.add_frame(vis)
+        overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
+        return (
+            status_text,
+            overlay_fps_text,
+            "ChArUco corners: --",
+            "Workspace: --",
+            "Plate error: --",
+            "Detections: --",
+            "Drop marker: --",
+            plate_state,
+        )
 
     @app.callback(
         Output("plate-detection-summary", "children"),
@@ -3621,10 +3667,8 @@ def create_app() -> Dash:
 
                 frame_count += 1
                 if frame_count == 1:
-                    logging.warning(
-                        f"/video_feed serving first frame, size={len(frame_data)} bytes")
-                if frame_count % 30 == 0:
-                    logging.warning(f"/video_feed served {frame_count} frames")
+                    logging.debug(
+                        "/video_feed serving first frame, size=%s bytes", len(frame_data))
 
                 yield boundary
                 yield b'Content-Type: image/jpeg\r\n'

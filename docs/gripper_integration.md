@@ -10,7 +10,7 @@ The 2FG7 gripper communicates via an **OnRobot Compute Box** using XML-RPC proto
 
 1. Connect the 2FG7 gripper to the Compute Box
 2. Power on the Compute Box
-3. Note the Compute Box IP address (default: `192.168.1.1`)
+3. Note the Compute Box IP address (default: `192.168.101.95`)
 4. Ensure the Compute Box is accessible from your network
 
 ### Network Configuration
@@ -18,7 +18,7 @@ The 2FG7 gripper communicates via an **OnRobot Compute Box** using XML-RPC proto
 The Compute Box must be on the same network as the computer running the calibration UI, or routable between networks.
 
 **Default Configuration:**
-- **Compute Box IP:** `192.168.1.1`
+- **Compute Box IP:** `192.168.101.95`
 - **XML-RPC Port:** `41414`
 - **Tool Index:** `0` (for single gripper setup)
 
@@ -60,7 +60,7 @@ The onrobot-api provides `Device` and `TWOFG` classes for gripper control:
 from onrobot.device import Device
 from onrobot.twofg import TWOFG
 
-device = Device(Global_cbip="192.168.1.1")
+device = Device(Global_cbip="192.168.101.95")
 device.getCB()  # Establish XML-RPC connection
 
 gripper = TWOFG(device)
@@ -74,7 +74,7 @@ High-level controller for 2FG7 gripper operations.
 from onrobot.device import Device
 from onrobot.twofg import TWOFG
 
-device = Device(Global_cbip="192.168.1.1")
+device = Device(Global_cbip="192.168.101.95")
 device.getCB()
 
 gripper = TWOFG(device)
@@ -180,7 +180,7 @@ If your network requires authentication/VPN to reach the Compute Box, configure 
 5. Test XML-RPC connection manually:
    ```python
    import xmlrpc.client
-   cb = xmlrpc.client.ServerProxy("http://192.168.1.1:41414/")
+   cb = xmlrpc.client.ServerProxy("http://192.168.101.95:41414/")
    print(cb.cb_is_device_connected(0, 0xC0))  # Should return True for 2FG7
    ```
 
@@ -215,7 +215,7 @@ from onrobot.device import Device
 from onrobot.twofg import TWOFG
 
 # Initialize
-device = Device(Global_cbip="192.168.1.1")
+device = Device(Global_cbip="192.168.101.95")
 device.getCB()
 gripper = TWOFG(device)
 

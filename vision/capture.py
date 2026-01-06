@@ -80,16 +80,29 @@ def _build_pipeline(
     fps: float,
     enable_depth: bool = True,
     fast_depth: bool = True,
-) -> tuple[dai.Node.Output, Optional[dai.Node.Output]]:
+    lock_af: bool = False,
+) -> tuple[dai.Node.Output, Optional[dai.Node.Output], Optional[object]]:
     """Create the Luxonis template-aligned capture pipeline."""
 
     color = pipeline.create(dai.node.Camera).build(sockets.color)
+    if lock_af:
+        try:
+            ctrl = color.initialControl
+            ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
+            if hasattr(ctrl, "setAutoFocusEnable"):
+                ctrl.setAutoFocusEnable(False)
+            ctrl.setManualFocus(130)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "Unable to lock autofocus; continuing with defaults: %s", exc
+            )
     sanitized_resolution = (
         resolution[0] - (resolution[0] % 16),
         resolution[1] - (resolution[1] % 2),
     )
     color_out = color.requestOutput(
         sanitized_resolution, dai.ImgFrame.Type.BGR888i, fps=fps)
+    control_in: Optional[object] = getattr(color, "inputControl", None)
 
     depth_output: Optional[dai.Node.Output] = None
 
@@ -117,7 +130,7 @@ def _build_pipeline(
         stereo.setOutputSize(*sanitized_resolution)
         depth_output = stereo.depth
 
-    return color_out, depth_output
+    return color_out, depth_output, control_in
 
 
 def build_pipeline(
@@ -127,7 +140,8 @@ def build_pipeline(
     fps: float,
     enable_depth: bool = True,
     fast_depth: bool = True,
-) -> tuple[dai.Node.Output, Optional[dai.Node.Output]]:
+    lock_af: bool = False,
+) -> tuple[dai.Node.Output, Optional[dai.Node.Output], Optional[object]]:
     """Public wrapper for building the shared DepthAI pipeline."""
 
     return _build_pipeline(
@@ -137,6 +151,7 @@ def build_pipeline(
         fps,
         enable_depth=enable_depth,
         fast_depth=fast_depth,
+        lock_af=lock_af,
     )
 
 
@@ -192,7 +207,7 @@ def capture_calibration_assets(config: CaptureConfig) -> Tuple[List[Path], np.nd
         pipeline = stack.enter_context(dai.Pipeline())
         device = pipeline.getDefaultDevice()
         sockets = resolve_camera_sockets(device)
-        color_out, depth_out = _build_pipeline(
+        color_out, depth_out, _control_in = _build_pipeline(
             pipeline,
             sockets,
             config.resolution,
