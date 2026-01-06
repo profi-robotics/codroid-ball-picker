@@ -1232,7 +1232,8 @@ async def _run_robot_plate_calibration(
             status="complete",
             step=3,
         )
-        LOGGER.info("Robot calibration complete. Coordinate ID 5 is now active.")
+        LOGGER.info(
+            "Robot calibration complete. Coordinate ID 5 is now active.")
         return robot_points, coord_frame or {}
 
     return await session.run_with_robot(robot_uri, _runner)
