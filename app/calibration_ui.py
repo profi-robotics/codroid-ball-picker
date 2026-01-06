@@ -13,9 +13,10 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Tuple
+from typing import Awaitable, Callable, Deque, Optional, Tuple
 from urllib.parse import urlparse
 
 import cv2
@@ -165,15 +166,22 @@ CALIBRATION_PROGRESS = {"value": 0, "current_frame": 0, "max_frames": 0}
 class MotionJPEGStream:
     """Manager for Motion JPEG video streaming for fullscreen video playback."""
 
-    def __init__(self, frame_rate: float = 30.0):
+    def __init__(self, frame_rate: float = 30.0, min_push_interval_s: float = 1 / 120):
         self.frame_rate = frame_rate
         self.frame_queue: list[bytes] = []
         self.lock = threading.Lock()
         self.max_queue_size = 3
         self.frame_count = 0
+        self.min_push_interval_s = min_push_interval_s
+        self._last_push_ts = 0.0
+        self._fps = 0.0
+        self._last_fps_ts = 0.0
 
     def add_frame(self, frame: np.ndarray) -> None:
-        """Add a frame to the stream queue."""
+        """Add a frame to the stream queue, dropping frames if pushing too fast."""
+        now = time.time()
+        if now - self._last_push_ts < self.min_push_interval_s:
+            return
         success, buffer = cv2.imencode(".jpg", frame)
         if not success:
             return
@@ -181,6 +189,13 @@ class MotionJPEGStream:
         with self.lock:
             self.frame_queue.append(buffer.tobytes())
             self.frame_count += 1
+            self._last_push_ts = now
+            if self._last_fps_ts > 0.0:
+                dt = now - self._last_fps_ts
+                if dt > 0:
+                    inst_fps = 1.0 / dt
+                    self._fps = 0.9 * self._fps + 0.1 * inst_fps
+            self._last_fps_ts = now
             # Keep only recent frames
             if len(self.frame_queue) > self.max_queue_size:
                 self.frame_queue.pop(0)
@@ -192,8 +207,89 @@ class MotionJPEGStream:
                 return self.frame_queue[-1]
         return None
 
+    def get_fps(self) -> float:
+        with self.lock:
+            return self._fps
+
+
+@dataclass
+class OverlayResult:
+    vis: np.ndarray
+    status: str
+    metric: str
+
+
+@dataclass
+class OverlayTask:
+    key: str
+    runner: Callable[[np.ndarray], OverlayResult]
+
+
+class FrameProcessor:
+    """Background processor that keeps only the newest request and result."""
+
+    def __init__(self, max_queue: int = 2) -> None:
+        self._queue: Deque[tuple[str, np.ndarray,
+                                 Callable[[np.ndarray], OverlayResult]]]
+        self._queue = deque(maxlen=max_queue)
+        self._lock = threading.Lock()
+        self._latest: dict[str, OverlayResult] = {}
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._worker, name="FrameProcessor", daemon=True
+        )
+        self._thread.start()
+
+    def submit(self, task: OverlayTask, frame: np.ndarray) -> None:
+        # Drop older pending tasks and keep the newest request only.
+        with self._lock:
+            self._queue.clear()
+            self._queue.append((task.key, frame.copy(), task.runner))
+
+    def get_latest(self, key: str) -> Optional[OverlayResult]:
+        with self._lock:
+            result = self._latest.get(key)
+            if result is None:
+                return None
+            # Copy the image so callers cannot mutate internal state.
+            return OverlayResult(result.vis.copy(), result.status, result.metric)
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _worker(self) -> None:
+        while self._running:
+            task: Optional[tuple[str, np.ndarray,
+                                 Callable[[np.ndarray], OverlayResult]]] = None
+            with self._lock:
+                if self._queue:
+                    # Pop newest to drop stale work.
+                    task = self._queue.pop()
+            if task is None:
+                time.sleep(0.003)
+                continue
+            key, frame, runner = task
+            try:
+                result = runner(frame)
+            except Exception as exc:  # noqa: BLE001
+                logging.error("FrameProcessor error for %s: %s",
+                              key, exc, exc_info=True)
+                result = OverlayResult(frame, f"Processing error: {exc}", "--")
+            with self._lock:
+                self._latest[key] = result
+
+
+def _format_fps(capture_fps: float, stream_fps: float) -> str:
+    cap_text = f"{capture_fps:.1f}" if capture_fps > 0 else "--"
+    stream_text = f"{stream_fps:.1f}" if stream_fps > 0 else "--"
+    return f"FPS — capture: {cap_text}, stream: {stream_text}"
+
 
 MJPEG_STREAM = MotionJPEGStream()
+FRAME_PROCESSOR = FrameProcessor()
+RAW_STREAM = MotionJPEGStream()
 
 
 def _safe_int(value: Optional[float], fallback: int) -> int:
@@ -482,13 +578,19 @@ def _ensure_plate_visible(max_age_s: float = 1.0) -> None:
             "Calibration plate markers are stale; keep them visible.")
 
 
+def _publish_raw_frame(frame: np.ndarray) -> None:
+    RAW_STREAM.add_frame(frame)
+
+
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float]) -> str:
     stop_camera_stream()
     resolution = (_safe_int(width, DEFAULT_RESOLUTION[0]), _safe_int(
         height, DEFAULT_RESOLUTION[1]))
     fps_value = _safe_float(fps, DEFAULT_FPS)
-    stream = DepthAIFrameStream(StreamConfig(
-        resolution=resolution, fps=fps_value))
+    stream = DepthAIFrameStream(
+        StreamConfig(resolution=resolution, fps=fps_value),
+        frame_hook=_publish_raw_frame,
+    )
     stream.start()
     SESSION.camera_stream = stream
     device_id = stream.device_id() or "unknown"
@@ -1720,6 +1822,7 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                 align="center",
             ),
             dmc.Text(id="overlay-status", size="sm", c="dimmed"),
+            dmc.Text(id="camera-fps", size="sm", c="dimmed"),
             html.Div(
                 id="camera-feed-container",
                 children=html.Img(
@@ -1735,6 +1838,28 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                     },
                 ),
                 style={"position": "relative"}
+            ),
+            dmc.Group(
+                [
+                    dmc.Text("Raw RGB (no overlay)", fw=600, size="sm"),
+                    dmc.Text(id="raw-fps", size="sm", c="dimmed"),
+                ],
+                justify="space-between",
+                align="center",
+                mt="md",
+            ),
+            html.Div(
+                children=html.Img(
+                    id="raw-camera-feed",
+                    src="/raw_camera_frame.jpg",
+                    style={
+                        "width": "100%",
+                        "height": "auto",
+                        "borderRadius": "12px",
+                        "border": "1px solid rgba(15, 118, 110, 0.2)",
+                        "backgroundColor": "#0b0f14",
+                    },
+                ),
             ),
         ],
         withBorder=True,
@@ -2041,7 +2166,7 @@ def build_layout() -> dmc.MantineProvider:
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(
                     id="camera-interval",
-                    interval=1000,  # throttle refresh to ~1 FPS to reduce browser churn
+                    interval=33,  # ~30 FPS UI poll; stream push happens each tick
                     n_intervals=0,
                     disabled=True,
                 ),
@@ -2184,6 +2309,77 @@ async def _with_robot_api(uri: str, action: Callable[[CodroidAPI], Awaitable[Non
     finally:
         await robot_api.close()
         await user_api.close()
+
+
+def _run_charuco_task(board_path: Path) -> Callable[[np.ndarray], OverlayResult]:
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_charuco_overlay(frame, board_path)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _run_workspace_task(marker_ids: Tuple[int, int], marker_size_mm: float) -> Callable[[np.ndarray], OverlayResult]:
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_workspace_overlay(
+            frame, marker_ids, marker_size_mm)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _run_plate_task(layout_path: Path) -> Callable[[np.ndarray], OverlayResult]:
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_plate_overlay(frame, layout_path)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _run_detection_task() -> Callable[[np.ndarray], OverlayResult]:
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_detection_overlay(frame)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _run_drop_marker_task(marker_id: int) -> Callable[[np.ndarray], OverlayResult]:
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_drop_marker_overlay(frame, marker_id)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _select_overlay_task(
+    tab: str,
+    step: int,
+    board_path: Path,
+    marker_ids: Tuple[int, int],
+    marker_size_mm: float,
+    plate_path: Path,
+    drop_marker_id: int,
+) -> Optional[OverlayTask]:
+    if tab == "calibration":
+        if step == 0:
+            return OverlayTask("calibration-charuco", _run_charuco_task(board_path))
+        if step == 1:
+            return OverlayTask(
+                "calibration-workspace",
+                _run_workspace_task(marker_ids, marker_size_mm),
+            )
+        return OverlayTask("calibration-plate", _run_plate_task(plate_path))
+    if tab == "detection":
+        return OverlayTask("detection", _run_detection_task())
+    if tab == "pick-place":
+        return OverlayTask("pick-place", _run_drop_marker_task(drop_marker_id))
+    return None
 
 
 def register_callbacks(app: Dash) -> None:
@@ -3152,12 +3348,14 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("overlay-status", "children"),
+        Output("camera-fps", "children"),
         Output("camera-calibration-metrics", "children"),
         Output("workspace-metrics", "children"),
         Output("plate-metrics", "children"),
         Output("detection-metrics", "children"),
         Output("drop-marker-metrics", "children"),
         Output("plate-detection-state", "data"),
+        Output("raw-fps", "children"),
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
@@ -3178,7 +3376,7 @@ def register_callbacks(app: Dash) -> None:
         marker_size: Optional[float],
         plate_layout: str,
         drop_marker_id: Optional[float],
-    ) -> Tuple[str, str, str, str, str, str, dict]:
+    ) -> Tuple[str, str, str, str, str, str, str, dict, str]:
         frame, _depth = get_latest_frame()
         plate_state = {
             "count": 0,
@@ -3186,6 +3384,9 @@ def register_callbacks(app: Dash) -> None:
             "timestamp": time.time(),
             "message": "Waiting for plate markers",
         }
+        capture_fps = SESSION.camera_stream.get_fps() if SESSION.camera_stream else 0.0
+        overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
+        raw_fps_text = _format_fps(capture_fps, RAW_STREAM.get_fps())
         if _ticks % 30 == 0:
             logging.warning(
                 f"_update_camera_view called, frame is None: {frame is None}")
@@ -3199,15 +3400,17 @@ def register_callbacks(app: Dash) -> None:
                     f"No frame from camera. Stream running: {is_running}")
             return (
                 "Camera stream is stopped.",
+                overlay_fps_text,
                 "ChArUco corners: --",
                 "Workspace: --",
                 "Plate error: --",
                 "Detections: --",
                 "Drop marker: --",
                 plate_state,
+                raw_fps_text,
             )
 
-        # Frame received, add to MJPEG stream
+        # Frame received, dispatch to background processor for heavy overlays.
         step = active_step or 0
         tab = active_tab or "calibration"
         board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
@@ -3220,74 +3423,103 @@ def register_callbacks(app: Dash) -> None:
             marker_size, SESSION.config.marker_size_mm)
         drop_marker = _safe_int(drop_marker_id, SESSION.drop_marker_id)
 
+        task = _select_overlay_task(
+            tab,
+            step,
+            board_path,
+            marker_ids,
+            marker_size_mm,
+            plate_path,
+            drop_marker,
+        )
+        overlay: Optional[OverlayResult] = None
+        if task is not None:
+            FRAME_PROCESSOR.submit(task, frame)
+            overlay = FRAME_PROCESSOR.get_latest(task.key)
+
+        RAW_STREAM.add_frame(frame)
+        raw_fps_text = _format_fps(capture_fps, RAW_STREAM.get_fps())
+        vis = overlay.vis if overlay else frame
+        status_text = overlay.status if overlay else "Processing..."
+        metric_text = overlay.metric if overlay else "--"
+        plate_state = PLATE_STATUS.copy()
+
         if tab == "calibration":
             if step == 0:
-                vis, status, metric = draw_charuco_overlay(frame, board_path)
-                _apply_workspace_overlay(vis)
                 MJPEG_STREAM.add_frame(vis)
+                overlay_fps_text = _format_fps(
+                    capture_fps, MJPEG_STREAM.get_fps())
                 return (
-                    status,
-                    metric,
+                    status_text,
+                    overlay_fps_text,
+                    metric_text,
                     "Workspace: --",
                     "Plate error: --",
                     "Detections: --",
                     "Drop marker: --",
                     plate_state,
+                    raw_fps_text,
                 )
             if step == 1:
-                vis, status, metric = draw_workspace_overlay(
-                    frame, marker_ids, marker_size_mm)
-                _apply_workspace_overlay(vis)
                 MJPEG_STREAM.add_frame(vis)
+                overlay_fps_text = _format_fps(
+                    capture_fps, MJPEG_STREAM.get_fps())
                 return (
-                    status,
+                    status_text,
+                    overlay_fps_text,
                     "ChArUco corners: --",
-                    metric,
+                    metric_text,
                     "Plate error: --",
                     "Detections: --",
                     "Drop marker: --",
                     plate_state,
+                    raw_fps_text,
                 )
-            vis, status, metric = draw_plate_overlay(frame, plate_path)
-            plate_state = PLATE_STATUS.copy()
-            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
+            overlay_fps_text = _format_fps(
+                capture_fps, MJPEG_STREAM.get_fps())
             return (
-                status,
+                status_text,
+                overlay_fps_text,
                 "ChArUco corners: --",
                 "Workspace: --",
-                metric,
+                metric_text,
                 "Detections: --",
                 "Drop marker: --",
                 plate_state,
+                raw_fps_text,
             )
 
         if tab == "detection":
-            vis, status, metric = draw_detection_overlay(frame)
-            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
+            overlay_fps_text = _format_fps(
+                capture_fps, MJPEG_STREAM.get_fps())
             return (
-                status,
+                status_text,
+                overlay_fps_text,
                 "ChArUco corners: --",
                 "Workspace: --",
                 "Plate error: --",
-                metric,
+                metric_text,
                 "Drop marker: --",
                 plate_state,
+                raw_fps_text,
             )
 
         if tab == "pick-place":
-            vis, status, metric = draw_drop_marker_overlay(frame, drop_marker)
-            _apply_workspace_overlay(vis)
             MJPEG_STREAM.add_frame(vis)
+            overlay_fps_text = _format_fps(
+                capture_fps, MJPEG_STREAM.get_fps())
             return (
-                status,
+                status_text,
+                overlay_fps_text,
                 "ChArUco corners: --",
                 "Workspace: --",
                 "Plate error: --",
                 "Detections: --",
-                metric,
+                metric_text,
                 plate_state,
+                raw_fps_text,
             )
 
     @app.callback(
@@ -3432,6 +3664,25 @@ def create_app() -> Dash:
         frame_data = MJPEG_STREAM.get_frame()
         if not frame_data:
             # Return placeholder as JPEG bytes
+            placeholder = _placeholder_frame("Camera stream offline")
+            success, buffer = cv2.imencode(".jpg", placeholder)
+            if success:
+                frame_data = buffer.tobytes()
+            else:
+                return app.server.response_class(
+                    b"",
+                    mimetype='image/jpeg'
+                )
+        return app.server.response_class(
+            frame_data,
+            mimetype='image/jpeg'
+        )
+
+    @app.server.route("/raw_camera_frame.jpg")
+    def raw_camera_frame():
+        """Get the latest raw camera frame (no overlays) as a JPEG image."""
+        frame_data = RAW_STREAM.get_frame()
+        if not frame_data:
             placeholder = _placeholder_frame("Camera stream offline")
             success, buffer = cv2.imencode(".jpg", placeholder)
             if success:

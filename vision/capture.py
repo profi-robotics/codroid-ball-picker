@@ -7,7 +7,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import depthai as dai
@@ -45,25 +45,30 @@ def resolve_camera_sockets(device: dai.Device) -> CameraSockets:
     mono_sockets: List[dai.CameraBoardSocket] = []
 
     for feature in features:
-        sensor_type = getattr(feature, "sensorType", None) or getattr(feature, "type", None)
+        sensor_type = getattr(feature, "sensorType", None) or getattr(
+            feature, "type", None)
         if sensor_type == dai.CameraSensorType.COLOR and color_socket is None:
             color_socket = feature.socket
         elif sensor_type == dai.CameraSensorType.MONO:
             mono_sockets.append(feature.socket)
 
     if color_socket is None:
-        color_socket = getattr(dai.CameraBoardSocket, "CAM_A", None) or getattr(dai.CameraBoardSocket, "RGB", None)
+        color_socket = getattr(dai.CameraBoardSocket, "CAM_A", None) or getattr(
+            dai.CameraBoardSocket, "RGB", None)
     if len(mono_sockets) < 2:
         # Fall back to standard CAM_B/C ordering for older RVC2 hardware.
-        default_left = getattr(dai.CameraBoardSocket, "CAM_B", None) or getattr(dai.CameraBoardSocket, "LEFT", None)
-        default_right = getattr(dai.CameraBoardSocket, "CAM_C", None) or getattr(dai.CameraBoardSocket, "RIGHT", None)
+        default_left = getattr(dai.CameraBoardSocket, "CAM_B", None) or getattr(
+            dai.CameraBoardSocket, "LEFT", None)
+        default_right = getattr(dai.CameraBoardSocket, "CAM_C", None) or getattr(
+            dai.CameraBoardSocket, "RIGHT", None)
         if default_left:
             mono_sockets.insert(0, default_left)
         if default_right:
             mono_sockets.append(default_right)
 
     if color_socket is None or len(mono_sockets) < 2:
-        raise RuntimeError("Unable to determine OAK-D camera sockets; check the USB connection and board configuration.")
+        raise RuntimeError(
+            "Unable to determine OAK-D camera sockets; check the USB connection and board configuration.")
 
     return CameraSockets(color=color_socket, left=mono_sockets[0], right=mono_sockets[1])
 
@@ -73,7 +78,9 @@ def _build_pipeline(
     sockets: CameraSockets,
     resolution: tuple[int, int],
     fps: float,
-) -> tuple[dai.Node.Output, dai.Node.Output]:
+    enable_depth: bool = True,
+    fast_depth: bool = True,
+) -> tuple[dai.Node.Output, Optional[dai.Node.Output]]:
     """Create the Luxonis template-aligned capture pipeline."""
 
     color = pipeline.create(dai.node.Camera).build(sockets.color)
@@ -81,24 +88,36 @@ def _build_pipeline(
         resolution[0] - (resolution[0] % 16),
         resolution[1] - (resolution[1] % 2),
     )
-    color_out = color.requestOutput(sanitized_resolution, dai.ImgFrame.Type.BGR888i, fps=fps)
+    color_out = color.requestOutput(
+        sanitized_resolution, dai.ImgFrame.Type.BGR888i, fps=fps)
 
-    left = pipeline.create(dai.node.Camera).build(sockets.left)
-    right = pipeline.create(dai.node.Camera).build(sockets.right)
-    mono_resolution = (min(1280, resolution[0]), min(800, resolution[1]))
-    left_out = left.requestOutput(mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
-    right_out = right.requestOutput(mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
+    depth_output: Optional[dai.Node.Output] = None
 
-    stereo = pipeline.create(dai.node.StereoDepth).build(left=left_out, right=right_out)
-    stereo.setDepthAlign(sockets.color)
-    stereo.setRectification(True)
-    stereo.setLeftRightCheck(True)
-    stereo.setExtendedDisparity(False)
-    stereo.setSubpixel(True)
-    stereo.setRectifyEdgeFillColor(0)
-    stereo.setOutputSize(*sanitized_resolution)
+    # Build stereo depth only when requested to reduce pipeline load for pure RGB streaming.
+    # Downstream callers decide whether to create queues for the returned output.
+    if enable_depth:
+        left = pipeline.create(dai.node.Camera).build(sockets.left)
+        right = pipeline.create(dai.node.Camera).build(sockets.right)
+        mono_resolution = (min(1280, resolution[0]), min(800, resolution[1]))
+        left_out = left.requestOutput(
+            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
+        right_out = right.requestOutput(
+            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
 
-    return color_out, stereo.depth
+        stereo = pipeline.create(dai.node.StereoDepth).build(
+            left=left_out, right=right_out)
+        stereo.setDepthAlign(sockets.color)
+        stereo.setRectification(True)
+        # Left-right check must stay enabled when aligning to COLOR (center alignment requirement).
+        # Subpixel remains optional for performance control.
+        stereo.setLeftRightCheck(True)
+        stereo.setExtendedDisparity(False)
+        stereo.setSubpixel(not fast_depth)
+        stereo.setRectifyEdgeFillColor(0)
+        stereo.setOutputSize(*sanitized_resolution)
+        depth_output = stereo.depth
+
+    return color_out, depth_output
 
 
 def build_pipeline(
@@ -106,10 +125,19 @@ def build_pipeline(
     sockets: CameraSockets,
     resolution: tuple[int, int],
     fps: float,
-) -> tuple[dai.Node.Output, dai.Node.Output]:
+    enable_depth: bool = True,
+    fast_depth: bool = True,
+) -> tuple[dai.Node.Output, Optional[dai.Node.Output]]:
     """Public wrapper for building the shared DepthAI pipeline."""
 
-    return _build_pipeline(pipeline, sockets, resolution, fps)
+    return _build_pipeline(
+        pipeline,
+        sockets,
+        resolution,
+        fps,
+        enable_depth=enable_depth,
+        fast_depth=fast_depth,
+    )
 
 
 def _capture_color_images(
@@ -135,7 +163,8 @@ def _capture_color_images(
             if key != ord("c"):
                 continue
         else:
-            input(f"Align the board and press Enter to capture image {index}/{count}...")
+            input(
+                f"Align the board and press Enter to capture image {index}/{count}...")
 
         path = dest / f"calibration_color_{index:02}.png"
         cv2.imwrite(str(path), frame)
@@ -163,17 +192,31 @@ def capture_calibration_assets(config: CaptureConfig) -> Tuple[List[Path], np.nd
         pipeline = stack.enter_context(dai.Pipeline())
         device = pipeline.getDefaultDevice()
         sockets = resolve_camera_sockets(device)
-        color_out, depth_out = _build_pipeline(pipeline, sockets, config.resolution, config.fps)
+        color_out, depth_out = _build_pipeline(
+            pipeline,
+            sockets,
+            config.resolution,
+            config.fps,
+            enable_depth=True,
+            fast_depth=False,
+        )
         color_queue = color_out.createOutputQueue(maxSize=4, blocking=False)
+        if depth_out is None:
+            raise RuntimeError(
+                "Depth output not available; enable depth capture for calibration.")
         depth_queue = depth_out.createOutputQueue(maxSize=2, blocking=True)
 
-        logging.info("Connected to %s; capturing %d images.", device.getMxId(), config.count)
+        logging.info("Connected to %s; capturing %d images.",
+                     device.getMxId(), config.count)
         pipeline.start()
-        images = _capture_color_images(color_queue, config.output_dir, config.count, config.preview)
-        depth_frame, _ = _capture_depth_snapshot(depth_queue, config.output_dir)
+        images = _capture_color_images(
+            color_queue, config.output_dir, config.count, config.preview)
+        depth_frame, _ = _capture_depth_snapshot(
+            depth_queue, config.output_dir)
         pipeline.stop()
 
     if not images:
-        raise RuntimeError("No calibration images captured; run the capture routine again.")
+        raise RuntimeError(
+            "No calibration images captured; run the capture routine again.")
 
     return images, depth_frame
