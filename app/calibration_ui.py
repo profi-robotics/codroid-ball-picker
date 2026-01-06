@@ -137,6 +137,8 @@ class UISession:
     detection_max: int = 10
     detection_classes: Optional[str] = None
     gripper_sync: dict = field(default_factory=dict)
+    robot_speed_rate: float = 0.25
+    robot_speed_last_set: float = 0.0
 
 
 SESSION = UISession(
@@ -1782,7 +1784,7 @@ def build_footer() -> dmc.AppShellFooter:
         min=0,
         max=100,
         step=5,
-        value=50,
+        value=25,
         labelAlwaysOn=False,
         size="sm",
         marks=[
@@ -2916,6 +2918,10 @@ def build_layout() -> dmc.MantineProvider:
                     id="footer-visibility",
                     data={"collapsed": False},
                 ),
+                dcc.Store(
+                    id="robot-speed-state",
+                    data={"value": 25},
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
@@ -3299,6 +3305,43 @@ def register_callbacks(app: Dash) -> None:
         if trigger == "robot-speed-increase":
             return min(100.0, current_value + step)
         return current_value
+
+    @app.callback(
+        Output("robot-speed-state", "data"),
+        Input("robot-speed-slider", "value"),
+        State("robot-connection-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _apply_robot_speed(
+        value: Optional[float],
+        robot_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> dict:
+        if value is None:
+            return no_update
+        rate = max(0.0, min(1.0, float(value) / 100.0))
+        now = time.time()
+        if abs(rate - SESSION.robot_speed_rate) < 0.001 and (now - SESSION.robot_speed_last_set) < 0.4:
+            return no_update
+
+        SESSION.robot_speed_rate = rate
+        if (robot_state or {}).get("status") != "online":
+            LOGGER.info("Robot speed requested: %.0f%% (robot offline)", value)
+            return {"status": "offline", "value": value, "rate": rate, "updated": now}
+
+        async def _set_speed(api: CodroidAPI) -> None:
+            await api.set_manual_move_rate(rate)
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _set_speed)
+            SESSION.robot_speed_last_set = now
+            SESSION.last_action = f"Robot speed set to {rate:.2f}"
+            LOGGER.info("Robot speed set to %.0f%%", value)
+            return {"status": "ok", "value": value, "rate": rate, "updated": now}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to set robot speed")
+            return {"status": "error", "value": value, "rate": rate, "error": str(exc), "updated": now}
 
     @app.callback(
         Output("robot-status-text", "children"),
