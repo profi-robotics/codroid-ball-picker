@@ -55,7 +55,7 @@ DEFAULT_PLATE_PATH = Path(
 DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
 DEFAULT_WORKSPACE_PATH = Path("data/workspace_definition.npz")
 DEFAULT_CAPTURE_DIR = Path("data/calibration")
-DEFAULT_RESOLUTION = (1280, 720)
+DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30.0
 DEFAULT_MODEL_DIR = Path("data/models")
 DEFAULT_DROP_MARKER_ID = 30
@@ -1103,14 +1103,22 @@ async def _run_robot_plate_calibration(
 
             for idx in range(3):
                 _ensure_plate_visible()
+                point_labels = ["Point 1 (Origin)", "Point 2 (+X)", "Point 3 (+X/+Y)"]
+                point_label = point_labels[idx] if idx < len(point_labels) else f"Point {idx + 1}"
+                LOGGER.info(f"Step {idx + 1}/3: Waiting for gripper to align with {point_label}...")
+                
                 try:
                     posture = await asyncio.wait_for(press_queue.get(), timeout=90.0)
                 except asyncio.TimeoutError:
                     raise RuntimeError(
-                        "Timed out waiting for flange button 1 press.")
+                        f"Timed out waiting for flange button 1 press at {point_label}. "
+                        f"Move gripper to the groove target and press the flange button.")
+                
+                LOGGER.info(f"✓ {point_label} captured. Position: X={posture.get('x'):.1f}, Y={posture.get('y'):.1f}, Z={posture.get('z'):.1f}")
                 robot_points.append(posture)
 
             # Persist user coordinate 5 using the captured points.
+            LOGGER.info("Computing coordinate transformation from 3 calibration points...")
             cpos_points = [
                 CodroidAPI.build_target_cpos(
                     x=float(pt["x"]),
@@ -1129,6 +1137,7 @@ async def _run_robot_plate_calibration(
             )
             if coord_frame:
                 await robot_api.change_coordinate_parameter(ROBOT_COORDINATE_ID, coord_frame)
+            LOGGER.info("✓ Robot calibration complete. Coordinate ID 5 is now active.")
             return robot_points, coord_frame or {}
         finally:
             poll_task.cancel()
@@ -2308,9 +2317,10 @@ def build_stepper_card() -> dmc.Card:
                                          size="sm", c="dimmed"),
                                 dmc.Text(id="plate-metrics", size="sm"),
                                 dmc.Text(
-                                    "Press flange button 1 to capture each point.",
-                                    size="sm",
+                                    "Step-by-step calibration guide:\n1. Place the calibration plate on the table\n2. Click 'Begin calibrating robot'\n3. Move the gripper to each groove target (1, 2, then 3)\n4. Press the flange button when aligned\n5. The robot will calculate the coordinate transform",
+                                    size="xs",
                                     c="dimmed",
+                                    style={"whiteSpace": "pre-line"},
                                 ),
                                 dmc.Text(
                                     id="robot-calibration-status",
@@ -4336,19 +4346,35 @@ def register_callbacks(app: Dash) -> None:
         Output("start-robot-calibration", "disabled"),
         Output("start-robot-calibration", "variant"),
         Input("plate-detection-state", "data"),
+        Input("robot-connection-state", "data"),
         State("robot-calibration-state", "data"),
     )
     def _update_plate_summary(
         plate_state: Optional[dict],
+        robot_conn_state: Optional[dict],
         calib_state: Optional[dict],
     ) -> Tuple[str, str, bool, str]:
         state = plate_state or {}
         count = state.get("count", 0)
         ok = bool(state.get("ok"))
-        message = state.get("message") or f"Detected {count} marker(s)."
-        color = "green" if ok else "yellow"
         in_progress = (calib_state or {}).get("status") == "running"
-        disabled = not ok or in_progress
+        robot_online = (robot_conn_state or {}).get("status") == "online"
+        
+        # Determine message based on the actual blocking issue
+        if in_progress:
+            message = "Calibration in progress..."
+            color = "blue"
+        elif not robot_online:
+            message = "Robot not connected. Click 'Test robot connection' to establish connection."
+            color = "red"
+        elif not ok:
+            message = state.get("message") or f"Detected {count} marker(s)."
+            color = "yellow"
+        else:
+            message = "Plate markers stable. Ready to calibrate."
+            color = "green"
+        
+        disabled = not ok or in_progress or not robot_online
         variant = "filled" if not disabled else "light"
         return message, color, disabled, variant
 
@@ -4376,27 +4402,38 @@ def register_callbacks(app: Dash) -> None:
             layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
             plate_layout = plate.load_plate_layout(layout_path)
             _ensure_plate_visible()
-            message = "Waiting for flange button presses (1, then 2, then 3)..."
-            calib_state = {"status": "running", "message": message}
+            
+            # Initial guidance message
+            initial_message = "🤖 Robot Calibration Started\n\nStep 1/3: Move to Point 1 (origin), then press flange button 1..."
+            initial_state = {"status": "running", "message": initial_message, "current_point": 1}
+            
             # Run calibration synchronously for now.
             robot_points, coord_frame = asyncio.run(
                 _run_robot_plate_calibration(
                     robot_uri or DEFAULT_ROBOT_URI, plate_layout)
             )
-            transform = _apply_robot_calibration_results(
+            _transform = _apply_robot_calibration_results(
                 robot_points,
                 plate_layout,
             )
             summary = (
-                f"Robot calibration complete. "
-                f"Captured {len(robot_points)} points. "
-                f"Coordinate ID {ROBOT_COORDINATE_ID} updated. "
-                f"Transform saved to workspace (translation {transform.translation.round(2).tolist()})."
+                f"✓ Robot calibration complete!\n"
+                f"📍 Captured 3 calibration points\n"
+                f"🔄 Coordinate ID {ROBOT_COORDINATE_ID} created\n"
+                f"📏 Workspace transform updated\n"
+                f"✨ Ready for autonomous operation!"
             )
             return summary, {"status": "done", "message": summary}
         except Exception as exc:
+            error_msg = (
+                f"❌ Robot calibration failed\n{exc}\n\n"
+                f"Troubleshooting:\n"
+                f"• Check robot connection\n"
+                f"• Verify plate markers are visible\n"
+                f"• Ensure flange button is functional"
+            )
             return (
-                f"Robot calibration failed: {exc}",
+                error_msg,
                 {"status": "idle", "message": str(exc)},
             )
 
