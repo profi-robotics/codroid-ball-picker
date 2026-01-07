@@ -70,6 +70,9 @@ FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
 GRIPPER_FORCE_MIN = 20
 GRIPPER_FORCE_MAX = 140
 GRIPPER_FORCE_DEFAULT = 80
+GRIPPER_SPEED_DEFAULT = 80
+GRIPPER_SPEED_MIN = 5
+GRIPPER_CALIBRATION_WIDTH_MM = 5.0
 
 
 def _load_codroid_defaults() -> dict:
@@ -150,6 +153,7 @@ class UISession:
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None
+    robot_calibration_gripper_width: Optional[float] = None
 
 
 SESSION = UISession(
@@ -1500,6 +1504,10 @@ async def _run_robot_plate_calibration(
 
         if not coord_frame:
             raise RuntimeError("Robot controller returned empty calibration frame.")
+
+        coord_frame["a"] = 0.0
+        coord_frame["b"] = 0.0
+        coord_frame["c"] = 0.0
 
         change_request_time = time.time()
         change_payload = {
@@ -4001,6 +4009,43 @@ def register_callbacks(app: Dash) -> None:
             LOGGER.exception("Gripper command failed")
             return f"Gripper action failed: {exc}"
 
+
+def _prepare_gripper_for_calibration() -> None:
+    """Set gripper to calibration defaults and remember prior width."""
+    SESSION.robot_calibration_gripper_width = None
+    gripper = SESSION.gripper
+    if gripper is not None:
+        try:
+            width = gripper.get_ext_width(t_index=GRIPPER_DEFAULTS["t_index"])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Unable to read gripper width before calibration: %s", exc)
+        else:
+            if isinstance(width, (int, float)):
+                SESSION.robot_calibration_gripper_width = float(width)
+    response = _command_gripper(
+        GRIPPER_CALIBRATION_WIDTH_MM,
+        "prepping for calibration",
+        force=GRIPPER_FORCE_MIN,
+        speed=GRIPPER_SPEED_MIN,
+    )
+    LOGGER.debug("Calibration gripper prep: %s", response)
+
+
+def _restore_calibration_gripper_width() -> None:
+    """Restore gripper width saved prior to calibration."""
+    width = SESSION.robot_calibration_gripper_width
+    if width is None:
+        return
+    response = _command_gripper(
+        width,
+        "restored after calibration",
+        force=GRIPPER_FORCE_DEFAULT,
+        speed=GRIPPER_SPEED_DEFAULT,
+        prevent_overclose=True,
+    )
+    LOGGER.debug("Calibration gripper restored: %s", response)
+    SESSION.robot_calibration_gripper_width = None
+
     @app.callback(
         Output("gripper-status-text", "children"),
         Output("gripper-device-info", "children"),
@@ -5536,11 +5581,12 @@ def register_callbacks(app: Dash) -> None:
         Output("robot-calibration-modal-alert", "children"),
         Output("robot-calibration-modal-alert", "color"),
         Output("robot-calibration-verify", "disabled"),
+        Output("robot-calibration-modal-stepper", "children"),
         Input("robot-calibration-state", "data"),
     )
     def _update_robot_calibration_modal(
         calibration_state: Optional[dict],
-    ) -> Tuple[int, str, str, bool]:
+    ) -> Tuple[int, str, str, bool, list[dmc.StepperStep]]:
         state = calibration_state or {}
         status = state.get("status", "idle")
         step = int(state.get("step", 0) or 0)
@@ -5559,7 +5605,37 @@ def register_callbacks(app: Dash) -> None:
             status == "awaiting_verification"
             and state.get("verification_ready", False)
         )
-        return active, message or "Waiting for calibration to start.", color, not verify_enabled
+        verification_completed = status == "complete"
+
+        stepper_children = [
+            dmc.StepperStep(
+                label="Point 1",
+                description="Indentation 1 (origin)",
+                completed=step > 1,
+            ),
+            dmc.StepperStep(
+                label="Point 2",
+                description="Indentation 2 (+X)",
+                completed=step > 2,
+            ),
+            dmc.StepperStep(
+                label="Point 3",
+                description="Indentation 3 (+X/+Y)",
+                completed=step > 3,
+            ),
+            dmc.StepperStep(
+                label="Verification",
+                description="Safe motion check",
+                completed=verification_completed,
+            ),
+        ]
+        return (
+            active,
+            message or "Waiting for calibration to start.",
+            color,
+            not verify_enabled,
+            stepper_children,
+        )
 
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
@@ -5607,6 +5683,8 @@ def register_callbacks(app: Dash) -> None:
                 verification_ready=False,
             )
             return {"status": "error", "message": posture_message}
+
+        _prepare_gripper_for_calibration()
 
         LOGGER.info("Plate state OK, starting calibration procedure...")
         try:
@@ -5659,6 +5737,7 @@ def register_callbacks(app: Dash) -> None:
             }
         except Exception as exc:
             SESSION.robot_calibration_baseline_px = None
+            _restore_calibration_gripper_width()
             LOGGER.error("Robot calibration failed: %s", exc, exc_info=True)
             _set_robot_guidance(
                 f"Robot calibration failed: {exc}",
@@ -5700,12 +5779,12 @@ def register_callbacks(app: Dash) -> None:
             await api.power_on()
             await api.set_current_coordinate_id(0)
 
-            async def _move_linear_with_hold(target: dict) -> None:
+            async def _move_linear_with_hold(target: dict, hold_seconds: float = VERIFICATION_HOLD_SECONDS) -> None:
                 await api.set_target_pos_type(api.config.target_pos_types.cpos)
                 await api.set_target_cpos(target)
                 await api.set_robot_command(api.config.commands.move_target_linear)
-                if VERIFICATION_HOLD_SECONDS > 0:
-                    deadline = time.monotonic() + VERIFICATION_HOLD_SECONDS
+                if hold_seconds > 0:
+                    deadline = time.monotonic() + hold_seconds
                     while time.monotonic() < deadline:
                         await api.send_command_heartbeat()
                         await asyncio.sleep(0.2)
@@ -5747,6 +5826,7 @@ def register_callbacks(app: Dash) -> None:
             await _move_linear_with_hold(_target(p3, raise_3))
             await _move_linear_with_hold(_target(p3, z3))
             await _move_linear_with_hold(_target(p3, raise_3))
+            await _move_linear_with_hold(_target(p1, z1), hold_seconds=0.0)
             await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
 
         try:
@@ -5760,8 +5840,10 @@ def register_callbacks(app: Dash) -> None:
                 step=4,
                 verification_ready=False,
             )
+            _restore_calibration_gripper_width()
             return {"status": "error", "message": message, "step": 4}
 
+        _restore_calibration_gripper_width()
         _set_robot_guidance(
             "Calibration verified. Coordinate ID 5 is active.",
             status="complete",
