@@ -14,6 +14,7 @@ from app.orchestrator import BootstrapDemo, DemoConfig
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 import re
@@ -50,6 +51,7 @@ DEFAULT_PLATE_PATH = Path(
     "data/markers/robot_calibration/calibration_plate_layout.json")
 DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
 DEFAULT_WORKSPACE_PATH = Path("data/workspace_definition.npz")
+DEFAULT_ROBOT_CALIBRATION_PATH = Path("data/robot_calibration.json")
 DEFAULT_CAPTURE_DIR = Path("data/calibration")
 DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30.0
@@ -57,6 +59,12 @@ DEFAULT_MODEL_DIR = Path("data/models")
 DEFAULT_DROP_MARKER_ID = 30
 ROBOT_COORDINATE_ID = 5
 MIN_PLATE_MARKERS = 2
+PLATE_MOVEMENT_THRESHOLD_PX = 500.0
+PLATE_VISIBILITY_MAX_AGE_S = 5.0
+ROBOT_POSTURE_MAX_AGE_S = 2.0
+VERIFICATION_RAISE_MM = 300.0
+ROBOT_COORDINATE_TIMEOUT_S = 30.0
+VERIFICATION_HOLD_SECONDS = 5.0
 FLANGE_BUTTON_PORT = 41
 FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
 GRIPPER_FORCE_MIN = 20
@@ -139,6 +147,9 @@ class UISession:
     gripper_sync: dict = field(default_factory=dict)
     robot_speed_rate: float = 0.25
     robot_speed_last_set: float = 0.0
+    robot_calibration_points: list[dict] = field(default_factory=list)
+    robot_calibration_min_z: Optional[float] = None
+    robot_calibration_baseline_px: Optional[np.ndarray] = None
 
 
 SESSION = UISession(
@@ -168,21 +179,117 @@ def _set_robot_guidance(
     *,
     step: Optional[int] = None,
     status: Optional[str] = None,
+    verification_ready: Optional[bool] = None,
 ) -> None:
     ROBOT_CALIBRATION_GUIDANCE["message"] = message
     if step is not None:
         ROBOT_CALIBRATION_GUIDANCE["step"] = step
     if status is not None:
         ROBOT_CALIBRATION_GUIDANCE["status"] = status
+    if verification_ready is not None:
+        ROBOT_CALIBRATION_GUIDANCE["verification_ready"] = verification_ready
     ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
 
 
-PLATE_STATUS = {"count": 0, "ok": False,
-                "timestamp": time.time(), "message": "Waiting for plate markers"}
+def _load_robot_calibration(path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None:
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("Failed to parse robot calibration data: %s", exc)
+        return
+    points = data.get("points", [])
+    if isinstance(points, list):
+        SESSION.robot_calibration_points = points
+    min_z = data.get("min_z")
+    if isinstance(min_z, (int, float)):
+        SESSION.robot_calibration_min_z = float(min_z)
+    elif SESSION.robot_calibration_points:
+        SESSION.robot_calibration_min_z = min(
+            float(pt.get("z", 0.0)) for pt in SESSION.robot_calibration_points
+        )
+    LOGGER.info("Loaded robot calibration data from %s", path)
+
+
+def _save_robot_calibration(points: list[dict], path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None:
+    min_z = None
+    if points:
+        min_z = min(float(pt.get("z", 0.0)) for pt in points)
+    payload = {
+        "points": points,
+        "min_z": min_z,
+        "timestamp": time.time(),
+        "coordinate_id": ROBOT_COORDINATE_ID,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def _update_robot_calibration_meta(robot_points: list[dict]) -> None:
+    SESSION.robot_calibration_points = list(robot_points)
+    if robot_points:
+        SESSION.robot_calibration_min_z = min(
+            float(pt.get("z", 0.0)) for pt in robot_points
+        )
+    else:
+        SESSION.robot_calibration_min_z = None
+    _save_robot_calibration(robot_points)
+
+
+def _robot_posture_ready(
+    max_age_s: float = ROBOT_POSTURE_MAX_AGE_S,
+) -> Tuple[bool, str]:
+    session = _get_robot_session()
+    if not session.posture_seen():
+        return False, "Robot posture stream not available yet."
+    age = session.position_snapshot().age_seconds()
+    if age > max_age_s:
+        return False, f"Robot posture stale ({age:.1f}s old)."
+    return True, "Robot posture stream healthy."
+
+
+def _plate_center_px(detections: dict) -> Optional[np.ndarray]:
+    if not detections:
+        return None
+    centers = [det.center for det in detections.values()]
+    if not centers:
+        return None
+    return np.mean(np.asarray(centers, dtype=np.float64), axis=0)
+
+
+def _plate_is_stable(
+    max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S,
+    require_baseline: bool = False,
+    allow_lost: bool = False,
+) -> Tuple[bool, str]:
+    if require_baseline and SESSION.robot_calibration_baseline_px is None:
+        return False, "Calibration plate baseline not set."
+    if not PLATE_STATUS.get("ok"):
+        if allow_lost and SESSION.robot_calibration_baseline_px is not None:
+            return True, "Plate markers not visible; waiting for re-acquire."
+        return False, "Calibration plate markers are not visible."
+    movement_px = PLATE_STATUS.get("movement_px")
+    if movement_px is not None and movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+        return False, f"Calibration plate moved ({movement_px:.1f}px)."
+    if PLATE_STATUS.get("stable") is False:
+        return False, PLATE_STATUS.get("message", "Calibration plate not stable.")
+    return True, PLATE_STATUS.get("message", "Plate markers stable.")
+
+PLATE_STATUS = {
+    "count": 0,
+    "ok": False,
+    "stable": False,
+    "center_px": None,
+    "movement_px": None,
+    "timestamp": time.time(),
+    "message": "Waiting for plate markers",
+}
 ROBOT_CALIBRATION_GUIDANCE = {
     "status": "idle",
     "step": 0,
     "message": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
+    "verification_ready": False,
     "timestamp": time.time(),
 }
 
@@ -212,6 +319,8 @@ def _restore_persisted_state() -> None:
                 DEFAULT_WORKSPACE_PATH,
                 exc,
             )
+    if DEFAULT_ROBOT_CALIBRATION_PATH.exists():
+        _load_robot_calibration(DEFAULT_ROBOT_CALIBRATION_PATH)
 
 
 _restore_persisted_state()
@@ -720,6 +829,7 @@ def _pose_from_workspace_mm(
     z_offset_mm: float,
 ) -> dict:
     robot_xyz = workspace_def.workspace_to_robot(x_mm, y_mm, z_offset_mm)
+    robot_xyz = _apply_robot_z_floor(robot_xyz)
     return {
         "x": float(robot_xyz[0]),
         "y": float(robot_xyz[1]),
@@ -728,6 +838,15 @@ def _pose_from_workspace_mm(
         "b": 0.0,
         "c": 0.0,
     }
+
+
+def _apply_robot_z_floor(robot_xyz: np.ndarray) -> np.ndarray:
+    min_z = SESSION.robot_calibration_min_z
+    if min_z is None or robot_xyz[2] >= min_z:
+        return robot_xyz
+    adjusted = np.array(robot_xyz, dtype=np.float64, copy=True)
+    adjusted[2] = min_z
+    return adjusted
 
 
 def _run_detection(
@@ -903,13 +1022,28 @@ def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.Rigi
     return workspace.RigidTransform(rotation=r, translation=t)
 
 
-def _ensure_plate_visible(max_age_s: float = 1.0) -> None:
-    now = time.time()
-    if not PLATE_STATUS.get("ok"):
-        raise RuntimeError("Calibration plate markers are not visible.")
-    if now - PLATE_STATUS.get("timestamp", 0.0) > max_age_s:
-        raise RuntimeError(
-            "Calibration plate markers are stale; keep them visible.")
+def _ensure_plate_visible(max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S) -> None:
+    ok, message = _plate_is_stable(
+        max_age_s=max_age_s,
+        require_baseline=False,
+        allow_lost=False,
+    )
+    if not ok:
+        raise RuntimeError(message)
+
+
+def _ensure_plate_stable(
+    max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S,
+    *,
+    allow_lost: bool = False,
+) -> None:
+    ok, message = _plate_is_stable(
+        max_age_s=max_age_s,
+        require_baseline=True,
+        allow_lost=allow_lost,
+    )
+    if not ok:
+        raise RuntimeError(message)
 
 
 def _publish_raw_frame(frame: np.ndarray) -> None:
@@ -1152,6 +1286,28 @@ async def _run_robot_plate_calibration(
     """Capture three robot poses via flange button 1 and calibrate coord ID 5."""
     session = _get_robot_session()
 
+    async def _await_flange_press_with_plate_guard(
+        timeout_s: float,
+    ) -> dict:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            plate_ok, plate_message = _plate_is_stable(
+                require_baseline=True,
+                allow_lost=True,
+            )
+            if not plate_ok:
+                raise RuntimeError(f"Calibration canceled: {plate_message}")
+            posture_ok, posture_message = _robot_posture_ready()
+            if not posture_ok:
+                raise RuntimeError(f"Calibration canceled: {posture_message}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            try:
+                return await session.next_flange_press(timeout=min(0.5, remaining))
+            except asyncio.TimeoutError:
+                continue
+
     async def _runner(robot_api: CodroidAPI) -> Tuple[list[dict], dict]:
         await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
         await session.reset_flange_queue()
@@ -1168,13 +1324,18 @@ async def _run_robot_plate_calibration(
             "Point 3 (+X/+Y)",
         ]
         for idx in range(3):
-            _ensure_plate_visible()
+            _ensure_plate_stable(allow_lost=True)
             point_label = point_labels[idx] if idx < len(
                 point_labels) else f"Point {idx + 1}"
             _set_robot_guidance(
-                f"Step {idx + 1}/3: Move to {point_label} and press flange button 1.",
+                "Step {step}/3: Place the gripper fingers in indentation {number}. "
+                "Keep the flange vertical. When aligned, press flange button 1.".format(
+                    step=idx + 1,
+                    number=idx + 1,
+                ),
                 step=idx + 1,
                 status="running",
+                verification_ready=False,
             )
             LOGGER.info(
                 "Step %d/3: Waiting for gripper to align with %s...",
@@ -1183,11 +1344,12 @@ async def _run_robot_plate_calibration(
             )
 
             try:
-                posture = await session.next_flange_press(timeout=90.0)
+                posture = await _await_flange_press_with_plate_guard(timeout_s=90.0)
             except asyncio.TimeoutError as exc:
                 _set_robot_guidance(
                     f"Timed out waiting for flange button at {point_label}.",
                     status="error",
+                    verification_ready=False,
                 )
                 raise RuntimeError(
                     f"Timed out waiting for flange button 1 press at {point_label}. "
@@ -1205,14 +1367,20 @@ async def _run_robot_plate_calibration(
             if idx < 2:
                 next_label = point_labels[idx + 1]
                 _set_robot_guidance(
-                    f"Captured {point_label}. Next: move to {next_label}.",
+                    (
+                        f"Captured {point_label}. "
+                        "Next: place the gripper in indentation "
+                        f"{idx + 2} and press flange button 1."
+                    ),
                     step=idx + 1,
                     status="running",
+                    verification_ready=False,
                 )
 
         _set_robot_guidance(
             "Computing coordinate transform from 3 calibration points...",
             status="running",
+            verification_ready=False,
         )
         LOGGER.info(
             "Computing coordinate transformation from 3 calibration points...")
@@ -1227,21 +1395,53 @@ async def _run_robot_plate_calibration(
             )
             for pt in robot_points
         ]
-        coord_frame = await robot_api.coordinate_calibration(
-            cpos_points,
-            coordinate_id=ROBOT_COORDINATE_ID,
-            set_active_coordinate=True,
-        )
-        if coord_frame:
-            await robot_api.change_coordinate_parameter(
-                ROBOT_COORDINATE_ID, coord_frame)
         _set_robot_guidance(
-            "Robot calibration complete. Coordinate ID 5 is active.",
-            status="complete",
-            step=3,
+            "Waiting for robot controller to return the calibrated frame...",
+            status="running",
+            verification_ready=False,
         )
-        LOGGER.info(
-            "Robot calibration complete. Coordinate ID 5 is now active.")
+        LOGGER.info("Requesting coordinate calibration from robot controller...")
+        try:
+            coord_frame = await asyncio.wait_for(
+                robot_api.coordinate_calibration(
+                    cpos_points,
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                    set_active_coordinate=True,
+                ),
+                timeout=ROBOT_COORDINATE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                "Timed out waiting for coordinate calibration response."
+            ) from exc
+        if coord_frame:
+            for attempt in range(2):
+                try:
+                    await asyncio.wait_for(
+                        robot_api.change_coordinate_parameter(
+                            ROBOT_COORDINATE_ID, coord_frame
+                        ),
+                        timeout=ROBOT_COORDINATE_TIMEOUT_S,
+                    )
+                    break
+                except asyncio.TimeoutError as exc:
+                    if attempt == 0:
+                        LOGGER.warning(
+                            "Persist coordinate frame timed out; retrying once."
+                        )
+                        continue
+                    raise RuntimeError(
+                        "Timed out waiting to persist calibrated coordinate frame."
+                    ) from exc
+        else:
+            raise RuntimeError("Robot controller returned empty calibration frame.")
+        _set_robot_guidance(
+            "Coordinate frame updated. Preparing verification step...",
+            status="running",
+            step=3,
+            verification_ready=False,
+        )
+        LOGGER.info("Robot calibration coordinate ID 5 updated.")
         return robot_points, coord_frame or {}
 
     return await session.run_with_robot(robot_uri, _runner)
@@ -1597,8 +1797,15 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
     vis = frame.copy()
     if not layout_path.exists():
         PLATE_STATUS.update(
-            {"count": 0, "ok": False, "timestamp": time.time(),
-             "message": "Layout not found"}
+            {
+                "count": 0,
+                "ok": False,
+                "stable": False,
+                "center_px": None,
+                "movement_px": None,
+                "timestamp": time.time(),
+                "message": "Layout not found",
+            }
         )
         return vis, "Calibration plate layout not found.", "Plate error: --"
     plate_layout = plate.load_plate_layout(layout_path)
@@ -1607,7 +1814,15 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
             frame, plate_layout)
     except Exception as exc:
         PLATE_STATUS.update(
-            {"count": 0, "ok": False, "timestamp": time.time(), "message": str(exc)}
+            {
+                "count": 0,
+                "ok": False,
+                "stable": False,
+                "center_px": None,
+                "movement_px": None,
+                "timestamp": time.time(),
+                "message": str(exc),
+            }
         )
         return vis, f"Plate detection: {exc}", "Plate error: --"
 
@@ -1623,10 +1838,25 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
     metric = f"Reprojection error: {calibration_result.reprojection_error_mm:.2f} mm"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
     status = f"Plate markers detected: {len(calibration_result.detections)}"
+    center_px = _plate_center_px(calibration_result.detections)
+    center_list = None
+    if center_px is not None:
+        center_list = [float(center_px[0]), float(center_px[1])]
+    movement_px = None
+    stable = len(calibration_result.detections) >= MIN_PLATE_MARKERS
+    baseline_px = SESSION.robot_calibration_baseline_px
+    if baseline_px is not None and center_px is not None:
+        movement_px = float(np.linalg.norm(center_px - baseline_px))
+        if movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+            stable = False
+            status = f"Plate moved ({movement_px:.1f}px); hold it steady."
     PLATE_STATUS.update(
         {
             "count": len(calibration_result.detections),
             "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "stable": stable,
+            "center_px": center_list,
+            "movement_px": movement_px,
             "timestamp": time.time(),
             "message": status,
         }
@@ -1760,7 +1990,7 @@ def build_header() -> dmc.AppShellHeader:
 
 def build_footer() -> dmc.AppShellFooter:
     stop_button = dmc.Button(
-        "STOP",
+        "E-STOP (POWER OFF)",
         id="safety-stop",
         color="red",
         size="md",
@@ -1777,6 +2007,13 @@ def build_footer() -> dmc.AppShellFooter:
             "color": "#1f1f1f",
             "border": "2px solid #8b0000",
         },
+    )
+    power_toggle = dmc.Switch(
+        id="robot-power-toggle",
+        label="Robot power",
+        checked=False,
+        color="red",
+        size="md",
     )
 
     robot_speed_slider = dmc.Slider(
@@ -1863,6 +2100,7 @@ def build_footer() -> dmc.AppShellFooter:
         [
             dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
             stop_button,
+            power_toggle,
         ],
         gap=6,
         align="center",
@@ -2239,6 +2477,69 @@ def build_setup_drawer() -> dmc.Drawer:
     )
 
 
+def build_robot_calibration_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="robot-calibration-modal",
+        opened=False,
+        title="Robot calibration guide",
+        centered=True,
+        size="lg",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        children=dmc.Stack(
+            [
+                dmc.Stepper(
+                    id="robot-calibration-modal-stepper",
+                    active=0,
+                    orientation="vertical",
+                    children=[
+                        dmc.StepperStep(
+                            label="Point 1",
+                            description="Indentation 1 (origin)",
+                        ),
+                        dmc.StepperStep(
+                            label="Point 2",
+                            description="Indentation 2 (+X)",
+                        ),
+                        dmc.StepperStep(
+                            label="Point 3",
+                            description="Indentation 3 (+X/+Y)",
+                        ),
+                        dmc.StepperStep(
+                            label="Verification",
+                            description="Safe motion check",
+                        ),
+                    ],
+                ),
+                dmc.Alert(
+                    id="robot-calibration-modal-alert",
+                    title="Calibration status",
+                    color="blue",
+                    variant="light",
+                    children="Waiting for calibration to start.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Run verification move",
+                            id="robot-calibration-verify",
+                            color="teal",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Close",
+                            id="robot-calibration-modal-close",
+                            variant="outline",
+                        ),
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
 def build_stepper_card() -> dmc.Card:
     return dmc.Card(
         [
@@ -2392,76 +2693,6 @@ def build_stepper_card() -> dmc.Card:
                         ),
                     ),
                     dmc.StepperStep(
-                        label="Workarea definition",
-                        description="Detect workspace markers",
-                        children=dmc.Stack(
-                            [
-                                dmc.Text(
-                                    "Use the two corner markers to define the workarea size.",
-                                    size="sm",
-                                    c="dimmed",
-                                ),
-                                dmc.Accordion(
-                                    children=[
-                                        dmc.AccordionItem(
-                                            children=[
-                                                dmc.AccordionControl(
-                                                    "Advanced options"),
-                                                dmc.AccordionPanel(
-                                                    dmc.Stack(
-                                                        [
-                                                            dmc.Group(
-                                                                [
-                                                                    dmc.NumberInput(
-                                                                        id="marker-id-a",
-                                                                        label="Marker ID A",
-                                                                        value=SESSION.config.marker_ids[0],
-                                                                        min=0,
-                                                                        max=49,
-                                                                    ),
-                                                                    dmc.NumberInput(
-                                                                        id="marker-id-b",
-                                                                        label="Marker ID B",
-                                                                        value=SESSION.config.marker_ids[1],
-                                                                        min=0,
-                                                                        max=49,
-                                                                    ),
-                                                                ],
-                                                                grow=True,
-                                                            ),
-                                                            dmc.NumberInput(
-                                                                id="marker-size",
-                                                                label="Marker size (mm)",
-                                                                value=SESSION.config.marker_size_mm,
-                                                                min=1,
-                                                                max=100,
-                                                            ),
-                                                        ],
-                                                        gap="sm",
-                                                    ),
-                                                ),
-                                            ],
-                                            value="workspace-advanced",
-                                        ),
-                                    ],
-                                    variant="separated",
-                                ),
-                                dmc.Button(
-                                    "Compute workspace", id="compute-workspace", variant="light"),
-                                dmc.Button(
-                                    "Use saved workspace",
-                                    id="use-existing-workspace",
-                                    variant="outline",
-                                    style={"display": "none"},
-                                ),
-                                dmc.Text(id="workspace-action-status",
-                                         size="sm", c="dimmed"),
-                                dmc.Text(id="workspace-metrics", size="sm"),
-                            ],
-                            gap="xs",
-                        ),
-                    ),
-                    dmc.StepperStep(
                         label="Robot calibration",
                         description="Detect plate markers",
                         children=dmc.Stack(
@@ -2507,11 +2738,10 @@ def build_stepper_card() -> dmc.Card:
                                 dmc.Text(
                                     "Step-by-step calibration guide:\n"
                                     "1. Start the camera stream and confirm the plate markers are visible (>= 2)\n"
-                                    "2. Click 'Begin calibrating robot'\n"
-                                    "3. Follow the status line below for each point prompt\n"
-                                    "4. Move the gripper to each groove target (1, 2, then 3)\n"
-                                    "5. Press the flange button when aligned\n"
-                                    "6. The robot will calculate the coordinate transform",
+                                    "2. Keep the plate steady and click 'Begin calibrating robot'\n"
+                                    "3. Follow the modal instructions for points 1, 2, and 3\n"
+                                    "4. Press flange button 1 at each indentation\n"
+                                    "5. Run the verification move once prompted",
                                     size="xs",
                                     c="dimmed",
                                     style={"whiteSpace": "pre-line"},
@@ -2531,6 +2761,73 @@ def build_stepper_card() -> dmc.Card:
         withBorder=True,
         radius="lg",
         className="panel-card",
+    )
+
+
+def build_workspace_step_content() -> dmc.Stack:
+    return dmc.Stack(
+        [
+            dmc.Text(
+                "Use the two corner markers to define the workarea size.",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Accordion(
+                children=[
+                    dmc.AccordionItem(
+                        children=[
+                            dmc.AccordionControl("Advanced options"),
+                            dmc.AccordionPanel(
+                                dmc.Stack(
+                                    [
+                                        dmc.Group(
+                                            [
+                                                dmc.NumberInput(
+                                                    id="marker-id-a",
+                                                    label="Marker ID A",
+                                                    value=SESSION.config.marker_ids[0],
+                                                    min=0,
+                                                    max=49,
+                                                ),
+                                                dmc.NumberInput(
+                                                    id="marker-id-b",
+                                                    label="Marker ID B",
+                                                    value=SESSION.config.marker_ids[1],
+                                                    min=0,
+                                                    max=49,
+                                                ),
+                                            ],
+                                            grow=True,
+                                        ),
+                                        dmc.NumberInput(
+                                            id="marker-size",
+                                            label="Marker size (mm)",
+                                            value=SESSION.config.marker_size_mm,
+                                            min=1,
+                                            max=100,
+                                        ),
+                                    ],
+                                    gap="sm",
+                                ),
+                            ),
+                        ],
+                        value="workspace-advanced",
+                    ),
+                ],
+                variant="separated",
+            ),
+            dmc.Button(
+                "Compute workspace", id="compute-workspace", variant="light"),
+            dmc.Button(
+                "Use saved workspace",
+                id="use-existing-workspace",
+                variant="outline",
+                style={"display": "none"},
+            ),
+            dmc.Text(id="workspace-action-status", size="sm", c="dimmed"),
+            dmc.Text(id="workspace-metrics", size="sm"),
+        ],
+        gap="xs",
     )
 
 
@@ -2820,6 +3117,122 @@ def build_pick_place_tab() -> dmc.Stack:
     return dmc.Stack([target_card, drop_card, gripper_card, action_card], gap="md")
 
 
+def build_pick_place_application() -> dmc.Stack:
+    return dmc.Stack(
+        [
+            dmc.Tabs(
+                [
+                    dmc.TabsList(
+                        [
+                            dmc.TabsTab(
+                                "Detection", value="pick-place-detection"),
+                            dmc.TabsTab(
+                                "Pick & Place", value="pick-place-actions"),
+                        ],
+                        style={
+                            "width": "100%",
+                            "justifyContent": "flex-start",
+                            "marginBottom": "12px",
+                        },
+                    ),
+                    dmc.TabsPanel(
+                        build_detection_tab(), value="pick-place-detection"),
+                    dmc.TabsPanel(
+                        build_pick_place_tab(), value="pick-place-actions"),
+                ],
+                id="pick-place-tabs",
+                value="pick-place-detection",
+                variant="pills",
+                color="brand",
+                style={"width": "100%"},
+            ),
+        ],
+        gap="md",
+    )
+
+
+def build_application_selector() -> dmc.Stack:
+    return dmc.Stack(
+        [
+            dmc.Text(
+                "Choose an application to configure and run.",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Tabs(
+                [
+                    dmc.TabsList(
+                        [
+                            dmc.TabsTab(
+                                "Pick & Place", value="pick-place"),
+                        ],
+                        style={
+                            "width": "100%",
+                            "justifyContent": "flex-start",
+                            "marginBottom": "12px",
+                        },
+                    ),
+                    dmc.TabsPanel(
+                        build_pick_place_application(), value="pick-place"),
+                ],
+                id="application-tabs",
+                value="pick-place",
+                variant="pills",
+                color="brand",
+                style={"width": "100%"},
+            ),
+        ],
+        gap="md",
+    )
+
+
+def build_application_stepper_card() -> dmc.Card:
+    return dmc.Card(
+        [
+            dmc.Group(
+                [
+                    dmc.Text("Application Steps", fw=600, size="lg"),
+                    dmc.Group(
+                        [
+                            dmc.Button("Back", id="app-step-prev",
+                                       variant="light", size="sm"),
+                            dmc.Button("Next", id="app-step-next", size="sm"),
+                        ],
+                        gap="xs",
+                    ),
+                ],
+                justify="space-between",
+                align="center",
+            ),
+            dmc.Divider(),
+            dmc.Stepper(
+                id="application-stepper",
+                active=0,
+                orientation="vertical",
+                children=[
+                    dmc.StepperStep(
+                        label="Workspace definition",
+                        description="Detect workspace markers",
+                        children=build_workspace_step_content(),
+                    ),
+                    dmc.StepperStep(
+                        label="Applications",
+                        description="Configure and run an application",
+                        children=build_application_selector(),
+                    ),
+                ],
+            ),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
+
+def build_application_tab() -> dmc.Stack:
+    return dmc.Stack([build_application_stepper_card()], gap="md")
+
+
 def build_monitoring_tab() -> dmc.Stack:
     summary_card = dmc.Card(
         [
@@ -2893,12 +3306,24 @@ def build_layout() -> dmc.MantineProvider:
                           data={"progress": 0}),
                 dcc.Store(
                     id="plate-detection-state",
-                    data={"count": 0, "ok": False,
-                          "timestamp": 0.0, "message": ""},
+                    data={
+                        "count": 0,
+                        "ok": False,
+                        "stable": False,
+                        "center_px": None,
+                        "movement_px": None,
+                        "timestamp": 0.0,
+                        "message": "",
+                    },
                 ),
                 dcc.Store(
                     id="robot-calibration-state",
-                    data={"status": "idle", "message": ""},
+                    data={
+                        "status": "idle",
+                        "message": "",
+                        "step": 0,
+                        "verification_ready": False,
+                    },
                 ),
                 dcc.Store(
                     id="auto-operation-state",
@@ -2937,6 +3362,7 @@ def build_layout() -> dmc.MantineProvider:
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
                 build_setup_drawer(),
+                build_robot_calibration_modal(),
                 dmc.AppShell(
                     padding="md",
                     className="app-shell",
@@ -2956,9 +3382,7 @@ def build_layout() -> dmc.MantineProvider:
                                                             dmc.TabsTab(
                                                                 "Calibration", value="calibration"),
                                                             dmc.TabsTab(
-                                                                "Detection", value="detection"),
-                                                            dmc.TabsTab(
-                                                                "Pick & Place", value="pick-place"),
+                                                                "Applications", value="applications"),
                                                             dmc.TabsTab(
                                                                 "Monitoring", value="monitoring"),
                                                         ],
@@ -2972,9 +3396,7 @@ def build_layout() -> dmc.MantineProvider:
                                                     dmc.TabsPanel(
                                                         build_calibration_tab(), value="calibration"),
                                                     dmc.TabsPanel(
-                                                        build_detection_tab(), value="detection"),
-                                                    dmc.TabsPanel(
-                                                        build_pick_place_tab(), value="pick-place"),
+                                                        build_application_tab(), value="applications"),
                                                     dmc.TabsPanel(
                                                         build_monitoring_tab(), value="monitoring"),
                                                 ],
@@ -3089,7 +3511,10 @@ def _run_drop_marker_task(marker_id: int) -> Callable[[np.ndarray], OverlayResul
 
 def _select_overlay_task(
     tab: str,
-    step: int,
+    calibration_step: int,
+    application_step: int,
+    application: Optional[str],
+    application_view: Optional[str],
     board_path: Path,
     marker_ids: Tuple[int, int],
     marker_size_mm: float,
@@ -3097,18 +3522,19 @@ def _select_overlay_task(
     drop_marker_id: int,
 ) -> Optional[OverlayTask]:
     if tab == "calibration":
-        if step == 0:
+        if calibration_step == 0:
             return OverlayTask("calibration-charuco", _run_charuco_task(board_path))
-        if step == 1:
+        return OverlayTask("calibration-plate", _run_plate_task(plate_path))
+    if tab == "applications":
+        if application_step == 0:
             return OverlayTask(
-                "calibration-workspace",
+                "application-workspace",
                 _run_workspace_task(marker_ids, marker_size_mm),
             )
-        return OverlayTask("calibration-plate", _run_plate_task(plate_path))
-    if tab == "detection":
-        return OverlayTask("detection", _run_detection_task())
-    if tab == "pick-place":
-        return OverlayTask("pick-place", _run_drop_marker_task(drop_marker_id))
+        if application == "pick-place":
+            if application_view == "pick-place-detection":
+                return OverlayTask("pick-place-detection", _run_detection_task())
+            return OverlayTask("pick-place", _run_drop_marker_task(drop_marker_id))
     return None
 
 
@@ -3172,26 +3598,45 @@ def register_callbacks(app: Dash) -> None:
         Input("step-prev", "n_clicks"),
         Input("step-next", "n_clicks"),
         Input("use-existing-calibration", "n_clicks"),
-        Input("use-existing-workspace", "n_clicks"),
         State("calibration-stepper", "active"),
     )
     def _update_stepper(
         prev_clicks: int,
         next_clicks: int,
         use_saved_calib: int,
-        use_saved_workspace: int,
         active: Optional[int],
     ) -> int:
         current = active or 0
         trigger = callback_context.triggered_id
         if trigger == "step-next":
-            return min(current + 1, 2)
+            return min(current + 1, 1)
         if trigger == "step-prev":
             return max(current - 1, 0)
         if trigger == "use-existing-calibration":
-            return 1  # Advance to workspace step
+            return 1  # Advance to robot calibration step
+        return current
+
+    @app.callback(
+        Output("application-stepper", "active"),
+        Input("app-step-prev", "n_clicks"),
+        Input("app-step-next", "n_clicks"),
+        Input("use-existing-workspace", "n_clicks"),
+        State("application-stepper", "active"),
+    )
+    def _update_application_stepper(
+        prev_clicks: int,
+        next_clicks: int,
+        use_saved_workspace: int,
+        active: Optional[int],
+    ) -> int:
+        current = active or 0
+        trigger = callback_context.triggered_id
+        if trigger == "app-step-next":
+            return min(current + 1, 1)
+        if trigger == "app-step-prev":
+            return max(current - 1, 0)
         if trigger == "use-existing-workspace":
-            return 2  # Advance to robot calibration step
+            return 1  # Advance to application tasks
         return current
 
     @app.callback(
@@ -3371,6 +3816,7 @@ def register_callbacks(app: Dash) -> None:
                 "Robot calibration idle. Click 'Begin calibrating robot' to start.",
                 status="idle",
                 step=0,
+                verification_ready=False,
             )
             status = "Robot disconnected."
             return status, "Robot: offline", "gray", {"status": "offline", "message": status}
@@ -4104,6 +4550,77 @@ def register_callbacks(app: Dash) -> None:
             return f"Robot action failed: {exc}"
 
     @app.callback(
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("safety-stop", "n_clicks"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_safety_stop(
+        _clicks: int,
+        robot_uri: Optional[str],
+    ) -> dmc.Notification:
+        try:
+            async def _power_off(api: CodroidAPI) -> None:
+                await api.stop_command()
+                await api.power_off()
+
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _power_off)
+            SESSION.last_action = "Emergency stop: power off command sent."
+            return dmc.Notification(
+                action="show",
+                title="Emergency stop",
+                message="Stop command + power off sent to robot controller.",
+                color="red",
+                autoClose=5000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Emergency stop failed")
+            return dmc.Notification(
+                action="show",
+                title="Emergency stop failed",
+                message=str(exc),
+                color="red",
+                autoClose=7000,
+            )
+
+    @app.callback(
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("robot-power-toggle", "checked"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_power_toggle(
+        checked: bool,
+        robot_uri: Optional[str],
+    ) -> dmc.Notification:
+        try:
+            async def _apply_power(api: CodroidAPI) -> None:
+                if checked:
+                    await api.power_on()
+                else:
+                    await api.power_off()
+
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _apply_power)
+            action = "Power on" if checked else "Power off"
+            SESSION.last_action = f"{action} command sent."
+            return dmc.Notification(
+                action="show",
+                title="Robot power",
+                message=f"{action} command sent to robot controller.",
+                color="red" if not checked else "teal",
+                autoClose=4000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Power toggle failed")
+            return dmc.Notification(
+                action="show",
+                title="Robot power failed",
+                message=str(exc),
+                color="red",
+                autoClose=7000,
+            )
+
+    @app.callback(
         Output("footer-gripper-width", "value"),
         Output("footer-gripper-force", "value"),
         Input("robot-status-interval", "n_intervals"),
@@ -4263,15 +4780,16 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("safety-stop", "disabled"),
+        Output("robot-power-toggle", "disabled"),
         Output("robot-speed-slider", "disabled"),
         Output("robot-speed-decrease", "disabled"),
         Output("robot-speed-increase", "disabled"),
         Input("robot-connection-state", "data"),
     )
-    def _sync_robot_controls(robot_state: Optional[dict]) -> Tuple[bool, bool, bool, bool]:
+    def _sync_robot_controls(robot_state: Optional[dict]) -> Tuple[bool, bool, bool, bool, bool]:
         status = (robot_state or {}).get("status") or "offline"
         disabled = status != "online"
-        return disabled, disabled, disabled, disabled
+        return disabled, disabled, disabled, disabled, disabled
 
     @app.callback(
         Output("calibrate-camera", "disabled"),
@@ -4532,6 +5050,9 @@ def register_callbacks(app: Dash) -> None:
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
+        State("application-stepper", "active"),
+        State("application-tabs", "value"),
+        State("pick-place-tabs", "value"),
         State("calibration-board-path", "value"),
         State("marker-id-a", "value"),
         State("marker-id-b", "value"),
@@ -4542,7 +5063,10 @@ def register_callbacks(app: Dash) -> None:
     def _update_camera_view(
         _ticks: int,
         active_tab: Optional[str],
-        active_step: Optional[int],
+        calibration_step: Optional[int],
+        application_step: Optional[int],
+        application_tab: Optional[str],
+        pick_place_tab: Optional[str],
         board_path: str,
         marker_a: Optional[float],
         marker_b: Optional[float],
@@ -4554,6 +5078,9 @@ def register_callbacks(app: Dash) -> None:
         plate_state = {
             "count": 0,
             "ok": False,
+            "stable": False,
+            "center_px": None,
+            "movement_px": None,
             "timestamp": time.time(),
             "message": "Waiting for plate markers",
         }
@@ -4588,8 +5115,11 @@ def register_callbacks(app: Dash) -> None:
             SESSION.last_frame_id = current_frame_id
 
         # Frame received, dispatch to background processor for heavy overlays.
-        step = active_step or 0
         tab = active_tab or "calibration"
+        calibration_step = calibration_step or 0
+        application_step = application_step or 0
+        application_tab = application_tab or "pick-place"
+        pick_place_tab = pick_place_tab or "pick-place-detection"
         board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
         plate_path = _safe_path(plate_layout, DEFAULT_PLATE_PATH)
         marker_ids = (
@@ -4602,7 +5132,10 @@ def register_callbacks(app: Dash) -> None:
 
         task = _select_overlay_task(
             tab,
-            step,
+            calibration_step,
+            application_step,
+            application_tab,
+            pick_place_tab,
             board_path,
             marker_ids,
             marker_size_mm,
@@ -4620,7 +5153,7 @@ def register_callbacks(app: Dash) -> None:
         plate_state = PLATE_STATUS.copy()
 
         if tab == "calibration":
-            if step == 0:
+            if calibration_step == 0:
                 if is_new_frame:
                     MJPEG_STREAM.add_frame(vis)
                 overlay_fps_text = _format_fps(
@@ -4635,7 +5168,23 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                     plate_state,
                 )
-            if step == 1:
+            if is_new_frame:
+                MJPEG_STREAM.add_frame(vis)
+            overlay_fps_text = _format_fps(
+                capture_fps, MJPEG_STREAM.get_fps())
+            return (
+                status_text,
+                overlay_fps_text,
+                "ChArUco corners: --",
+                "Workspace: --",
+                metric_text,
+                "Detections: --",
+                "Drop marker: --",
+                plate_state,
+            )
+
+        if tab == "applications":
+            if application_step == 0:
                 if is_new_frame:
                     MJPEG_STREAM.add_frame(vis)
                 overlay_fps_text = _format_fps(
@@ -4650,52 +5199,36 @@ def register_callbacks(app: Dash) -> None:
                     "Drop marker: --",
                     plate_state,
                 )
-            if is_new_frame:
-                MJPEG_STREAM.add_frame(vis)
-            overlay_fps_text = _format_fps(
-                capture_fps, MJPEG_STREAM.get_fps())
-            return (
-                status_text,
-                overlay_fps_text,
-                "ChArUco corners: --",
-                "Workspace: --",
-                metric_text,
-                "Detections: --",
-                "Drop marker: --",
-                plate_state,
-            )
-
-        if tab == "detection":
-            if is_new_frame:
-                MJPEG_STREAM.add_frame(vis)
-            overlay_fps_text = _format_fps(
-                capture_fps, MJPEG_STREAM.get_fps())
-            return (
-                status_text,
-                overlay_fps_text,
-                "ChArUco corners: --",
-                "Workspace: --",
-                "Plate error: --",
-                metric_text,
-                "Drop marker: --",
-                plate_state,
-            )
-
-        if tab == "pick-place":
-            if is_new_frame:
-                MJPEG_STREAM.add_frame(vis)
-            overlay_fps_text = _format_fps(
-                capture_fps, MJPEG_STREAM.get_fps())
-            return (
-                status_text,
-                overlay_fps_text,
-                "ChArUco corners: --",
-                "Workspace: --",
-                "Plate error: --",
-                "Detections: --",
-                metric_text,
-                plate_state,
-            )
+            if application_tab == "pick-place":
+                if pick_place_tab == "pick-place-detection":
+                    if is_new_frame:
+                        MJPEG_STREAM.add_frame(vis)
+                    overlay_fps_text = _format_fps(
+                        capture_fps, MJPEG_STREAM.get_fps())
+                    return (
+                        status_text,
+                        overlay_fps_text,
+                        "ChArUco corners: --",
+                        "Workspace: --",
+                        "Plate error: --",
+                        metric_text,
+                        "Drop marker: --",
+                        plate_state,
+                    )
+                if is_new_frame:
+                    MJPEG_STREAM.add_frame(vis)
+                overlay_fps_text = _format_fps(
+                    capture_fps, MJPEG_STREAM.get_fps())
+                return (
+                    status_text,
+                    overlay_fps_text,
+                    "ChArUco corners: --",
+                    "Workspace: --",
+                    "Plate error: --",
+                    "Detections: --",
+                    metric_text,
+                    plate_state,
+                )
 
         # Monitoring or any other tab: keep stream alive and surface metrics.
         if is_new_frame:
@@ -4729,26 +5262,50 @@ def register_callbacks(app: Dash) -> None:
         state = plate_state or {}
         count = state.get("count", 0)
         ok = bool(state.get("ok"))
-        in_progress = (calib_state or {}).get("status") == "running"
-        if ROBOT_CALIBRATION_GUIDANCE.get("status") == "running":
+        stable = bool(state.get("stable", ok))
+        calib_status = (calib_state or {}).get("status")
+        in_progress = calib_status in {
+            "running",
+            "awaiting_verification",
+            "verifying",
+        }
+        if ROBOT_CALIBRATION_GUIDANCE.get("status") in {
+            "running",
+            "awaiting_verification",
+            "verifying",
+        }:
             in_progress = True
         robot_online = (robot_conn_state or {}).get("status") == "online"
+        posture_ready, posture_message = _robot_posture_ready()
 
         # Determine message based on the actual blocking issue
         if in_progress:
-            message = "Calibration in progress..."
-            color = "blue"
+            if calib_status == "awaiting_verification":
+                message = "Awaiting verification move."
+                color = "yellow"
+            elif calib_status == "verifying":
+                message = "Verification in progress..."
+                color = "blue"
+            else:
+                message = "Calibration in progress..."
+                color = "blue"
         elif not robot_online:
             message = "Robot not connected. Click 'Test robot connection' to establish connection."
             color = "red"
         elif not ok:
             message = state.get("message") or f"Detected {count} marker(s)."
             color = "yellow"
+        elif not stable:
+            message = state.get("message") or "Calibration plate moved; hold it steady."
+            color = "yellow"
+        elif not posture_ready:
+            message = posture_message
+            color = "yellow"
         else:
             message = "Plate markers stable. Ready to calibrate."
             color = "green"
 
-        disabled = not ok or in_progress or not robot_online
+        disabled = not ok or not stable or not posture_ready or in_progress or not robot_online
         variant = "filled" if not disabled else "light"
         return message, color, disabled, variant
 
@@ -4800,16 +5357,70 @@ def register_callbacks(app: Dash) -> None:
         desired = {
             "status": ROBOT_CALIBRATION_GUIDANCE.get("status", "idle"),
             "message": ROBOT_CALIBRATION_GUIDANCE.get("message", ""),
+            "step": ROBOT_CALIBRATION_GUIDANCE.get("step", 0),
+            "verification_ready": ROBOT_CALIBRATION_GUIDANCE.get(
+                "verification_ready", False
+            ),
         }
         if current == desired:
             return no_update
         return desired
 
     @app.callback(
+        Output("robot-calibration-modal", "opened"),
+        Input("robot-calibration-state", "data"),
+        Input("robot-calibration-modal-close", "n_clicks"),
+    )
+    def _toggle_robot_calibration_modal(
+        calibration_state: Optional[dict],
+        _close_clicks: int,
+    ) -> bool:
+        status = (calibration_state or {}).get("status", "idle")
+        trigger = callback_context.triggered_id
+        if status in {"running", "awaiting_verification", "verifying"}:
+            return True
+        if status in {"complete", "error", "canceled"}:
+            return trigger != "robot-calibration-modal-close"
+        if trigger == "robot-calibration-modal-close":
+            return False
+        return False
+
+    @app.callback(
+        Output("robot-calibration-modal-stepper", "active"),
+        Output("robot-calibration-modal-alert", "children"),
+        Output("robot-calibration-modal-alert", "color"),
+        Output("robot-calibration-verify", "disabled"),
+        Input("robot-calibration-state", "data"),
+    )
+    def _update_robot_calibration_modal(
+        calibration_state: Optional[dict],
+    ) -> Tuple[int, str, str, bool]:
+        state = calibration_state or {}
+        status = state.get("status", "idle")
+        step = int(state.get("step", 0) or 0)
+        message = state.get("message", "")
+        active = max(0, min(3, step - 1)) if step else 0
+        color_map = {
+            "running": "blue",
+            "awaiting_verification": "yellow",
+            "verifying": "blue",
+            "complete": "green",
+            "error": "red",
+            "canceled": "red",
+        }
+        color = color_map.get(status, "gray")
+        verify_enabled = (
+            status == "awaiting_verification"
+            and state.get("verification_ready", False)
+        )
+        return active, message or "Waiting for calibration to start.", color, not verify_enabled
+
+    @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("start-robot-calibration", "n_clicks"),
         State("plate-layout-path", "value"),
         State("plate-detection-state", "data"),
+        State("robot-connection-state", "data"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
@@ -4817,20 +5428,39 @@ def register_callbacks(app: Dash) -> None:
         _clicks: int,
         plate_layout_path: str,
         plate_state: Optional[dict],
+        robot_state: Optional[dict],
         robot_uri: Optional[str],
     ) -> dict:
         LOGGER.info("=== Robot calibration button clicked ===")
         LOGGER.info(f"Plate state: {plate_state}")
         LOGGER.info(f"Robot URI: {robot_uri}")
 
-        if not plate_state or not plate_state.get("ok"):
-            LOGGER.warning(
-                f"Plate not ready - markers not stable (need >= {MIN_PLATE_MARKERS})")
+        if (robot_state or {}).get("status") != "online":
             _set_robot_guidance(
-                f"Plate markers not stable (need >= {MIN_PLATE_MARKERS}).",
+                "Robot not connected. Click 'Test robot connection' to establish connection.",
                 status="error",
+                verification_ready=False,
             )
-            return {"status": "idle", "message": ""}
+            return {"status": "error", "message": "Robot not connected."}
+
+        plate_ok, plate_message = _plate_is_stable(require_baseline=False)
+        if not plate_ok:
+            LOGGER.warning("Plate not ready: %s", plate_message)
+            _set_robot_guidance(
+                plate_message,
+                status="error",
+                verification_ready=False,
+            )
+            return {"status": "error", "message": plate_message}
+
+        posture_ok, posture_message = _robot_posture_ready()
+        if not posture_ok:
+            _set_robot_guidance(
+                posture_message,
+                status="error",
+                verification_ready=False,
+            )
+            return {"status": "error", "message": posture_message}
 
         LOGGER.info("Plate state OK, starting calibration procedure...")
         try:
@@ -4839,15 +5469,21 @@ def register_callbacks(app: Dash) -> None:
             plate_layout = plate.load_plate_layout(layout_path)
             LOGGER.info("Plate layout loaded successfully")
 
-            _ensure_plate_visible()
-            LOGGER.info("Plate visibility ensured")
+            center = (plate_state or {}).get("center_px")
+            if center is None:
+                raise RuntimeError("Plate center not available; keep markers visible.")
+            SESSION.robot_calibration_baseline_px = np.asarray(center, dtype=np.float64)
+            _ensure_plate_stable()
+            LOGGER.info("Plate stability baseline set")
 
             _set_robot_guidance(
-                "Robot calibration started. Step 1/3: Move to Point 1 (origin) "
-                "and press flange button 1.",
+                "Robot calibration started. Step 1/3: Place the gripper fingers in "
+                "indentation 1, keep the flange vertical, and press flange button 1.",
                 step=1,
                 status="running",
+                verification_ready=False,
             )
+            SESSION.robot_calibration_points = []
             LOGGER.info(
                 f"Starting robot plate calibration with URI: {robot_uri or DEFAULT_ROBOT_URI}")
             robot_points, _coord_frame = await _run_robot_plate_calibration(
@@ -4860,20 +5496,127 @@ def register_callbacks(app: Dash) -> None:
                 robot_points,
                 plate_layout,
             )
+            _update_robot_calibration_meta(robot_points)
+            SESSION.robot_calibration_baseline_px = None
             LOGGER.info("Calibration results applied successfully")
             _set_robot_guidance(
-                "Robot calibration complete. Coordinate ID 5 is active.",
-                status="complete",
-                step=3,
+                "Calibration complete. Move away from the robot and run the verification move.",
+                status="awaiting_verification",
+                step=4,
+                verification_ready=True,
             )
-            return {"status": "complete", "message": "Robot calibration complete."}
+            return {
+                "status": "awaiting_verification",
+                "message": "Awaiting verification move.",
+                "step": 4,
+                "verification_ready": True,
+            }
         except Exception as exc:
+            SESSION.robot_calibration_baseline_px = None
             LOGGER.error("Robot calibration failed: %s", exc, exc_info=True)
             _set_robot_guidance(
                 f"Robot calibration failed: {exc}",
                 status="error",
+                verification_ready=False,
             )
             return {"status": "error", "message": str(exc)}
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-calibration-verify", "n_clicks"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _run_robot_calibration_verification(
+        _clicks: int,
+        robot_uri: Optional[str],
+    ) -> dict:
+        if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+            message = "Verification requires three calibration points."
+            _set_robot_guidance(message, status="error",
+                                step=4, verification_ready=False)
+            return {"status": "error", "message": message, "step": 4}
+
+        points = SESSION.robot_calibration_points[:3]
+        min_z = SESSION.robot_calibration_min_z
+        if min_z is None:
+            min_z = min(float(pt.get("z", 0.0)) for pt in points)
+            SESSION.robot_calibration_min_z = min_z
+
+        _set_robot_guidance(
+            "Verification move running. Keep clear of the robot.",
+            status="verifying",
+            step=4,
+            verification_ready=False,
+        )
+
+        async def _verification_motion(api: CodroidAPI) -> None:
+            await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+
+            async def _move_linear_with_hold(target: dict) -> None:
+                await api.set_target_pos_type(api.config.target_pos_types.cpos)
+                await api.set_target_cpos(target)
+                await api.set_robot_command(api.config.commands.move_target_linear)
+                if VERIFICATION_HOLD_SECONDS > 0:
+                    deadline = time.monotonic() + VERIFICATION_HOLD_SECONDS
+                    while time.monotonic() < deadline:
+                        await api.send_command_heartbeat()
+                        await asyncio.sleep(0.2)
+                await api.clear_target_position()
+                await api.stop_command()
+
+            def _safe_z(value: float) -> float:
+                return max(float(value), float(min_z))
+
+            def _target(point: dict, z_value: float) -> dict:
+                return api.build_target_cpos(
+                    x=float(point["x"]),
+                    y=float(point["y"]),
+                    z=_safe_z(z_value),
+                    a=float(point.get("a", 0.0)),
+                    b=float(point.get("b", 0.0)),
+                    c=float(point.get("c", 0.0)),
+                )
+
+            p1, p2, p3 = points
+            z1 = _safe_z(p1.get("z", 0.0))
+            z2 = _safe_z(p2.get("z", 0.0))
+            z3 = _safe_z(p3.get("z", 0.0))
+            raise_1 = z1 + VERIFICATION_RAISE_MM
+            raise_2 = z2 + VERIFICATION_RAISE_MM
+            raise_3 = z3 + VERIFICATION_RAISE_MM
+
+            await _move_linear_with_hold(_target(p3, raise_3))
+            await _move_linear_with_hold(_target(p1, raise_1))
+            await _move_linear_with_hold(_target(p1, z1))
+            await _move_linear_with_hold(_target(p1, raise_1))
+            await _move_linear_with_hold(_target(p2, raise_2))
+            await _move_linear_with_hold(_target(p2, z2))
+            await _move_linear_with_hold(_target(p2, raise_2))
+            await _move_linear_with_hold(_target(p3, raise_3))
+            await _move_linear_with_hold(_target(p3, z3))
+            await _move_linear_with_hold(_target(p3, raise_3))
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _verification_motion)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Verification move failed")
+            message = f"Verification move failed: {exc}"
+            _set_robot_guidance(
+                message,
+                status="error",
+                step=4,
+                verification_ready=False,
+            )
+            return {"status": "error", "message": message, "step": 4}
+
+        _set_robot_guidance(
+            "Calibration verified. Coordinate ID 5 is active.",
+            status="complete",
+            step=4,
+            verification_ready=False,
+        )
+        return {"status": "complete", "message": "Calibration verified.", "step": 4}
 
 
 def create_app() -> Dash:
@@ -4897,7 +5640,7 @@ def create_app() -> Dash:
         return {
             "camera_calibrated": SESSION.calibration_bundle is not None,
             "workspace_defined": SESSION.workspace_definition is not None,
-            "robot_calibrated": SESSION.plate_calibration is not None,
+            "robot_calibrated": SESSION.robot_calibration_min_z is not None,
             "model_loaded": SESSION.model_loaded,
             "gripper_ready": (gripper_state or {}).get("status") == "online",
         }

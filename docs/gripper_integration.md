@@ -144,7 +144,7 @@ gripper.halt(t_index=0)
 
 ## Pick & Place Integration
 
-The gripper is integrated into the Pick & Place tab:
+The gripper is integrated into Applications > Pick & Place:
 
 1. **Configure Gripper Widths:**
    - **Gripper open:** Width in mm when releasing (e.g., 60.0 mm)

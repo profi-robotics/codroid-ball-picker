@@ -63,7 +63,9 @@ robot motion commands.
    python run_calibration_ui.py --debug
    ```
    Use the Setup drawer to start the camera stream, verify the robot connection, and
-   work through the workflow tabs (Calibration, Detection, Pick & Place, Monitoring).
+   work through the workflow tabs (Calibration, Applications, Monitoring).
+   Applications include a shared workspace definition step plus per-application
+   panels (Pick & Place with Detection + Actions).
    The UI reads/writes calibration assets under `data/` by default. Once the
    workspace is computed it is saved to `data/workspace_definition.npz` and
    reloaded automatically on restart, similar to the calibration bundle.
@@ -71,13 +73,16 @@ robot motion commands.
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the
 camera, detection, and robot flows together. It provides:
-- A tabbed layout for Calibration, Detection (YOLO model upload + inference),
-  Pick & Place, and Monitoring.
+- A tabbed layout for Calibration, Applications (workspace definition + per-app
+  panels like Pick & Place), and Monitoring.
 - A live camera view with overlays for ChArUco detection, workspace markers,
   YOLO detections, and the drop marker.
+- A guided robot calibration modal with a verification move; the calibration
+  points and safe Z floor are persisted in `data/robot_calibration.json` and
+  loaded on startup when available.
 - If `data/calibration_bundle.npz` or `data/workspace_definition.npz` already
-  exist, the Calibration and Workarea steps surface “Use saved …” buttons to
-  load them without recomputing.
+  exist, the Calibration and Application workspace steps surface “Use saved …”
+  buttons to load them without recomputing.
 - A Setup drawer to verify camera connectivity and test the robot connection.
 
 Run it locally with:
@@ -173,7 +178,7 @@ The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Comp
 
 **Features:**
 - Real-time gripper status monitoring (width, force, grip detection)
-- Manual open/close control from the Pick & Place tab
+- Manual open/close control from Applications > Pick & Place
 - Automatic grip/release during pick-drop sequences
 - No authentication required (direct TCP/IP connection)
 

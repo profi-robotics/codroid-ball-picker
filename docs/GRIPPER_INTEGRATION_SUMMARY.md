@@ -100,7 +100,7 @@ export ONROBOT_T_INDEX="0"
 
 ### Operation Phase
 
-**Manual Control (Pick & Place Tab):**
+**Manual Control (Applications > Pick & Place):**
 1. Set **Gripper open** value (e.g., 60.0 mm for full open)
 2. Set **Gripper close** value (e.g., 20.0 mm for gripping)
 3. Click **Open gripper** or **Close gripper** to test
