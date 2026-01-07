@@ -12,6 +12,7 @@ __pycache__/
 
 # Calibration files
 data/calibration/*
+data/app_settings.json
 
 # Model files
 data/models/*

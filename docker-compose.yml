@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  ui:
+    build: .
+    container_name: codroid-ui
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - UV_PROJECT_ENVIRONMENT=/app/.venv
+    ports:
+      - "8050:8050"
+    devices:
+      - "/dev/bus/usb:/dev/bus/usb"   # OAK-D / USB devices
+      - "/dev/video0:/dev/video0"     # Optional: camera passthrough
+    volumes:
+      - ./data:/app/data              # persist calibration/workspace data
+    command: ["uv", "run", "python", "run_calibration_ui.py", "--host", "0.0.0.0", "--port", "8050"]

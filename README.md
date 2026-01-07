@@ -93,6 +93,14 @@ Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
 connectivity follow the `codroid-api` settings (env `CODROID_HOST` and
 `CODROID_ROBOT_PORT`, or the factory defaults).
 
+### Docker on Jetson Orin Nano
+Build and run with:
+```bash
+docker compose build
+docker compose up
+```
+See `docs/deploy_jetson_docker.md` for Jetson prerequisites, device mappings, and GPU/runtime notes.
+
 YOLO inference relies on the `ultralytics` package. Install it with `uv add ultralytics`
 if you want to run detections from uploaded `.pt`/`.onnx` models.
 

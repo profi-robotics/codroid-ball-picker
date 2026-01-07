@@ -23,6 +23,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from pydantic import BaseModel, ConfigDict
 from typing import Awaitable, Callable, Deque, Optional, Tuple
 
 import cv2
@@ -57,6 +58,8 @@ DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30.0
 DEFAULT_MODEL_DIR = Path("data/models")
 DEFAULT_DROP_MARKER_ID = 30
+DROP_TARGET_PATH = Path("data/drop_target.json")
+SETTINGS_PATH = Path("data/app_settings.json")
 ROBOT_COORDINATE_ID = 5
 MIN_PLATE_MARKERS = 2
 PLATE_MOVEMENT_THRESHOLD_PX = 500.0
@@ -73,6 +76,47 @@ GRIPPER_FORCE_DEFAULT = 80
 GRIPPER_SPEED_DEFAULT = 80
 GRIPPER_SPEED_MIN = 5
 GRIPPER_CALIBRATION_WIDTH_MM = 5.0
+GRIPPER_OPEN_WIDTH_DEFAULT = 25.0
+GRIPPER_CLOSE_WIDTH_DEFAULT = 5.0
+
+
+class AppSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    robot_host: Optional[str] = None
+    robot_port: Optional[int] = None
+    user_port: Optional[int] = None
+    gripper_ip: Optional[str] = None
+    marker_ids: Tuple[int, int] = (1, 2)
+    marker_size_mm: float = 40.0
+    last_model: Optional[str] = None
+    drop_target: Optional[Tuple[float, float]] = None
+    calibration_bundle_path: Optional[str] = None
+    workspace_path: Optional[str] = None
+    robot_calibration_path: Optional[str] = None
+
+
+def _load_settings() -> AppSettings:
+    if not SETTINGS_PATH.exists():
+        return AppSettings()
+    try:
+        return AppSettings.model_validate_json(SETTINGS_PATH.read_text())
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to load settings: %s", exc)
+        return AppSettings()
+
+
+def _save_settings(settings: AppSettings) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(settings.model_dump_json(indent=2))
+
+
+SETTINGS = _load_settings()
+
+
+def _commit_settings(**updates) -> None:
+    global SETTINGS
+    SETTINGS = SETTINGS.model_copy(update=updates)
+    _save_settings(SETTINGS)
 
 
 def _load_codroid_defaults() -> dict:
@@ -82,9 +126,9 @@ def _load_codroid_defaults() -> dict:
         robot_port = settings.robot_port
         ws_port = settings.ws_port
     except Exception:
-        host = os.getenv("CODROID_HOST", "192.168.101.100")
-        robot_port = int(os.getenv("CODROID_ROBOT_PORT", "9000"))
-        ws_port = int(os.getenv("CODROID_WS_PORT", "9098"))
+        host = SETTINGS.robot_host or os.getenv("CODROID_HOST", "192.168.101.100")
+        robot_port = int(SETTINGS.robot_port or os.getenv("CODROID_ROBOT_PORT", "9000"))
+        ws_port = int(SETTINGS.user_port or os.getenv("CODROID_WS_PORT", "9098"))
     robot_ws_url = f"ws://{host}:{robot_port}/"
     user_ws_url = f"ws://{host}:{ws_port}/"
     return {
@@ -96,20 +140,26 @@ def _load_codroid_defaults() -> dict:
     }
 
 
-CODROID_DEFAULTS = _load_codroid_defaults()
-DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
-
-
 def _load_gripper_defaults() -> dict:
     """Load OnRobot gripper default configuration."""
     return {
-        "compute_box_ip": os.getenv("ONROBOT_CB_IP", "192.168.101.180"),
+        "compute_box_ip": SETTINGS.gripper_ip or os.getenv("ONROBOT_CB_IP", "192.168.101.180"),
         "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
     }
 
 
+CODROID_DEFAULTS = _load_codroid_defaults()
+DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
 GRIPPER_DEFAULTS = _load_gripper_defaults()
 DEFAULT_GRIPPER_IP = GRIPPER_DEFAULTS["compute_box_ip"]
+
+# Override default asset paths with persisted settings when present
+if SETTINGS.calibration_bundle_path:
+    DEFAULT_BUNDLE_PATH = Path(SETTINGS.calibration_bundle_path)
+if SETTINGS.workspace_path:
+    DEFAULT_WORKSPACE_PATH = Path(SETTINGS.workspace_path)
+if SETTINGS.robot_calibration_path:
+    DEFAULT_ROBOT_CALIBRATION_PATH = Path(SETTINGS.robot_calibration_path)
 
 
 @dataclass
@@ -154,6 +204,12 @@ class UISession:
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None
     robot_calibration_gripper_width: Optional[float] = None
+    robot_has_object: bool = False
+    pick_attempts: int = 0
+    pick_successes: int = 0
+    pick_failures: int = 0
+    last_cycle_s: Optional[float] = None
+    cycle_times: Deque[float] = field(default_factory=lambda: deque(maxlen=50))
 
 
 SESSION = UISession(
@@ -161,6 +217,8 @@ SESSION = UISession(
         robot_host=CODROID_DEFAULTS["host"],
         robot_port=CODROID_DEFAULTS["robot_port"],
         user_port=CODROID_DEFAULTS["ws_port"],
+        marker_ids=SETTINGS.marker_ids,
+        marker_size_mm=SETTINGS.marker_size_mm,
     )
 )
 
@@ -176,6 +234,22 @@ def _get_robot_session() -> RobotSession:
             flange_button_ports=FLANGE_BUTTON_PORTS,
         )
     return SESSION.robot_session
+
+
+def _record_pick_cycle(success: bool, start_time: Optional[float]) -> None:
+    """Track pick/place performance metrics."""
+    SESSION.pick_attempts += 1
+    if success:
+        SESSION.pick_successes += 1
+    else:
+        SESSION.pick_failures += 1
+
+    if start_time is None:
+        return
+
+    duration = max(time.monotonic() - start_time, 0.0)
+    SESSION.last_cycle_s = duration
+    SESSION.cycle_times.append(duration)
 
 
 def _set_robot_guidance(
@@ -214,6 +288,7 @@ def _load_robot_calibration(path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None
             float(pt.get("z", 0.0)) for pt in SESSION.robot_calibration_points
         )
     LOGGER.info("Loaded robot calibration data from %s", path)
+    _commit_settings(robot_calibration_path=str(path))
 
 
 def _save_robot_calibration(points: list[dict], path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None:
@@ -228,6 +303,33 @@ def _save_robot_calibration(points: list[dict], path: Path = DEFAULT_ROBOT_CALIB
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
+    _commit_settings(robot_calibration_path=str(path))
+
+
+def _save_drop_target(drop_target_mm: Optional[Tuple[float, float]]) -> None:
+    DROP_TARGET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not drop_target_mm:
+        if DROP_TARGET_PATH.exists():
+            DROP_TARGET_PATH.unlink()
+        _commit_settings(drop_target=None)
+        return
+    payload = {"x": float(drop_target_mm[0]), "y": float(drop_target_mm[1])}
+    DROP_TARGET_PATH.write_text(json.dumps(payload, indent=2))
+    _commit_settings(drop_target=drop_target_mm, workspace_path=str(DEFAULT_WORKSPACE_PATH), calibration_bundle_path=str(DEFAULT_BUNDLE_PATH))
+
+
+def _load_drop_target() -> None:
+    if DROP_TARGET_PATH.exists():
+        try:
+            data = json.loads(DROP_TARGET_PATH.read_text())
+            x = float(data["x"])
+            y = float(data["y"])
+            SESSION.drop_target_mm = (x, y)
+            return
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to load drop target: %s", exc)
+    if SETTINGS.drop_target:
+        SESSION.drop_target_mm = SETTINGS.drop_target
 
 
 def _update_robot_calibration_meta(robot_points: list[dict]) -> None:
@@ -323,6 +425,12 @@ def _restore_persisted_state() -> None:
                 DEFAULT_WORKSPACE_PATH,
                 exc,
             )
+    _load_drop_target()
+    if SETTINGS.last_model:
+        try:
+            activate_model(Path(SETTINGS.last_model))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to restore last model: %s", exc)
     if DEFAULT_ROBOT_CALIBRATION_PATH.exists():
         _load_robot_calibration(DEFAULT_ROBOT_CALIBRATION_PATH)
 
@@ -655,7 +763,7 @@ def format_gpu_status() -> list:
                     f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
                 dmc.Badge(
                     f"Driver: {gpu_info['driver_version']}", color="blue"),
-                dmc.Badge(f"{gpu_info['gpu_count']} GPU(s)", color="teal"),
+                dmc.Badge(f"{gpu_info['gpu_count']} GPU(s)", color="brand"),
             ],
             gap="xs",
         )
@@ -792,6 +900,7 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.active_model_path = None
         SESSION.yolo_model = None
         SESSION.model_loaded = False
+        _commit_settings(last_model=None)
         return "No model selected."
     if not model_path.exists():
         SESSION.active_model_path = None
@@ -803,6 +912,7 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.yolo_model = _load_ultralytics_model(model_path)
         SESSION.model_loaded = True
         SESSION.last_detection_error = None
+        _commit_settings(last_model=str(model_path))
         return f"Model loaded: {model_path.name}."
     except Exception as exc:
         SESSION.yolo_model = None
@@ -842,6 +952,24 @@ def _pose_from_workspace_mm(
         "b": 0.0,
         "c": 0.0,
     }
+
+
+def _robot_to_workspace_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    robot_xyz: np.ndarray,
+) -> Tuple[float, float]:
+    """Map a robot XYZ point back into workspace (mm) assuming z on the plane."""
+    cam_to_robot = workspace_def.camera_to_robot.as_matrix()
+    robot_h = np.hstack([robot_xyz, 1.0])
+    camera_h = np.linalg.inv(cam_to_robot) @ robot_h
+    camera_xyz = camera_h[:3]
+    origin = workspace_def.origin_camera
+    basis = np.column_stack([workspace_def.x_axis_camera, workspace_def.y_axis_camera])
+    try:
+        coeffs, *_ = np.linalg.lstsq(basis, camera_xyz - origin, rcond=None)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Unable to project robot pose into workspace: {exc}") from exc
+    return float(coeffs[0]), float(coeffs[1])
 
 
 def _apply_robot_z_floor(robot_xyz: np.ndarray) -> np.ndarray:
@@ -1209,6 +1337,7 @@ def compute_calibration_bundle(board_path: Path, bundle_path: Path, output_dir: 
     demo.load_or_create_calibration(
         image_paths=frames, depth_frame=depth_frame, force_rebuild=True)
     SESSION.calibration_bundle = demo.calibration
+    _commit_settings(calibration_bundle_path=str(bundle_path))
     return f"Calibration bundle saved to {bundle_path}."
 
 
@@ -1216,6 +1345,7 @@ def load_calibration_bundle(bundle_path: Path) -> str:
     if not bundle_path.exists():
         raise FileNotFoundError(f"Calibration bundle not found: {bundle_path}")
     SESSION.calibration_bundle = calibration.load_calibration(bundle_path)
+    _commit_settings(calibration_bundle_path=str(bundle_path))
     return f"Loaded calibration bundle from {bundle_path}."
 
 
@@ -1242,6 +1372,7 @@ def save_workspace_definition(
     workspace_path: Path = DEFAULT_WORKSPACE_PATH,
 ) -> str:
     workspace.save_workspace(workspace_def, workspace_path)
+    _commit_settings(workspace_path=str(workspace_path))
     return f"Workspace saved to {workspace_path}."
 
 
@@ -1250,6 +1381,7 @@ def load_workspace_definition(workspace_path: Path = DEFAULT_WORKSPACE_PATH) -> 
         raise FileNotFoundError(
             f"Workspace definition not found: {workspace_path}")
     SESSION.workspace_definition = workspace.load_workspace(workspace_path)
+    _commit_settings(workspace_path=str(workspace_path))
     return SESSION.workspace_definition
 
 
@@ -2057,14 +2189,7 @@ def draw_monitor_overlay(frame: np.ndarray, marker_id: int) -> Tuple[np.ndarray,
 
 
 def build_header() -> dmc.AppShellHeader:
-    branding = dmc.Stack(
-        [
-            dmc.Text("Estun Codroid Pick-and-Place", className="app-title"),
-            dmc.Text("Vision + robot bring-up dashboard", size="sm", c="dimmed",
-                     className="app-tagline"),
-        ],
-        gap="xs",
-    )
+    branding = dmc.Text("Estun Codroid Pick-and-Place", className="app-title")
     badges = dmc.Group(
         [
             dmc.Badge("Camera: off", id="header-camera-badge",
@@ -2089,7 +2214,16 @@ def build_header() -> dmc.AppShellHeader:
         dmc.Group(
             [
                 dmc.Group(
-                    [branding],
+                    [
+                        dmc.Image(
+                            src="/assets/profi-robotics.webp",
+                            alt="Profi Robotics",
+                            w=64,
+                            h=64,
+                            className="header-logo",
+                        ),
+                        branding,
+                    ],
                     align="center",
                     gap="sm",
                 ),
@@ -2101,13 +2235,13 @@ def build_header() -> dmc.AppShellHeader:
         ),
         className="app-header",
         px="lg",
-        h=90,
+        h=84,
     )
 
 
 def build_footer() -> dmc.AppShellFooter:
     stop_button = dmc.Button(
-        "E-STOP (POWER OFF)",
+        "STOP",
         id="safety-stop",
         color="red",
         size="md",
@@ -2178,7 +2312,7 @@ def build_footer() -> dmc.AppShellFooter:
     auto_start_button = dmc.Button(
         "Start Auto",
         id="auto-start",
-        color="green",
+        color="brand",
         size="sm",
         radius="md",
         variant="filled",
@@ -2326,29 +2460,7 @@ def build_footer() -> dmc.AppShellFooter:
     gripper_block = dmc.Stack(
         [
             dmc.Text("Gripper control", fw=600, size="sm"),
-            dmc.Group(
-                [
-                    dmc.Button(
-                        "Open",
-                        id="footer-gripper-open",
-                        variant="outline",
-                        color="teal",
-                        size="sm",
-                    ),
-                    dmc.Button(
-                        "Close",
-                        id="footer-gripper-close",
-                        variant="filled",
-                        color="teal",
-                        size="sm",
-                    ),
-                ],
-                gap="xs",
-                align="center",
-            ),
             dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
-            dmc.Divider(variant="dashed", mt=4, mb=2),
-            dmc.Text("Fine control", fw=600, size="xs"),
             html.Div(
                 [
                     dmc.Text("Width (mm)", size="xs", fw=600),
@@ -2455,6 +2567,7 @@ def build_footer() -> dmc.AppShellFooter:
     footer_body = html.Div(
         footer_grid,
         className="footer-body",
+        id="footer-body",
     )
 
     return dmc.AppShellFooter(
@@ -2581,6 +2694,82 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Text(id="gripper-status-text", size="sm", c="dimmed"),
                 html.Div(id="gripper-device-info"),
+                dmc.Divider(),
+                dmc.Text("Calibration & settings", fw=600),
+                dmc.Grid(
+                    [
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-marker-a",
+                                label="Marker ID A",
+                                value=SETTINGS.marker_ids[0],
+                                min=0,
+                                max=49,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-marker-b",
+                                label="Marker ID B",
+                                value=SETTINGS.marker_ids[1],
+                                min=0,
+                                max=49,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-marker-size",
+                                label="Marker size (mm)",
+                                value=SETTINGS.marker_size_mm,
+                                min=1,
+                                max=200,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.TextInput(
+                                id="settings-calib-path",
+                                label="Calibration bundle path",
+                                value=str(DEFAULT_BUNDLE_PATH),
+                                size="sm",
+                            ),
+                            span=12,
+                        ),
+                        dmc.GridCol(
+                            dmc.TextInput(
+                                id="settings-workspace-path",
+                                label="Workspace path",
+                                value=str(DEFAULT_WORKSPACE_PATH),
+                                size="sm",
+                            ),
+                            span=12,
+                        ),
+                        dmc.GridCol(
+                            dmc.TextInput(
+                                id="settings-robot-calib-path",
+                                label="Robot calibration path",
+                                value=str(DEFAULT_ROBOT_CALIBRATION_PATH),
+                                size="sm",
+                            ),
+                            span=12,
+                        ),
+                    ],
+                    gutter="sm",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button("Save settings", id="settings-save", color="teal"),
+                        dmc.Button("Reset to defaults", id="settings-reset", variant="outline", color="red"),
+                        dmc.Text(id="settings-status", size="sm", c="dimmed"),
+                    ],
+                    justify="space-between",
+                    align="center",
+                ),
                 dmc.Group(
                     [
                         dmc.Button("Close", id="setup-close",
@@ -2680,6 +2869,7 @@ def build_stepper_card() -> dmc.Card:
                 id="calibration-stepper",
                 active=0,
                 orientation="vertical",
+                mt="sm",
                 children=[
                     dmc.StepperStep(
                         label="Camera calibration",
@@ -2695,10 +2885,10 @@ def build_stepper_card() -> dmc.Card:
                                     dmc.Group(
                                         [
                                             dmc.ThemeIcon(
-                                                dmc.Text("✓", size="lg"),
+                                                dmc.Text("✕", size="lg"),
                                                 size="lg",
                                                 radius="md",
-                                                color="gray",
+                                                color="red",
                                                 id="markers-detected-icon",
                                             ),
                                             dmc.Stack(
@@ -2752,57 +2942,6 @@ def build_stepper_card() -> dmc.Card:
                                     animated=True,
                                     style={"display": "none"},
                                 ),
-                                dmc.Accordion(
-                                    children=[
-                                        dmc.AccordionItem(
-                                            children=[
-                                                dmc.AccordionControl(
-                                                    "Advanced options"),
-                                                dmc.AccordionPanel(
-                                                    dmc.Stack(
-                                                        [
-                                                            dmc.TextInput(
-                                                                id="calibration-board-path",
-                                                                label="Board layout path",
-                                                                value=str(
-                                                                    DEFAULT_BOARD_PATH),
-                                                                size="sm",
-                                                            ),
-                                                            dmc.TextInput(
-                                                                id="calibration-output-dir",
-                                                                label="Output directory",
-                                                                value=str(
-                                                                    DEFAULT_CAPTURE_DIR),
-                                                                size="sm",
-                                                            ),
-                                                            dmc.TextInput(
-                                                                id="calibration-bundle-path",
-                                                                label="Bundle save path",
-                                                                value=str(
-                                                                    DEFAULT_BUNDLE_PATH),
-                                                                size="sm",
-                                                            ),
-                                                            dmc.Group(
-                                                                [
-                                                                    dmc.Button(
-                                                                        "Load bundle",
-                                                                        id="load-calibration",
-                                                                        variant="light",
-                                                                        size="sm",
-                                                                    ),
-                                                                ],
-                                                                grow=True,
-                                                            ),
-                                                        ],
-                                                        gap="sm",
-                                                    ),
-                                                ),
-                                            ],
-                                            value="advanced",
-                                        ),
-                                    ],
-                                    variant="separated",
-                                ),
                                 dmc.Text(
                                     id="camera-calibration-metrics", size="sm"),
                             ],
@@ -2818,20 +2957,6 @@ def build_stepper_card() -> dmc.Card:
                                     "Detect the calibration plate and attach the homography.",
                                     size="sm",
                                     c="dimmed",
-                                ),
-                                dmc.TextInput(
-                                    id="plate-layout-path",
-                                    label="Plate layout",
-                                    value=str(DEFAULT_PLATE_PATH),
-                                ),
-                                dmc.Group(
-                                    [
-                                        dmc.Button(
-                                            "Detect plate", id="compute-plate", variant="light"),
-                                        dmc.Button("Attach to bundle",
-                                                   id="attach-plate"),
-                                    ],
-                                    grow=True,
                                 ),
                                 dmc.Alert(
                                     id="plate-detection-summary",
@@ -2889,50 +3014,6 @@ def build_workspace_step_content() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
-            dmc.Accordion(
-                children=[
-                    dmc.AccordionItem(
-                        children=[
-                            dmc.AccordionControl("Advanced options"),
-                            dmc.AccordionPanel(
-                                dmc.Stack(
-                                    [
-                                        dmc.Group(
-                                            [
-                                                dmc.NumberInput(
-                                                    id="marker-id-a",
-                                                    label="Marker ID A",
-                                                    value=SESSION.config.marker_ids[0],
-                                                    min=0,
-                                                    max=49,
-                                                ),
-                                                dmc.NumberInput(
-                                                    id="marker-id-b",
-                                                    label="Marker ID B",
-                                                    value=SESSION.config.marker_ids[1],
-                                                    min=0,
-                                                    max=49,
-                                                ),
-                                            ],
-                                            grow=True,
-                                        ),
-                                        dmc.NumberInput(
-                                            id="marker-size",
-                                            label="Marker size (mm)",
-                                            value=SESSION.config.marker_size_mm,
-                                            min=1,
-                                            max=100,
-                                        ),
-                                    ],
-                                    gap="sm",
-                                ),
-                            ),
-                        ],
-                        value="workspace-advanced",
-                    ),
-                ],
-                variant="separated",
-            ),
             dmc.Button(
                 "Compute workspace", id="compute-workspace", variant="light"),
             dmc.Button(
@@ -2948,25 +3029,39 @@ def build_workspace_step_content() -> dmc.Stack:
     )
 
 
-def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dmc.Card:
+def build_camera_panel(title: str = "Camera View") -> dmc.Card:
     placeholder_src = _encode_frame(
         _placeholder_frame("Camera stream offline"))
     return dmc.Card(
         [
             dmc.Group(
                 [
+                    dmc.Text(title, fw=600, size="lg"),
                     dmc.Group(
                         [
-                            dmc.Text(title, fw=600, size="lg"),
-                            dmc.Badge(badge, variant="light"),
+                            dmc.SegmentedControl(
+                                id="overlay-mode-select",
+                                data=[
+                                    {"label": "Auto", "value": "auto"},
+                                    {"label": "Calib", "value": "calibration"},
+                                    {"label": "Workspace", "value": "workspace"},
+                                    {"label": "Plate", "value": "plate"},
+                                    {"label": "Detections", "value": "detection"},
+                                    {"label": "Off", "value": "none"},
+                                ],
+                                value="auto",
+                                size="xs",
+                                color="brand",
+                                radius="md",
+                            ),
+                            dmc.ActionIcon(
+                                html.Span(
+                                    "⛶", style={"fontSize": "1.2rem"}, title="Fullscreen"),
+                                id="fullscreen-btn",
+                                variant="light",
+                            ),
                         ],
-                        gap="xs",
-                    ),
-                    dmc.ActionIcon(
-                        html.Span(
-                            "⛶", style={"fontSize": "1.2rem"}, title="Fullscreen"),
-                        id="fullscreen-btn",
-                        variant="light",
+                        gap="sm",
                     ),
                 ],
                 justify="space-between",
@@ -2981,10 +3076,11 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
                     src="/video_feed",  # Use MJPEG stream to avoid per-frame HTTP polling
                     style={
                         "width": "100%",
-                        "height": "auto",
+                        "height": "560px",
+                        "objectFit": "contain",
                         "borderRadius": "16px",
-                        "border": "1px solid rgba(15, 118, 110, 0.2)",
-                        "marginTop": "12px",
+                        "border": "1px solid rgba(240, 65, 0, 0.25)",
+                        "marginTop": "8px",
                         "backgroundColor": "#0b0f14",
                     },
                 ),
@@ -2993,9 +3089,140 @@ def build_camera_panel(title: str = "Camera View", badge: str = "Overlay") -> dm
         ],
         withBorder=True,
         radius="lg",
+        padding="sm",
         className="panel-card camera-panel",
     )
 
+
+def build_settings_card() -> dmc.Card:
+    return dmc.Card(
+        [
+            dmc.Group(
+                [
+                    dmc.Text("Settings", fw=600, size="lg"),
+                    dmc.Text(id="settings-status", size="sm", c="dimmed"),
+                ],
+                justify="space-between",
+                align="center",
+            ),
+            dmc.Divider(),
+            dmc.Grid(
+                [
+                    dmc.GridCol(
+                        dmc.TextInput(
+                            id="settings-robot-host",
+                            label="Robot host",
+                            placeholder="192.168.101.100",
+                            value=SETTINGS.robot_host,
+                            size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-robot-port",
+                            label="Robot port",
+                            value=SETTINGS.robot_port,
+                            size="sm",
+                            min=1,
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-user-port",
+                            label="User WS port",
+                            value=SETTINGS.user_port,
+                            size="sm",
+                            min=1,
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.TextInput(
+                            id="settings-gripper-ip",
+                            label="Gripper IP",
+                            placeholder="192.168.101.180",
+                            value=SETTINGS.gripper_ip,
+                            size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-marker-a",
+                            label="Marker ID A",
+                            value=SETTINGS.marker_ids[0],
+                            min=0,
+                            max=49,
+                            size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-marker-b",
+                            label="Marker ID B",
+                            value=SETTINGS.marker_ids[1],
+                            min=0,
+                            max=49,
+                            size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-marker-size",
+                            label="Marker size (mm)",
+                            value=SETTINGS.marker_size_mm,
+                            min=1,
+                            max=200,
+                            size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.TextInput(
+                            id="settings-calib-path",
+                            label="Calibration bundle path",
+                            value=str(DEFAULT_BUNDLE_PATH),
+                            size="sm",
+                        ),
+                        span=6,
+                    ),
+                    dmc.GridCol(
+                        dmc.TextInput(
+                            id="settings-workspace-path",
+                            label="Workspace path",
+                            value=str(DEFAULT_WORKSPACE_PATH),
+                            size="sm",
+                        ),
+                        span=6,
+                    ),
+                    dmc.GridCol(
+                        dmc.TextInput(
+                            id="settings-robot-calib-path",
+                            label="Robot calibration path",
+                            value=str(DEFAULT_ROBOT_CALIBRATION_PATH),
+                            size="sm",
+                        ),
+                        span=6,
+                    ),
+                ],
+                gutter="sm",
+            ),
+            dmc.Group(
+                [
+                    dmc.Button("Save settings", id="settings-save", color="teal"),
+                    dmc.Button("Reset to defaults", id="settings-reset", variant="outline", color="red"),
+                ],
+                justify="flex-end",
+            ),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
 
 def build_calibration_tab() -> dmc.Stack:
     return dmc.Stack([build_stepper_card()], gap="md")
@@ -3151,19 +3378,15 @@ def build_pick_place_tab() -> dmc.Stack:
     drop_card = dmc.Card(
         [
             dmc.Text("Drop Target", fw=600, size="lg"),
-            dmc.NumberInput(
-                id="drop-marker-id",
-                label="Drop marker ID",
-                value=SESSION.drop_marker_id,
-                min=0,
-                max=49,
+            dmc.Button(
+                "Teach drop position (use current robot pose)",
+                id="teach-drop-position",
+                variant="light",
             ),
-            dmc.Button("Detect drop marker",
-                       id="detect-drop-marker", variant="light"),
-            dmc.Text(id="drop-marker-metrics", size="sm"),
+            dmc.Text(id="drop-position-metrics", size="sm"),
             dmc.NumberInput(
                 id="drop-height",
-                label="Drop height (mm)",
+                label="Drop height offset (mm)",
                 value=0.0,
                 min=-50,
                 max=200,
@@ -3177,25 +3400,12 @@ def build_pick_place_tab() -> dmc.Stack:
     gripper_card = dmc.Card(
         [
             dmc.Text("Gripper Control", fw=600, size="lg"),
-            dmc.TextInput(
-                id="gripper-path",
-                label="Gripper control path",
-                placeholder="Robot/IO/gripper",
-            ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="gripper-open-value",
-                        label="Open value",
-                        value=1,
-                    ),
-                    dmc.NumberInput(
-                        id="gripper-close-value",
-                        label="Close value",
-                        value=0,
-                    ),
-                ],
-                grow=True,
+            dmc.Switch(
+                id="estimate-object-width-toggle",
+                label="Estimate object width from detection",
+                checked=False,
+                color="teal",
+                size="md",
             ),
             dmc.Group(
                 [
@@ -3206,6 +3416,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
+            dmc.Text(id="holding-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
         radius="lg",
@@ -3214,7 +3425,7 @@ def build_pick_place_tab() -> dmc.Stack:
 
     action_card = dmc.Card(
         [
-            dmc.Text("Robot Actions", fw=600, size="lg"),
+            dmc.Text("Pick/Drop Actions", fw=600, size="lg"),
             dmc.Group(
                 [
                     dmc.Button("Pick", id="execute-pick"),
@@ -3231,113 +3442,29 @@ def build_pick_place_tab() -> dmc.Stack:
         className="panel-card",
     )
 
-    return dmc.Stack([target_card, drop_card, gripper_card, action_card], gap="md")
-
-
-def build_pick_place_application() -> dmc.Stack:
-    return dmc.Stack(
+    manual_card = dmc.Card(
         [
-            dmc.Tabs(
-                [
-                    dmc.TabsList(
-                        [
-                            dmc.TabsTab(
-                                "Detection", value="pick-place-detection"),
-                            dmc.TabsTab(
-                                "Pick & Place", value="pick-place-actions"),
-                        ],
-                        style={
-                            "width": "100%",
-                            "justifyContent": "flex-start",
-                            "marginBottom": "12px",
-                        },
-                    ),
-                    dmc.TabsPanel(
-                        build_detection_tab(), value="pick-place-detection"),
-                    dmc.TabsPanel(
-                        build_pick_place_tab(), value="pick-place-actions"),
-                ],
-                id="pick-place-tabs",
-                value="pick-place-detection",
-                variant="pills",
-                color="brand",
-                style={"width": "100%"},
-            ),
-        ],
-        gap="md",
-    )
-
-
-def build_application_selector() -> dmc.Stack:
-    return dmc.Stack(
-        [
-            dmc.Text(
-                "Choose an application to configure and run.",
-                size="sm",
-                c="dimmed",
-            ),
-            dmc.Tabs(
-                [
-                    dmc.TabsList(
-                        [
-                            dmc.TabsTab(
-                                "Pick & Place", value="pick-place"),
-                        ],
-                        style={
-                            "width": "100%",
-                            "justifyContent": "flex-start",
-                            "marginBottom": "12px",
-                        },
-                    ),
-                    dmc.TabsPanel(
-                        build_pick_place_application(), value="pick-place"),
-                ],
-                id="application-tabs",
-                value="pick-place",
-                variant="pills",
-                color="brand",
-                style={"width": "100%"},
-            ),
-        ],
-        gap="md",
-    )
-
-
-def build_application_stepper_card() -> dmc.Card:
-    return dmc.Card(
-        [
+            dmc.Text("Manual Control", fw=600, size="lg"),
             dmc.Group(
                 [
-                    dmc.Text("Application Steps", fw=600, size="lg"),
-                    dmc.Group(
-                        [
-                            dmc.Button("Back", id="app-step-prev",
-                                       variant="light", size="sm"),
-                            dmc.Button("Next", id="app-step-next", size="sm"),
-                        ],
-                        gap="xs",
+                    dmc.Button(
+                        "Pick closest object",
+                        id="manual-pick-closest",
+                        variant="light",
+                    ),
+                    dmc.Button(
+                        "Release object",
+                        id="manual-release",
+                        variant="outline",
+                    ),
+                    dmc.Button(
+                        "Pick closest & place at target",
+                        id="manual-pick-place-target",
+                        variant="filled",
+                        color="teal",
                     ),
                 ],
-                justify="space-between",
-                align="center",
-            ),
-            dmc.Divider(),
-            dmc.Stepper(
-                id="application-stepper",
-                active=0,
-                orientation="vertical",
-                children=[
-                    dmc.StepperStep(
-                        label="Workspace definition",
-                        description="Detect workspace markers",
-                        children=build_workspace_step_content(),
-                    ),
-                    dmc.StepperStep(
-                        label="Applications",
-                        description="Configure and run an application",
-                        children=build_application_selector(),
-                    ),
-                ],
+                grow=True,
             ),
         ],
         withBorder=True,
@@ -3345,16 +3472,117 @@ def build_application_stepper_card() -> dmc.Card:
         className="panel-card",
     )
 
+    accordion_items = [
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Detect"),
+                dmc.AccordionPanel(build_detection_tab()),
+            ],
+            value="detect",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Acquire target"),
+                dmc.AccordionPanel(target_card),
+            ],
+            value="acquire-target",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Grab target"),
+                dmc.AccordionPanel(gripper_card),
+            ],
+            value="grab-target",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Acquire drop location"),
+                dmc.AccordionPanel(drop_card),
+            ],
+            value="drop-target",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Release target"),
+                dmc.AccordionPanel(
+                    dmc.Text("Configure release options (TBD).",
+                             size="sm", c="dimmed")
+                ),
+            ],
+            value="release-target",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Manual control"),
+                dmc.AccordionPanel(manual_card),
+            ],
+            value="manual",
+        ),
+    ]
+
+    return dmc.Stack(
+        [
+            dmc.Accordion(
+                accordion_items,
+                multiple=True,
+                value=["detect"],
+                variant="separated",
+            ),
+            action_card,
+        ],
+        gap="md",
+    )
+
 
 def build_application_tab() -> dmc.Stack:
-    return dmc.Stack([build_application_stepper_card()], gap="md")
+    return dmc.Stack(
+        [
+            dmc.Tabs(
+                [
+                    dmc.TabsList(
+                        [
+                            dmc.TabsTab("Workspace", value="workspace"),
+                            dmc.TabsTab("Pick & Place", value="pick-place"),
+                        ],
+                        style={
+                            "width": "100%",
+                            "justifyContent": "flex-start",
+                            "marginBottom": "12px",
+                        },
+                    ),
+                    dmc.TabsPanel(
+                        build_workspace_step_content(), value="workspace"
+                    ),
+                    dmc.TabsPanel(
+                        build_pick_place_tab(), value="pick-place"
+                    ),
+                ],
+                id="application-tabs",
+                value="workspace",
+                variant="pills",
+                color="brand",
+                style={"width": "100%"},
+            )
+        ],
+        gap="md",
+    )
 
 
 def build_monitoring_tab() -> dmc.Stack:
     summary_card = dmc.Card(
         [
             dmc.Text("System Summary", fw=600, size="lg"),
-            dmc.Stack(id="monitor-system-summary", gap="xs"),
+            dmc.Stack(
+                [
+                    dmc.Text("Camera: off", size="sm"),
+                    dmc.Text("Robot: offline", size="sm"),
+                    dmc.Text("Gripper: offline", size="sm"),
+                    dmc.Text("Calibration bundle: missing", size="sm"),
+                    dmc.Text("Workspace: pending", size="sm"),
+                ],
+                id="monitor-system-summary",
+                gap="xs",
+            ),
         ],
         withBorder=True,
         radius="lg",
@@ -3363,7 +3591,14 @@ def build_monitoring_tab() -> dmc.Stack:
     detection_card = dmc.Card(
         [
             dmc.Text("Detection Summary", fw=600, size="lg"),
-            dmc.Stack(id="monitor-detection-summary", gap="xs"),
+            dmc.Stack(
+                [
+                    dmc.Text("Model: none", size="sm"),
+                    dmc.Text("Detections: 0", size="sm"),
+                ],
+                id="monitor-detection-summary",
+                gap="xs",
+            ),
         ],
         withBorder=True,
         radius="lg",
@@ -3372,7 +3607,19 @@ def build_monitoring_tab() -> dmc.Stack:
     pick_card = dmc.Card(
         [
             dmc.Text("Pick & Drop Summary", fw=600, size="lg"),
-            dmc.Stack(id="monitor-pick-summary", gap="xs"),
+            dmc.Stack(
+                [
+                    dmc.Text("Holding object: no", size="sm"),
+                    dmc.Text("Last action: No recent actions.", size="sm"),
+                    dmc.Text("Processed objects: 0", size="sm"),
+                    dmc.Text("Attempts: 0 · Failures: 0", size="sm"),
+                    dmc.Text("Success rate: n/a", size="sm"),
+                    dmc.Text("Avg cycle: n/a", size="sm"),
+                    dmc.Text("Last cycle: n/a", size="sm"),
+                ],
+                id="monitor-pick-summary",
+                gap="xs",
+            ),
         ],
         withBorder=True,
         radius="lg",
@@ -3384,16 +3631,16 @@ def build_monitoring_tab() -> dmc.Stack:
 
 def build_layout() -> dmc.MantineProvider:
     brand_palette = [
-        "#e6f7f5",
-        "#c2f0ea",
-        "#99e2dd",
-        "#67d5d0",
-        "#3cc9c5",
-        "#22b3a7",
-        "#188f88",
-        "#0f6b66",
-        "#0a4b4a",
-        "#062b2e",
+        "#ffe8de",
+        "#ffcdbd",
+        "#ffac91",
+        "#ff8a61",
+        "#ff6b36",
+        "#f04100",
+        "#d23a00",
+        "#b03200",
+        "#8a2700",
+        "#611a00",
     ]
     theme = {
         "fontFamily": "Space Grotesk, IBM Plex Sans, sans-serif",
@@ -3473,6 +3720,11 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Interval(id="robot-status-interval",
                              interval=400, n_intervals=0),
                 dcc.Interval(
+                    id="monitor-interval",
+                    interval=1000,
+                    n_intervals=0,
+                ),
+                dcc.Interval(
                     id="camera-interval",
                     interval=33,  # ~30 FPS UI poll; stream push happens each tick
                     n_intervals=0,
@@ -3525,8 +3777,9 @@ def build_layout() -> dmc.MantineProvider:
                                                 value="calibration",
                                                 variant="pills",
                                                 color="brand",
+                                                className="main-tabs",
                                                 style={"width": "100%",
-                                                       "marginBottom": "12px"},
+                                                       "marginBottom": "6px"},
                                             ),
                                             span={"base": 12, "md": 4},
                                         ),
@@ -3633,29 +3886,24 @@ def _run_drop_marker_task(marker_id: int) -> Callable[[np.ndarray], OverlayResul
 def _select_overlay_task(
     tab: str,
     calibration_step: int,
-    application_step: int,
-    application: Optional[str],
-    application_view: Optional[str],
+    application_tab: Optional[str],
     board_path: Path,
     marker_ids: Tuple[int, int],
     marker_size_mm: float,
     plate_path: Path,
-    drop_marker_id: int,
 ) -> Optional[OverlayTask]:
     if tab == "calibration":
         if calibration_step == 0:
             return OverlayTask("calibration-charuco", _run_charuco_task(board_path))
         return OverlayTask("calibration-plate", _run_plate_task(plate_path))
     if tab == "applications":
-        if application_step == 0:
+        if application_tab == "workspace":
             return OverlayTask(
                 "application-workspace",
                 _run_workspace_task(marker_ids, marker_size_mm),
             )
-        if application == "pick-place":
-            if application_view == "pick-place-detection":
-                return OverlayTask("pick-place-detection", _run_detection_task())
-            return OverlayTask("pick-place", _run_drop_marker_task(drop_marker_id))
+        if application_tab == "pick-place":
+            return OverlayTask("pick-place-detection", _run_detection_task())
     return None
 
 
@@ -3690,27 +3938,6 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=False,
     )
 
-    app.clientside_callback(
-        """
-        function(n_clicks) {
-            if (!n_clicks) return;
-                         video.webkitRequestFullscreen ||
-                         video.mozRequestFullScreen ||
-                         video.msRequestFullscreen;
-            if (fsFn) {
-                fsFn.call(video).catch(err => {
-                    if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
-                });
-            } else if (video.webkitEnterFullscreen) {
-                video.webkitEnterFullscreen();
-            }
-        }
-        """,
-        Output("fullscreen-btn", "n_clicks"),
-        Input("fullscreen-btn", "n_clicks"),
-        prevent_initial_call=True,
-    )
-
     # Auto-refresh camera image (enabled only when camera is live)
     # (Client refresh removed; MJPEG stream handles updates)
 
@@ -3735,29 +3962,6 @@ def register_callbacks(app: Dash) -> None:
             return max(current - 1, 0)
         if trigger == "use-existing-calibration":
             return 1  # Advance to robot calibration step
-        return current
-
-    @app.callback(
-        Output("application-stepper", "active"),
-        Input("app-step-prev", "n_clicks"),
-        Input("app-step-next", "n_clicks"),
-        Input("use-existing-workspace", "n_clicks"),
-        State("application-stepper", "active"),
-    )
-    def _update_application_stepper(
-        prev_clicks: int,
-        next_clicks: int,
-        use_saved_workspace: int,
-        active: Optional[int],
-    ) -> int:
-        current = active or 0
-        trigger = callback_context.triggered_id
-        if trigger == "app-step-next":
-            return min(current + 1, 1)
-        if trigger == "app-step-prev":
-            return max(current - 1, 0)
-        if trigger == "use-existing-workspace":
-            return 1  # Advance to application tasks
         return current
 
     @app.callback(
@@ -3804,7 +4008,7 @@ def register_callbacks(app: Dash) -> None:
                 return (
                     status,
                     "Camera: live",
-                    "teal",
+                    "brand",
                     True,
                     {"status": "live", "message": status},
                     False,
@@ -3828,7 +4032,7 @@ def register_callbacks(app: Dash) -> None:
                 return (
                     status,
                     "Camera: live",
-                    "teal",
+                    "brand",
                     True,
                     {"status": "live", "message": status},
                     False,
@@ -3839,7 +4043,7 @@ def register_callbacks(app: Dash) -> None:
                 return (
                     error,
                     "Camera: error",
-                    "red",
+                    "yellow",
                     False,
                     {"status": "error", "message": error},
                     True,
@@ -3947,23 +4151,23 @@ def register_callbacks(app: Dash) -> None:
                 status = f"Robot connected to {target['host']}:{target['port']}."
                 SESSION.robot_connection_attempted = True
                 SESSION.robot_last_connection_error = None
-                return status, "Robot: online", "teal", {"status": "online", "message": status}
+                return status, "Robot: online", "brand", {"status": "online", "message": status}
             if SESSION.robot_connection_attempted:
                 if SESSION.robot_last_connection_error:
                     error = SESSION.robot_last_connection_error
-                    return error, "Robot: error", "red", {"status": "error", "message": error}
+                    return error, "Robot: error", "yellow", {"status": "error", "message": error}
                 return no_update, no_update, no_update, no_update
         try:
             response = await _probe_robot(uri)
             status = f"Robot connected to {response.get('host')}:{response.get('port')}."
             SESSION.robot_connection_attempted = True
             SESSION.robot_last_connection_error = None
-            return status, "Robot: online", "teal", {"status": "online", "message": status}
+            return status, "Robot: online", "brand", {"status": "online", "message": status}
         except Exception as exc:
             error = f"Robot connection failed: {exc}"
             SESSION.robot_connection_attempted = True
             SESSION.robot_last_connection_error = error
-            return error, "Robot: error", "red", {"status": "error", "message": error}
+            return error, "Robot: error", "yellow", {"status": "error", "message": error}
 
     def _command_gripper(
         target_width: float,
@@ -4099,11 +4303,11 @@ def _restore_calibration_gripper_width() -> None:
                             dmc.Alert(
                                 "Cannot reach the gripper control box. Check power and network.",
                                 title="Gripper Unavailable",
-                                color="red",
+                                color="yellow",
                             )
                         ),
                         "Gripper: error",
-                        "red",
+                        "yellow",
                         {
                             "status": "error",
                             "message": f"Failed to connect to Compute Box at {cb_ip}",
@@ -4127,11 +4331,11 @@ def _restore_calibration_gripper_width() -> None:
                         dmc.Alert(
                             "Could not reach the gripper. Verify the Compute Box IP and network connection.",
                             title="Gripper Unavailable",
-                            color="red",
+                            color="yellow",
                         )
                     ),
                     "Gripper: error",
-                    "red",
+                    "yellow",
                     {
                         "status": "error",
                         "message": f"Failed to query gripper at {cb_ip}: {exc}",
@@ -4166,6 +4370,7 @@ def _restore_calibration_gripper_width() -> None:
             width = SESSION.gripper.get_ext_width(t_index=t_index)
             force = SESSION.gripper.get_force(t_index=t_index)
             is_gripped = SESSION.gripper.isGripped(t_index=t_index)
+            SESSION.robot_has_object = bool(is_gripped)
 
             info_card = html.Div(
                 dmc.Card(
@@ -4222,7 +4427,7 @@ def _restore_calibration_gripper_width() -> None:
                 status_text,
                 info_card,
                 "Gripper: online",
-                "teal",
+                "brand",
                 {"status": "online", "message": status_text},
             )
 
@@ -4257,29 +4462,32 @@ def _restore_calibration_gripper_width() -> None:
 
     @app.callback(
         Output("footer-visibility", "data"),
-        Input("footer-toggle", "n_clicks"),
-        State("footer-visibility", "data"),
-        prevent_initial_call=True,
-    )
-    def _toggle_footer_visibility(
-        _clicks: int,
-        state: Optional[dict],
-    ) -> dict:
-        collapsed = bool((state or {}).get("collapsed", False))
-        return {"collapsed": not collapsed}
-
-    @app.callback(
         Output("app-footer", "className"),
         Output("footer-toggle", "children"),
         Output("app-main", "className"),
-        Input("footer-visibility", "data"),
+        Output("footer-body", "style"),
+        Input("footer-toggle", "n_clicks"),
+        State("footer-visibility", "data"),
     )
-    def _sync_footer_visibility(state: Optional[dict]) -> Tuple[str, str, str]:
+    def _toggle_footer_visibility(
+        n_clicks: Optional[int],
+        state: Optional[dict],
+    ) -> Tuple[dict, str, str, str, dict]:
         collapsed = bool((state or {}).get("collapsed", False))
-        class_name = "app-footer is-collapsed" if collapsed else "app-footer"
-        label = "Show footer" if collapsed else "Hide footer"
-        main_class = "app-main footer-collapsed" if collapsed else "app-main footer-expanded"
-        return class_name, label, main_class
+        if not n_clicks:
+            # honor current state without toggling on first render
+            class_name = "app-footer is-collapsed" if collapsed else "app-footer"
+            label = "Show footer" if collapsed else "Hide footer"
+            main_class = "app-main footer-collapsed" if collapsed else "app-main footer-expanded"
+            style = {"display": "none"} if collapsed else {}
+            return state or {"collapsed": False}, class_name, label, main_class, style
+
+        new_collapsed = not collapsed
+        class_name = "app-footer is-collapsed" if new_collapsed else "app-footer"
+        label = "Show footer" if new_collapsed else "Hide footer"
+        main_class = "app-main footer-collapsed" if new_collapsed else "app-main footer-expanded"
+        style = {"display": "none"} if new_collapsed else {}
+        return {"collapsed": new_collapsed}, class_name, label, main_class, style
 
     @app.callback(
         Output("footer-robot-position", "children"),
@@ -4369,6 +4577,103 @@ def _restore_calibration_gripper_width() -> None:
     def _update_gpu_status(_n: int) -> list:
         """Update GPU status display periodically."""
         return format_gpu_status()
+
+    @app.callback(
+        Output("settings-status", "children"),
+        Output("settings-robot-host", "value"),
+        Output("settings-marker-a", "value"),
+        Output("settings-marker-b", "value"),
+        Output("settings-marker-size", "value"),
+        Output("settings-calib-path", "value"),
+        Output("settings-workspace-path", "value"),
+        Output("settings-robot-calib-path", "value"),
+        Input("settings-save", "n_clicks"),
+        Input("settings-reset", "n_clicks"),
+        State("settings-robot-host", "value"),
+        State("settings-marker-a", "value"),
+        State("settings-marker-b", "value"),
+        State("settings-marker-size", "value"),
+        State("settings-calib-path", "value"),
+        State("settings-workspace-path", "value"),
+        State("settings-robot-calib-path", "value"),
+        prevent_initial_call=True,
+    )
+    def _handle_settings(
+        _save: int,
+        _reset: int,
+        robot_host: Optional[str],
+        marker_a: Optional[float],
+        marker_b: Optional[float],
+        marker_size: Optional[float],
+        calib_path: Optional[str],
+        workspace_path: Optional[str],
+        robot_calib_path: Optional[str],
+    ) -> Tuple[str, Optional[str], Optional[int], Optional[int], Optional[float], str, str, str]:
+        trigger = callback_context.triggered_id
+        global CODROID_DEFAULTS, DEFAULT_ROBOT_URI, GRIPPER_DEFAULTS, DEFAULT_GRIPPER_IP
+        global DEFAULT_BUNDLE_PATH, DEFAULT_WORKSPACE_PATH, DEFAULT_ROBOT_CALIBRATION_PATH
+        default_marker_a = 1
+        default_marker_b = 2
+        default_marker_size = 40.0
+        default_calib = str(DEFAULT_BUNDLE_PATH)
+        default_workspace = str(DEFAULT_WORKSPACE_PATH)
+        default_robot_calib = str(DEFAULT_ROBOT_CALIBRATION_PATH)
+
+        if trigger == "settings-reset":
+            _commit_settings(
+                marker_ids=(default_marker_a, default_marker_b),
+                marker_size_mm=default_marker_size,
+                calibration_bundle_path=None,
+                workspace_path=None,
+                robot_calibration_path=str(DEFAULT_ROBOT_CALIBRATION_PATH),
+            )
+            return (
+                "Settings reset to defaults (env + built-ins).",
+                default_marker_a,
+                default_marker_b,
+                default_marker_size,
+                default_calib,
+                default_workspace,
+                default_robot_calib,
+            )
+
+        # Save path: sanitize inputs
+        host_val = (robot_host or "").strip() or None
+        marker_a_val = int(marker_a) if marker_a is not None else default_marker_a
+        marker_b_val = int(marker_b) if marker_b is not None else default_marker_b
+        marker_size_val = float(marker_size) if marker_size is not None else default_marker_size
+        calib_path_val = (calib_path or "").strip() or str(DEFAULT_BUNDLE_PATH)
+        workspace_path_val = (workspace_path or "").strip() or str(DEFAULT_WORKSPACE_PATH)
+        robot_calib_path_val = (robot_calib_path or "").strip() or str(DEFAULT_ROBOT_CALIBRATION_PATH)
+
+        _commit_settings(
+            robot_host=host_val,
+            marker_ids=(marker_a_val, marker_b_val),
+            marker_size_mm=marker_size_val,
+            calibration_bundle_path=calib_path_val,
+            workspace_path=workspace_path_val,
+            robot_calibration_path=robot_calib_path_val,
+        )
+
+        CODROID_DEFAULTS = _load_codroid_defaults()
+        DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
+        GRIPPER_DEFAULTS = _load_gripper_defaults()
+        DEFAULT_GRIPPER_IP = GRIPPER_DEFAULTS["compute_box_ip"]
+        DEFAULT_BUNDLE_PATH = Path(calib_path_val)
+        DEFAULT_WORKSPACE_PATH = Path(workspace_path_val)
+        DEFAULT_ROBOT_CALIBRATION_PATH = Path(robot_calib_path_val)
+        SESSION.config.marker_ids = (marker_a_val, marker_b_val)
+        SESSION.config.marker_size_mm = marker_size_val
+
+        return (
+            "Settings saved.",
+            marker_a_val,
+            marker_b_val,
+            marker_size_val,
+            calib_path_val,
+            workspace_path_val,
+            robot_calib_path_val,
+        )
 
     @app.callback(
         Output("continuous-detection-toggle", "checked"),
@@ -4489,138 +4794,209 @@ def _restore_calibration_gripper_width() -> None:
 
     @app.callback(
         Output("pick-place-status", "children"),
-        Input("detect-drop-marker", "n_clicks"),
+        Output("drop-position-metrics", "children", allow_duplicate=True),
+        Input("teach-drop-position", "n_clicks"),
         Input("execute-pick", "n_clicks"),
         Input("execute-drop", "n_clicks"),
         Input("execute-pick-drop", "n_clicks"),
+        Input("manual-pick-closest", "n_clicks"),
+        Input("manual-release", "n_clicks"),
+        Input("manual-pick-place-target", "n_clicks"),
         Input("gripper-open", "n_clicks"),
         Input("gripper-close", "n_clicks"),
         State("pick-detection-select", "value"),
-        State("drop-marker-id", "value"),
         State("pick-approach-height", "value"),
         State("pick-height", "value"),
         State("drop-height", "value"),
-        State("gripper-path", "value"),
-        State("gripper-open-value", "value"),
-        State("gripper-close-value", "value"),
+        State("estimate-object-width-toggle", "checked"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
     async def _handle_pick_place(
-        _drop_clicks: int,
+        _teach_drop: int,
         _pick_clicks: int,
         _drop_action: int,
         _pick_drop_clicks: int,
+        _manual_pick: int,
+        _manual_release: int,
+        _manual_pick_place: int,
         _gripper_open: int,
         _gripper_close: int,
         selected_detection: Optional[str],
-        drop_marker_id: Optional[float],
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
-        gripper_path: Optional[str],
-        gripper_open_value: Optional[float],
-        gripper_close_value: Optional[float],
+        estimate_width: Optional[bool],
         robot_uri: Optional[str],
-    ) -> str:
+    ) -> Tuple[str, str]:
         trigger = callback_context.triggered_id
         frame, _depth = get_latest_frame()
-        if frame is None:
-            return "Camera stream is not running."
+        drop_text = no_update
+        gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+        gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+        if trigger is None:
+            return no_update, no_update
+        if frame is None and trigger not in {"teach-drop-position", "manual-release", "gripper-open", "gripper-close"}:
+            return "Camera stream is not running.", drop_text
 
-        drop_marker = _safe_int(drop_marker_id, SESSION.drop_marker_id)
+        workspace_def = SESSION.workspace_definition
         approach_mm = _safe_float(approach_height, 30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
-        gripper_open_val = _safe_float(gripper_open_value, 1.0)
-        gripper_close_val = _safe_float(gripper_close_value, 0.0)
-        gripper_path = (gripper_path or "").strip() or None
 
-        if trigger == "detect-drop-marker":
+        def _estimate_width_mm(det: dict) -> Optional[float]:
+            if not estimate_width or workspace_def is None:
+                return None
+            bbox = det.get("bbox")
+            if not bbox:
+                return None
+            x1, y1, x2, y2 = bbox
+            width_px = max(abs(x2 - x1), abs(y2 - y1))
+            if width_px <= 0:
+                return None
+            x_scale = np.linalg.norm(workspace_def.x_axis_camera)
+            y_scale = np.linalg.norm(workspace_def.y_axis_camera)
+            denom = (x_scale + y_scale) / 2.0
+            if denom <= 0:
+                return None
+            mm_per_px = 1.0 / denom
+            return width_px * mm_per_px
+
+        if trigger == "teach-drop-position":
+            if workspace_def is None:
+                return "Workspace is not defined; compute it first.", drop_text
+            session = _get_robot_session()
+            if not session.posture_seen():
+                return "Robot posture stream not available yet.", drop_text
+            pos = session.position_snapshot()
+            robot_xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
             try:
-                marker, workspace_mm = _detect_drop_marker(frame, drop_marker)
-                SESSION.drop_marker_id = drop_marker
-                SESSION.drop_target_mm = workspace_mm
-                SESSION.last_action = f"Drop marker {marker.marker_id} detected."
-                return f"Drop marker at {workspace_mm[0]:.1f}, {workspace_mm[1]:.1f} mm."
-            except Exception as exc:
-                return f"Drop marker detection failed: {exc}"
+                drop_mm_xy = _robot_to_workspace_mm(workspace_def, robot_xyz)
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed to record drop position: {exc}", drop_text
+            SESSION.drop_target_mm = drop_mm_xy
+            _save_drop_target(drop_mm_xy)
+            _save_settings(SETTINGS.model_copy(update={"drop_target": drop_mm_xy}))
+            SESSION.last_action = "Drop position taught."
+            drop_text = f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm"
+            return "Drop position recorded from robot pose.", drop_text
 
         if trigger == "gripper-open":
-            return _command_gripper(gripper_open_val, "opened")
+            return _command_gripper(gripper_open_val, "opened"), drop_text
 
         if trigger == "gripper-close":
-            return _command_gripper(gripper_close_val, "closed")
+            return _command_gripper(gripper_close_val, "closed"), drop_text
 
-        if SESSION.workspace_definition is None:
-            return "Workspace is not defined; run workspace calibration first."
-        if not SESSION.detections:
-            return "No detections available; run detection first."
-        if selected_detection is None:
-            return "Select a detection to pick."
+        if workspace_def is None:
+            return "Workspace is not defined; run workspace calibration first.", drop_text
+        approach_mm = _safe_float(approach_height, 30.0)
+        pick_mm = _safe_float(pick_height, 0.0)
+        drop_mm = _safe_float(drop_height, 0.0)
+        gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+        gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+        if not SESSION.detections and trigger in {"execute-pick", "execute-pick-drop", "manual-pick-closest", "manual-pick-place-target"}:
+            return "No detections available; run detection first.", drop_text
+
+        if trigger in {"execute-pick", "execute-pick-drop"} and selected_detection is None:
+            return "Select a detection to pick.", drop_text
+
+        def _select_detection_for_action() -> dict:
+            if trigger in {"manual-pick-closest", "manual-pick-place-target"}:
+                session = _get_robot_session()
+                pos = session.position_snapshot()
+                robot_xy = np.array([pos.x, pos.y], dtype=float)
+                try:
+                    workspace_xy = _robot_to_workspace_mm(
+                        workspace_def, np.array([pos.x, pos.y, pos.z], dtype=float)
+                    )
+                except Exception:
+                    workspace_xy = None
+                best_det = SESSION.detections[0]
+                best_dist = float("inf")
+                for det in SESSION.detections:
+                    wp = det.get("workspace_mm")
+                    if wp is None:
+                        continue
+                    dist = np.linalg.norm(np.array(wp[:2]) - np.array(workspace_xy or wp[:2]))
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_det = det
+                return best_det
+            det_idx = int(selected_detection)
+            return SESSION.detections[det_idx]
 
         try:
-            det_idx = int(selected_detection)
-            detection = SESSION.detections[det_idx]
-        except (ValueError, IndexError):
-            return "Invalid detection selection."
+            detection = _select_detection_for_action()
+        except Exception:
+            return "Invalid detection selection.", drop_text
 
         center = detection.get("center")
         if center is None:
-            return "Detection is missing center coordinates."
+            return "Detection is missing center coordinates.", drop_text
         workspace_mm = detection.get("workspace_mm")
         if workspace_mm is None:
-            workspace_mm = _workspace_pixel_to_mm(
-                SESSION.workspace_definition, center)
+            workspace_mm = _workspace_pixel_to_mm(workspace_def, center)
+
+        width_guess = _estimate_width_mm(detection)
+        if width_guess is not None:
+            gripper_close_val = max(gripper_close_val, width_guess * 0.9)
+            gripper_open_val = max(gripper_open_val, width_guess + 5.0)
 
         pick_pose = _pose_from_workspace_mm(
-            SESSION.workspace_definition, workspace_mm[0], workspace_mm[1], pick_mm)
+            workspace_def, workspace_mm[0], workspace_mm[1], pick_mm)
         approach_pose = _pose_from_workspace_mm(
-            SESSION.workspace_definition, workspace_mm[0], workspace_mm[1], approach_mm
+            workspace_def, workspace_mm[0], workspace_mm[1], approach_mm
         )
         SESSION.last_pick_mm = workspace_mm
 
         def _resolve_drop_target() -> Tuple[float, float]:
-            if SESSION.drop_target_mm and SESSION.drop_marker_id == drop_marker:
+            if SESSION.drop_target_mm:
                 return SESSION.drop_target_mm
-            _marker, drop_mm_target = _detect_drop_marker(frame, drop_marker)
-            SESSION.drop_target_mm = drop_mm_target
-            SESSION.drop_marker_id = drop_marker
-            return drop_mm_target
+            raise RuntimeError("No drop location taught yet.")
 
         async def _pick_action(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**pick_pose))
-            if gripper_path:
-                await robot_api.set_param(gripper_path, gripper_close_val)
+            _command_gripper(gripper_close_val, "closed")
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
+            SESSION.robot_has_object = True
 
         async def _drop_action(robot_api: CodroidAPI, drop_target_mm: Tuple[float, float]) -> None:
             drop_pose = _pose_from_workspace_mm(
-                SESSION.workspace_definition, drop_target_mm[0], drop_target_mm[1], drop_mm
+                workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
             )
             drop_approach = _pose_from_workspace_mm(
-                SESSION.workspace_definition, drop_target_mm[0], drop_target_mm[1], approach_mm
+                workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
             )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_pose))
-            if gripper_path:
-                await robot_api.set_param(gripper_path, gripper_open_val)
+            _command_gripper(gripper_open_val, "opened")
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
             await robot_api.power_off()
+            SESSION.robot_has_object = False
 
         async def _pick_drop_action(robot_api: CodroidAPI) -> None:
             await _pick_action(robot_api)
             drop_target_mm = _resolve_drop_target()
             await _drop_action(robot_api, drop_target_mm)
 
+        pick_cycle = trigger in {
+            "execute-pick",
+            "execute-pick-drop",
+            "manual-pick-closest",
+            "manual-pick-place-target",
+        }
+        cycle_started_at = time.monotonic() if pick_cycle else None
+
         try:
-            if trigger == "execute-pick":
+            if trigger in {"execute-pick", "manual-pick-closest"}:
                 await _with_robot_api(
                     robot_uri or DEFAULT_ROBOT_URI, _pick_action)
                 SESSION.last_action = "Pick command sent."
-                return "Pick command sent."
+                if pick_cycle:
+                    _record_pick_cycle(True, cycle_started_at)
+                return "Pick command sent.", drop_text
             if trigger == "execute-drop":
                 drop_target_mm = _resolve_drop_target()
 
@@ -4630,15 +5006,40 @@ def _restore_calibration_gripper_width() -> None:
                 await _with_robot_api(
                     robot_uri or DEFAULT_ROBOT_URI, _drop_only)
                 SESSION.last_action = "Drop command sent."
-                return "Drop command sent."
-            if trigger == "execute-pick-drop":
+                drop_text = f"Drop at {drop_target_mm[0]:.1f}, {drop_target_mm[1]:.1f} mm"
+                return "Drop command sent.", drop_text
+            if trigger in {"execute-pick-drop", "manual-pick-place-target"}:
+                if trigger == "manual-pick-place-target" and SESSION.drop_target_mm is None:
+                    return "Teach a drop position first.", drop_text
                 await _with_robot_api(
                     robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action)
                 SESSION.last_action = "Pick & drop command sent."
-                return "Pick & drop command sent."
+                drop_text = (
+                    f"Drop at {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm"
+                    if SESSION.drop_target_mm
+                    else drop_text
+                )
+                if pick_cycle:
+                    _record_pick_cycle(True, cycle_started_at)
+                return "Pick & drop command sent.", drop_text
+            if trigger == "manual-release":
+                if not SESSION.robot_has_object:
+                    return "No object held.", drop_text
+
+                async def _release_only(api: CodroidAPI) -> None:
+                    _command_gripper(gripper_open_val, "opened")
+                    SESSION.robot_has_object = False
+
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _release_only)
+                SESSION.last_action = "Release command sent."
+                return "Release command sent.", drop_text
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Pick/place action failed")
-            return f"Pick/place action failed: {exc}"
+            if pick_cycle:
+                _record_pick_cycle(False, cycle_started_at)
+            return f"Pick/place action failed: {exc}", drop_text
+
+        return no_update, drop_text
 
     @app.callback(
         Output("footer-gripper-status", "children"),
@@ -4647,8 +5048,6 @@ def _restore_calibration_gripper_width() -> None:
         Input("footer-gripper-width", "value"),
         Input("footer-gripper-force", "value"),
         Input("footer-gripper-speed", "value"),
-        State("gripper-open-value", "value"),
-        State("gripper-close-value", "value"),
         prevent_initial_call=True,
     )
     def _footer_gripper_actions(
@@ -4657,8 +5056,6 @@ def _restore_calibration_gripper_width() -> None:
         footer_width: Optional[float],
         footer_force: Optional[float],
         footer_speed: Optional[float],
-        gripper_open_value: Optional[float],
-        gripper_close_value: Optional[float],
     ) -> str:
         try:
             trigger = callback_context.triggered_id
@@ -4675,8 +5072,7 @@ def _restore_calibration_gripper_width() -> None:
             )
             applied_speed = _safe_int(footer_speed, 80)
             if trigger == "footer-gripper-open":
-                width = _safe_float(gripper_open_value,
-                                    _safe_float(footer_width, 1.0))
+                width = _safe_float(footer_width, GRIPPER_OPEN_WIDTH_DEFAULT)
                 return _command_gripper(
                     width,
                     "opened",
@@ -4684,8 +5080,7 @@ def _restore_calibration_gripper_width() -> None:
                     speed=applied_speed,
                 )
             if trigger == "footer-gripper-close":
-                width = _safe_float(gripper_close_value,
-                                    _safe_float(footer_width, 0.0))
+                width = _safe_float(footer_width, GRIPPER_CLOSE_WIDTH_DEFAULT)
                 return _command_gripper(
                     width,
                     "closed",
@@ -4695,7 +5090,7 @@ def _restore_calibration_gripper_width() -> None:
                 )
             if trigger in {"footer-gripper-width", "footer-gripper-force", "footer-gripper-speed"}:
                 width = _safe_float(
-                    footer_width, _safe_float(gripper_close_value, 0.0))
+                    footer_width, GRIPPER_CLOSE_WIDTH_DEFAULT)
                 return _command_gripper(
                     width,
                     "moved",
@@ -4830,48 +5225,139 @@ def _restore_calibration_gripper_width() -> None:
         return width_update, force_update
 
     @app.callback(
+        Output("holding-status", "children"),
+        Input("robot-status-interval", "n_intervals"),
+        State("gripper-connection-state", "data"),
+    )
+    def _update_holding_badge(
+        _intervals: int, gripper_state: Optional[dict]
+    ) -> str:
+        status = (gripper_state or {}).get("status", "offline")
+        if status != "online" or SESSION.gripper is None:
+            return "Holding object: unknown (gripper offline)"
+        try:
+            t_index = GRIPPER_DEFAULTS["t_index"]
+            is_gripped = bool(SESSION.gripper.isGripped(t_index=t_index))
+            SESSION.robot_has_object = is_gripped
+            return f"Holding object: {'yes' if is_gripped else 'no'}"
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Unable to query gripper grip state: %s", exc)
+            return "Holding object: unknown"
+
+    @app.callback(
         Output("monitor-system-summary", "children"),
         Output("monitor-detection-summary", "children"),
         Output("monitor-pick-summary", "children"),
         Output("use-existing-calibration", "style"),
         Output("use-existing-workspace", "style"),
+        Input("monitor-interval", "n_intervals"),
         Input("camera-interval", "n_intervals"),
         State("camera-connection-state", "data"),
         State("robot-connection-state", "data"),
+        State("gripper-connection-state", "data"),
+        State("robot-power-state", "data"),
+        State("robot-speed-state", "data"),
         State("calibration-bundle-path", "value"),
     )
     def _update_monitoring_summary(
-        _ticks: int,
+        _monitor_ticks: int,
+        _camera_ticks: int,
         camera_state: Optional[dict],
         robot_state: Optional[dict],
+        gripper_state: Optional[dict],
+        robot_power: Optional[dict],
+        robot_speed: Optional[dict],
         bundle_path_value: Optional[str],
     ) -> Tuple[list, list, list, dict, dict]:
-        camera_status = camera_state.get("status") if camera_state else "off"
-        robot_status = robot_state.get("status") if robot_state else "offline"
+        camera_status = (camera_state or {}).get("status", "off")
+        robot_status = (robot_state or {}).get("status", "offline")
+        gripper_status = (gripper_state or {}).get("status", "offline")
         calibration_state = "loaded" if SESSION.calibration_bundle is not None else "missing"
         workspace_state = "ready" if SESSION.workspace_definition is not None else "pending"
         plate_state = "ready" if SESSION.plate_calibration is not None else "pending"
         model_state = SESSION.active_model_path.name if SESSION.active_model_path else "none"
         detection_count = len(SESSION.detections)
-        last_action = SESSION.last_action or "—"
+        last_action = SESSION.last_action or "No recent actions."
+
+        stream = SESSION.camera_stream
+        stream_fps = stream.get_fps() if stream else 0.0
+        stream_cfg_fps = stream.config.fps if stream else DEFAULT_FPS
+        res_w, res_h = stream.config.resolution if stream else DEFAULT_RESOLUTION
 
         system_items = [
-            dmc.Text(f"Camera: {camera_status}", size="sm"),
-            dmc.Text(f"Robot: {robot_status}", size="sm"),
+            dmc.Text(
+                f"Camera: {camera_status} · {res_w}x{res_h} @ {stream_fps:.1f}/{stream_cfg_fps:g} FPS",
+                size="sm",
+            ),
+            dmc.Text(
+                f"Robot: {robot_status} · speed {int((robot_speed or {}).get('value', SESSION.robot_speed_rate*100))}%",
+                size="sm",
+            ),
+            dmc.Text(
+                f"Power: {('on' if (robot_power or {}).get('value') else 'off')}",
+                size="sm",
+            ),
             dmc.Text(f"Calibration bundle: {calibration_state}", size="sm"),
             dmc.Text(f"Workspace: {workspace_state}", size="sm"),
             dmc.Text(f"Plate calibration: {plate_state}", size="sm"),
+            dmc.Text(
+                f"Gripper: {gripper_status}",
+                size="sm",
+            ),
         ]
+
         detection_items = [
             dmc.Text(f"Model: {model_state}", size="sm"),
             dmc.Text(f"Detections: {detection_count}", size="sm"),
         ]
         if SESSION.last_detection_error:
             detection_items.append(
-                dmc.Text(f"Last error: {SESSION.last_detection_error}", size="sm", c="red"))
+                dmc.Text(
+                    f"Last error: {SESSION.last_detection_error}",
+                    size="sm",
+                    c="red",
+                )
+            )
+
+        attempts = SESSION.pick_attempts
+        successes = SESSION.pick_successes
+        failures = SESSION.pick_failures
+        processed = successes
+        success_rate = (successes / attempts * 100.0) if attempts else None
+        avg_cycle = (
+            sum(SESSION.cycle_times) / len(SESSION.cycle_times)
+            if SESSION.cycle_times
+            else None
+        )
         pick_items = [
-            dmc.Text(f"Drop marker ID: {SESSION.drop_marker_id}", size="sm"),
+            dmc.Text(
+                f"Holding object: {'yes' if SESSION.robot_has_object else 'no'}",
+                size="sm",
+            ),
             dmc.Text(f"Last action: {last_action}", size="sm"),
+            dmc.Text(f"Processed objects: {processed}", size="sm"),
+            dmc.Text(
+                f"Attempts: {attempts} · Failures: {failures}",
+                size="sm",
+            ),
+            dmc.Text(
+                f"Success rate: {success_rate:.1f}%"
+                if success_rate is not None
+                else "Success rate: n/a",
+                size="sm",
+            ),
+            dmc.Text(
+                f"Avg cycle: {avg_cycle:.2f}s"
+                if avg_cycle is not None
+                else "Avg cycle: n/a",
+                size="sm",
+            ),
+            dmc.Text(
+                f"Last cycle: {SESSION.last_cycle_s:.2f}s"
+                if SESSION.last_cycle_s is not None
+                else "Last cycle: n/a",
+                size="sm",
+            ),
         ]
         if SESSION.last_pick_mm:
             pick_items.append(
@@ -5169,35 +5655,11 @@ def _restore_calibration_gripper_width() -> None:
     @app.callback(
         Output("plate-action-status", "children"),
         Output("plate-metrics", "children", allow_duplicate=True),
-        Input("compute-plate", "n_clicks"),
-        Input("attach-plate", "n_clicks"),
-        State("plate-layout-path", "value"),
-        prevent_initial_call=True,
+        Input("camera-interval", "n_intervals"),
     )
     def _handle_plate_actions(
-        _compute_clicks: int,
-        _attach_clicks: int,
-        plate_layout_path: str,
+        _ticks: int,
     ) -> Tuple[str, str]:
-        trigger = callback_context.triggered_id
-        layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
-        if trigger == "compute-plate":
-            try:
-                result = compute_plate_calibration_from_latest(layout_path)
-                metric = f"Reprojection error: {result.reprojection_error_mm:.2f} mm"
-                return (
-                    f"Plate detected with {len(result.detections)} markers.",
-                    metric,
-                )
-            except Exception as exc:
-                return f"Plate detection failed: {exc}", "Plate error: --"
-        if trigger == "attach-plate":
-            try:
-                status = attach_plate_calibration(
-                    DEFAULT_BUNDLE_PATH, layout_path)
-                return status, "Plate attached to bundle."
-            except Exception as exc:
-                return f"Attach failed: {exc}", "Plate error: --"
         return no_update, no_update
 
     @app.callback(
@@ -5207,35 +5669,30 @@ def _restore_calibration_gripper_width() -> None:
         Output("workspace-metrics", "children"),
         Output("plate-metrics", "children"),
         Output("detection-metrics", "children"),
-        Output("drop-marker-metrics", "children"),
         Output("plate-detection-state", "data"),
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
-        State("application-stepper", "active"),
         State("application-tabs", "value"),
-        State("pick-place-tabs", "value"),
         State("calibration-board-path", "value"),
         State("marker-id-a", "value"),
         State("marker-id-b", "value"),
         State("marker-size", "value"),
         State("plate-layout-path", "value"),
-        State("drop-marker-id", "value"),
+        State("overlay-mode-select", "value"),
     )
     def _update_camera_view(
         _ticks: int,
         active_tab: Optional[str],
         calibration_step: Optional[int],
-        application_step: Optional[int],
         application_tab: Optional[str],
-        pick_place_tab: Optional[str],
         board_path: str,
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
         plate_layout: str,
-        drop_marker_id: Optional[float],
-    ) -> Tuple[str, str, str, str, str, str, str, dict]:
+        overlay_mode: Optional[str],
+    ) -> Tuple[str, str, str, str, str, str, dict]:
         frame, _depth = get_latest_frame()
         plate_state = {
             "count": 0,
@@ -5266,7 +5723,6 @@ def _restore_calibration_gripper_width() -> None:
                 "Workspace: --",
                 "Plate error: --",
                 "Detections: --",
-                "Drop marker: --",
                 plate_state,
             )
 
@@ -5279,9 +5735,7 @@ def _restore_calibration_gripper_width() -> None:
         # Frame received, dispatch to background processor for heavy overlays.
         tab = active_tab or "calibration"
         calibration_step = calibration_step or 0
-        application_step = application_step or 0
-        application_tab = application_tab or "pick-place"
-        pick_place_tab = pick_place_tab or "pick-place-detection"
+        application_tab = application_tab or "workspace"
         board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
         plate_path = _safe_path(plate_layout, DEFAULT_PLATE_PATH)
         marker_ids = (
@@ -5290,28 +5744,49 @@ def _restore_calibration_gripper_width() -> None:
         )
         marker_size_mm = _safe_float(
             marker_size, SESSION.config.marker_size_mm)
-        drop_marker = _safe_int(drop_marker_id, SESSION.drop_marker_id)
 
+        requested_overlay = overlay_mode or "auto"
         task = _select_overlay_task(
             tab,
             calibration_step,
-            application_step,
             application_tab,
-            pick_place_tab,
             board_path,
             marker_ids,
             marker_size_mm,
             plate_path,
-            drop_marker,
         )
+        if requested_overlay != "auto":
+            if requested_overlay == "calibration":
+                task = OverlayTask("manual-calibration",
+                                   _run_charuco_task(board_path))
+            elif requested_overlay == "workspace":
+                task = OverlayTask(
+                    "manual-workspace",
+                    _run_workspace_task(marker_ids, marker_size_mm),
+                )
+            elif requested_overlay == "plate":
+                task = OverlayTask("manual-plate", _run_plate_task(plate_path))
+            elif requested_overlay == "detection":
+                task = OverlayTask("manual-detection", _run_detection_task())
+            elif requested_overlay == "none":
+                task = None
         overlay: Optional[OverlayResult] = None
         if task is not None:
             FRAME_PROCESSOR.submit(task, frame)
             overlay = FRAME_PROCESSOR.get_latest(task.key)
 
         vis = overlay.vis if overlay else frame
-        status_text = overlay.status if overlay else "Processing..."
+        status_text = overlay.status if overlay else "No overlay applied."
         metric_text = overlay.metric if overlay else "--"
+        mode_label = {
+            "auto": "Overlay: Auto",
+            "calibration": "Overlay: Calibration",
+            "workspace": "Overlay: Workspace",
+            "plate": "Overlay: Plate",
+            "detection": "Overlay: Detections",
+            "none": "Overlay: Off",
+        }.get(requested_overlay, "Overlay: Auto")
+        status_text = f"{mode_label} · {status_text}"
         plate_state = PLATE_STATUS.copy()
 
         if tab == "calibration":
@@ -5327,7 +5802,6 @@ def _restore_calibration_gripper_width() -> None:
                     "Workspace: --",
                     "Plate error: --",
                     "Detections: --",
-                    "Drop marker: --",
                     plate_state,
                 )
             if is_new_frame:
@@ -5341,56 +5815,23 @@ def _restore_calibration_gripper_width() -> None:
                 "Workspace: --",
                 metric_text,
                 "Detections: --",
-                "Drop marker: --",
                 plate_state,
             )
 
         if tab == "applications":
-            if application_step == 0:
-                if is_new_frame:
-                    MJPEG_STREAM.add_frame(vis)
-                overlay_fps_text = _format_fps(
-                    capture_fps, MJPEG_STREAM.get_fps())
-                return (
-                    status_text,
-                    overlay_fps_text,
-                    "ChArUco corners: --",
-                    metric_text,
-                    "Plate error: --",
-                    "Detections: --",
-                    "Drop marker: --",
-                    plate_state,
-                )
-            if application_tab == "pick-place":
-                if pick_place_tab == "pick-place-detection":
-                    if is_new_frame:
-                        MJPEG_STREAM.add_frame(vis)
-                    overlay_fps_text = _format_fps(
-                        capture_fps, MJPEG_STREAM.get_fps())
-                    return (
-                        status_text,
-                        overlay_fps_text,
-                        "ChArUco corners: --",
-                        "Workspace: --",
-                        "Plate error: --",
-                        metric_text,
-                        "Drop marker: --",
-                        plate_state,
-                    )
-                if is_new_frame:
-                    MJPEG_STREAM.add_frame(vis)
-                overlay_fps_text = _format_fps(
-                    capture_fps, MJPEG_STREAM.get_fps())
-                return (
-                    status_text,
-                    overlay_fps_text,
-                    "ChArUco corners: --",
-                    "Workspace: --",
-                    "Plate error: --",
-                    "Detections: --",
-                    metric_text,
-                    plate_state,
-                )
+            if is_new_frame:
+                MJPEG_STREAM.add_frame(vis)
+            overlay_fps_text = _format_fps(
+                capture_fps, MJPEG_STREAM.get_fps())
+            return (
+                status_text,
+                overlay_fps_text,
+                "ChArUco corners: --",
+                metric_text if application_tab == "workspace" else "Workspace: --",
+                "Plate error: --",
+                metric_text if application_tab == "pick-place" else "Detections: --",
+                plate_state,
+            )
 
         # Monitoring or any other tab: keep stream alive and surface metrics.
         if is_new_frame:
@@ -5403,7 +5844,6 @@ def _restore_calibration_gripper_width() -> None:
             "Workspace: --",
             "Plate error: --",
             "Detections: --",
-            "Drop marker: --",
             plate_state,
         )
 
@@ -5858,6 +6298,7 @@ def create_app() -> Dash:
         __name__,
         assets_folder=str(ASSETS_DIR),
         suppress_callback_exceptions=True,
+        update_title=None,
     )
     app.title = "Estun Codroid Pick-and-Place"
     app._favicon = "favicon.ico"
