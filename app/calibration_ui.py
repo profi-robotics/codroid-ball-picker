@@ -63,7 +63,7 @@ PLATE_MOVEMENT_THRESHOLD_PX = 500.0
 PLATE_VISIBILITY_MAX_AGE_S = 5.0
 ROBOT_POSTURE_MAX_AGE_S = 2.0
 VERIFICATION_RAISE_MM = 300.0
-ROBOT_COORDINATE_TIMEOUT_S = 30.0
+ROBOT_COORDINATE_TIMEOUT_S = 60.0
 VERIFICATION_HOLD_SECONDS = 5.0
 FLANGE_BUTTON_PORT = 41
 FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
@@ -1286,6 +1286,43 @@ async def _run_robot_plate_calibration(
     """Capture three robot poses via flange button 1 and calibrate coord ID 5."""
     session = _get_robot_session()
 
+    async def _ensure_coordinate_id(
+        robot_api: CodroidAPI,
+        expected_id: int,
+        timeout_s: float = 5.0,
+        require: bool = True,
+    ) -> None:
+        await robot_api.set_current_coordinate_id(expected_id)
+        deadline = time.monotonic() + timeout_s
+        resent = False
+        while time.monotonic() < deadline:
+            status = session.robot_status_snapshot()
+            coord_id = None
+            if isinstance(status, dict):
+                coord_id = status.get("CoordinateId")
+            if coord_id is not None:
+                try:
+                    if int(coord_id) == expected_id:
+                        return
+                except (TypeError, ValueError):
+                    pass
+            if not resent and time.monotonic() > deadline - (timeout_s / 2):
+                await robot_api.set_current_coordinate_id(expected_id)
+                resent = True
+            await asyncio.sleep(0.1)
+        if not require:
+            LOGGER.warning(
+                "CoordinateId did not switch to %s within %.1fs (last=%s).",
+                expected_id,
+                timeout_s,
+                coord_id,
+            )
+            return
+        raise RuntimeError(
+            "Calibration requires the robot to be on CoordinateId=0 (base). "
+            f"Current CoordinateId={coord_id}. Switch to 0 and retry."
+        )
+
     async def _await_flange_press_with_plate_guard(
         timeout_s: float,
     ) -> dict:
@@ -1309,7 +1346,13 @@ async def _run_robot_plate_calibration(
                 continue
 
     async def _runner(robot_api: CodroidAPI) -> Tuple[list[dict], dict]:
-        await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+        _set_robot_guidance(
+            "Selecting CoordinateId=0 (base) for calibration...",
+            status="running",
+            step=1,
+            verification_ready=False,
+        )
+        await _ensure_coordinate_id(robot_api, 0)
         await session.reset_flange_queue()
 
         robot_points: list[dict] = []
@@ -1378,6 +1421,15 @@ async def _run_robot_plate_calibration(
                 )
 
         _set_robot_guidance(
+            f"Switching to CoordinateId {ROBOT_COORDINATE_ID} for calibration...",
+            status="running",
+            verification_ready=False,
+        )
+        await _ensure_coordinate_id(
+            robot_api, ROBOT_COORDINATE_ID, timeout_s=5.0, require=False
+        )
+
+        _set_robot_guidance(
             "Computing coordinate transform from 3 calibration points...",
             status="running",
             verification_ready=False,
@@ -1401,40 +1453,97 @@ async def _run_robot_plate_calibration(
             verification_ready=False,
         )
         LOGGER.info("Requesting coordinate calibration from robot controller...")
+
+        async def _await_listener_frame(
+            snapshot: Callable[[], dict],
+            timestamp: Callable[[], Optional[float]],
+            since: float,
+            timeout_s: float,
+            label: str,
+        ) -> dict:
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                updated_at = timestamp()
+                if updated_at is not None and updated_at >= since:
+                    frame = snapshot()
+                    if frame:
+                        return frame
+                await asyncio.sleep(0.1)
+            raise asyncio.TimeoutError(f"Timed out waiting for {label}.")
+
+        calibration_request_time = time.time()
+        payload_points = [
+            robot_api.attach_coordinate_to_cpos(
+                point, coordinate_id=ROBOT_COORDINATE_ID
+            )
+            for point in cpos_points
+        ]
+        calibration_request = robot_api.build_message(
+            message_type="Robot",
+            action="CoordinateCalibration",
+            data=payload_points,
+        )
+        await robot_api.send_message(calibration_request)
+
         try:
-            coord_frame = await asyncio.wait_for(
-                robot_api.coordinate_calibration(
-                    cpos_points,
-                    coordinate_id=ROBOT_COORDINATE_ID,
-                    set_active_coordinate=True,
-                ),
-                timeout=ROBOT_COORDINATE_TIMEOUT_S,
+            coord_frame = await _await_listener_frame(
+                session.calibration_frame_snapshot,
+                session.calibration_frame_timestamp,
+                calibration_request_time,
+                ROBOT_COORDINATE_TIMEOUT_S,
+                "coordinate calibration response",
             )
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
                 "Timed out waiting for coordinate calibration response."
             ) from exc
-        if coord_frame:
-            for attempt in range(2):
-                try:
-                    await asyncio.wait_for(
-                        robot_api.change_coordinate_parameter(
-                            ROBOT_COORDINATE_ID, coord_frame
-                        ),
-                        timeout=ROBOT_COORDINATE_TIMEOUT_S,
-                    )
-                    break
-                except asyncio.TimeoutError as exc:
-                    if attempt == 0:
-                        LOGGER.warning(
-                            "Persist coordinate frame timed out; retrying once."
-                        )
-                        continue
-                    raise RuntimeError(
-                        "Timed out waiting to persist calibrated coordinate frame."
-                    ) from exc
-        else:
+
+        if not coord_frame:
             raise RuntimeError("Robot controller returned empty calibration frame.")
+
+        change_request_time = time.time()
+        change_payload = {
+            "id": ROBOT_COORDINATE_ID,
+            "x": coord_frame["x"],
+            "y": coord_frame["y"],
+            "z": coord_frame["z"],
+            "a": coord_frame["a"],
+            "b": coord_frame["b"],
+            "c": coord_frame["c"],
+        }
+        change_request = robot_api.build_message(
+            message_type="Robot",
+            action="ChangeCoordinateParameter",
+            data=change_payload,
+        )
+        await robot_api.send_message(change_request)
+
+        publish_timeout = min(ROBOT_COORDINATE_TIMEOUT_S, 5.0)
+        try:
+            await _await_listener_frame(
+                session.coordinate_frame_snapshot,
+                session.coordinate_frame_timestamp,
+                change_request_time,
+                publish_timeout,
+                "coordinate frame publish",
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                "No RobotCoordinate publish after calibration; reselecting CoordinateId."
+            )
+            await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+            try:
+                await _await_listener_frame(
+                    session.coordinate_frame_snapshot,
+                    session.coordinate_frame_timestamp,
+                    time.time(),
+                    publish_timeout,
+                    "coordinate frame publish after reselect",
+                )
+            except asyncio.TimeoutError:
+                LOGGER.warning(
+                    "Timed out waiting for coordinate frame publish after reselect."
+                )
         _set_robot_guidance(
             "Coordinate frame updated. Preparing verification step...",
             status="running",
@@ -3347,6 +3456,10 @@ def build_layout() -> dmc.MantineProvider:
                     id="robot-speed-state",
                     data={"value": 25},
                 ),
+                dcc.Store(
+                    id="robot-power-state",
+                    data={"value": None, "timestamp": 0.0},
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
@@ -4587,12 +4700,16 @@ def register_callbacks(app: Dash) -> None:
         Output("app-notifications", "children", allow_duplicate=True),
         Input("robot-power-toggle", "checked"),
         State("robot-uri", "value"),
+        State("robot-power-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_power_toggle(
         checked: bool,
         robot_uri: Optional[str],
+        power_state: Optional[dict],
     ) -> dmc.Notification:
+        if power_state and power_state.get("value") == checked:
+            return no_update
         try:
             async def _apply_power(api: CodroidAPI) -> None:
                 if checked:
@@ -5341,6 +5458,35 @@ def register_callbacks(app: Dash) -> None:
         return "Robot: --"
 
     @app.callback(
+        Output("robot-power-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def _sync_robot_power_state(_intervals: int) -> dict:
+        session = _get_robot_session()
+        power_on = session.robot_power_on()
+        if power_on is None:
+            return no_update
+        return {"value": bool(power_on), "timestamp": time.time()}
+
+    @app.callback(
+        Output("robot-power-toggle", "checked"),
+        Input("robot-power-state", "data"),
+        State("robot-power-toggle", "checked"),
+        prevent_initial_call=True,
+    )
+    def _sync_power_toggle(
+        power_state: Optional[dict],
+        current: Optional[bool],
+    ) -> bool:
+        if not power_state or power_state.get("value") is None:
+            return no_update
+        desired = bool(power_state.get("value"))
+        if current is None or current != desired:
+            return desired
+        return no_update
+
+    @app.callback(
         Output("robot-calibration-status", "children"),
         Input("robot-status-interval", "n_intervals"),
     )
@@ -5551,7 +5697,8 @@ def register_callbacks(app: Dash) -> None:
         )
 
         async def _verification_motion(api: CodroidAPI) -> None:
-            await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+            await api.power_on()
+            await api.set_current_coordinate_id(0)
 
             async def _move_linear_with_hold(target: dict) -> None:
                 await api.set_target_pos_type(api.config.target_pos_types.cpos)
@@ -5569,6 +5716,9 @@ def register_callbacks(app: Dash) -> None:
                 return max(float(value), float(min_z))
 
             def _target(point: dict, z_value: float) -> dict:
+                poscfg = CodroidAPI.build_poscfg(
+                    mode=int(point.get("mode", 0))
+                )
                 return api.build_target_cpos(
                     x=float(point["x"]),
                     y=float(point["y"]),
@@ -5576,6 +5726,7 @@ def register_callbacks(app: Dash) -> None:
                     a=float(point.get("a", 0.0)),
                     b=float(point.get("b", 0.0)),
                     c=float(point.get("c", 0.0)),
+                    poscfg=poscfg,
                 )
 
             p1, p2, p3 = points
@@ -5596,6 +5747,7 @@ def register_callbacks(app: Dash) -> None:
             await _move_linear_with_hold(_target(p3, raise_3))
             await _move_linear_with_hold(_target(p3, z3))
             await _move_linear_with_hold(_target(p3, raise_3))
+            await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
 
         try:
             await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _verification_motion)

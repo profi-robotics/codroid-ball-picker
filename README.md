@@ -150,7 +150,7 @@ Robot calibration points (rectangular groove centers, 20 x 33 mm):
 - Point 2: (230, 70)
 - Point 3: (230, 210)
 
-Robot 3-point calibration: teach the robot to the groove intersections for Points 1–3 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The edge markers are for camera tracking only.
+Robot 3-point calibration: teach the robot to the groove intersections for Points 1–3 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The edge markers are for camera tracking only. Calibration starts only when CoordinateId 0 (base) is active so posture telemetry is accurate.
 
 The script will:
 1. Load calibration (or raise if missing),
