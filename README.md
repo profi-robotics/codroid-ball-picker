@@ -92,6 +92,8 @@ python run_calibration_ui.py --debug
 Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
 connectivity follow the `codroid-api` settings (env `CODROID_HOST` and
 `CODROID_ROBOT_PORT`, or the factory defaults).
+Note: the debug reloader is disabled to keep camera/robot streams in a single
+process. Restart the app manually to pick up code changes.
 
 ### Docker on Jetson Orin Nano
 Build and run with:
@@ -190,4 +192,5 @@ The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Comp
 - Automatic grip/release during pick-drop sequences
 - No authentication required (direct TCP/IP connection)
 
-For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_integration.md).
+For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_integration.md) and
+[`docs/pick_place_test_procedure.md`](docs/pick_place_test_procedure.md).

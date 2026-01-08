@@ -32,7 +32,13 @@ def main() -> None:
     logging.getLogger('websockets.client').setLevel(logging.INFO)
 
     app = create_app()
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(
+        host=args.host,
+        port=args.port,
+        debug=args.debug,
+        use_reloader=False,
+        dev_tools_hot_reload=False,
+    )
 
 
 if __name__ == "__main__":

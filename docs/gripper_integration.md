@@ -136,6 +136,27 @@ gripper.halt(t_index=0)
 - **`isBusy(t_index) -> bool`** - Check if executing command
 - **`isGripped(t_index) -> bool`** - Check if object detected
 
+#### Finger Orientation
+
+- **`get_finger_orientation_label(t_index) -> str`** - Returns `"inward"` or `"outward"` when available
+- **`set_finger_orientation(t_index, orientation=...) -> int`** - Sets finger orientation
+
+Changing the orientation updates the valid min/max width range reported by the gripper.
+If the Compute Box does not expose the XML-RPC orientation methods, the client
+falls back to the REST endpoint used by the web UI.
+
+#### Live Status Stream
+
+The Compute Box pushes live gripper state over Socket.IO. The onrobot-api package
+now includes a lightweight client to subscribe and read the most recent status
+payload (including `external_width`, `min_external_width`, `max_external_width`,
+`finger_orientation_outward`, `busy`, and `grip_detected`).
+
+#### Footer Status
+
+The calibration UI footer now tracks orientation, busy state, grip detected, and
+force to keep the operator informed while jogging.
+
 ### Return Codes
 
 - `0` (RET_OK) - Success

@@ -72,12 +72,14 @@ FLANGE_BUTTON_PORT = 41
 FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
 GRIPPER_FORCE_MIN = 20
 GRIPPER_FORCE_MAX = 140
-GRIPPER_FORCE_DEFAULT = 80
-GRIPPER_SPEED_DEFAULT = 80
-GRIPPER_SPEED_MIN = 5
+GRIPPER_FORCE_DEFAULT = 20
+GRIPPER_SPEED_DEFAULT = 10
+GRIPPER_SPEED_MIN = 10
 GRIPPER_CALIBRATION_WIDTH_MM = 5.0
 GRIPPER_OPEN_WIDTH_DEFAULT = 25.0
 GRIPPER_CLOSE_WIDTH_DEFAULT = 5.0
+PLATE_TEST_GRIP_TIMEOUT_S = 2.5
+PLATE_TEST_MOVE_HOLD_S = 1.0
 
 
 class AppSettings(BaseModel):
@@ -186,6 +188,8 @@ class UISession:
     last_detection_error: Optional[str] = None
     drop_marker_id: int = DEFAULT_DROP_MARKER_ID
     drop_target_mm: Optional[Tuple[float, float]] = None
+    drop_target_orientation: Optional[Tuple[float, float, float]] = None
+    drop_target_robot: Optional[Tuple[float, float, float]] = None
     robot_session: Optional[RobotSession] = None
     robot_connection_attempted: bool = False
     robot_last_connection_error: Optional[str] = None
@@ -198,8 +202,16 @@ class UISession:
     detection_max: int = 10
     detection_classes: Optional[str] = None
     gripper_sync: dict = field(default_factory=dict)
+    gripper_orientation: Optional[str] = None
+    gripper_min_width: Optional[float] = None
+    gripper_max_width: Optional[float] = None
+    gripper_busy: Optional[bool] = None
+    gripper_grip_detected: Optional[bool] = None
+    gripper_force: Optional[float] = None
+    gripper_status_code: Optional[int] = None
     robot_speed_rate: float = 0.25
     robot_speed_last_set: float = 0.0
+    robot_status_last_poll: float = 0.0
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None
@@ -306,7 +318,11 @@ def _save_robot_calibration(points: list[dict], path: Path = DEFAULT_ROBOT_CALIB
     _commit_settings(robot_calibration_path=str(path))
 
 
-def _save_drop_target(drop_target_mm: Optional[Tuple[float, float]]) -> None:
+def _save_drop_target(
+    drop_target_mm: Optional[Tuple[float, float]],
+    orientation: Optional[Tuple[float, float, float]] = None,
+    robot_xyz: Optional[Tuple[float, float, float]] = None,
+) -> None:
     DROP_TARGET_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not drop_target_mm:
         if DROP_TARGET_PATH.exists():
@@ -314,6 +330,22 @@ def _save_drop_target(drop_target_mm: Optional[Tuple[float, float]]) -> None:
         _commit_settings(drop_target=None)
         return
     payload = {"x": float(drop_target_mm[0]), "y": float(drop_target_mm[1])}
+    if orientation is not None:
+        payload.update(
+            {
+                "a": float(orientation[0]),
+                "b": float(orientation[1]),
+                "c": float(orientation[2]),
+            }
+        )
+    if robot_xyz is not None:
+        payload.update(
+            {
+                "robot_x": float(robot_xyz[0]),
+                "robot_y": float(robot_xyz[1]),
+                "robot_z": float(robot_xyz[2]),
+            }
+        )
     DROP_TARGET_PATH.write_text(json.dumps(payload, indent=2))
     _commit_settings(drop_target=drop_target_mm, workspace_path=str(DEFAULT_WORKSPACE_PATH), calibration_bundle_path=str(DEFAULT_BUNDLE_PATH))
 
@@ -325,6 +357,18 @@ def _load_drop_target() -> None:
             x = float(data["x"])
             y = float(data["y"])
             SESSION.drop_target_mm = (x, y)
+            if all(key in data for key in ("a", "b", "c")):
+                SESSION.drop_target_orientation = (
+                    float(data["a"]),
+                    float(data["b"]),
+                    float(data["c"]),
+                )
+            if all(key in data for key in ("robot_x", "robot_y", "robot_z")):
+                SESSION.drop_target_robot = (
+                    float(data["robot_x"]),
+                    float(data["robot_y"]),
+                    float(data["robot_z"]),
+                )
             return
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Failed to load drop target: %s", exc)
@@ -934,6 +978,171 @@ def _workspace_pixel_to_mm(
     x_mm = (pixel_xy[0] - origin_px_x) * scale
     y_mm = (pixel_xy[1] - origin_px_y) * scale
     return x_mm, y_mm
+
+
+def _pixel_to_workspace_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    pixel_xy: np.ndarray,
+) -> Tuple[float, float]:
+    bundle = SESSION.calibration_bundle
+    if bundle is None or bundle.pixel_to_mm <= 0:
+        return _workspace_pixel_to_mm(
+            workspace_def, (float(pixel_xy[0]), float(pixel_xy[1]))
+        )
+    scale = float(bundle.pixel_to_mm)
+    camera_xyz = np.array(
+        [float(pixel_xy[0]) * scale, float(pixel_xy[1]) * scale, 0.0],
+        dtype=np.float64,
+    )
+    origin = workspace_def.origin_camera
+    basis = np.column_stack(
+        [workspace_def.x_axis_camera, workspace_def.y_axis_camera]
+    )
+    coeffs, *_ = np.linalg.lstsq(basis, camera_xyz - origin, rcond=None)
+    return float(coeffs[0]), float(coeffs[1])
+
+
+def _resolve_plate_test_targets(
+    layout_path: Path,
+    workspace_def: workspace.WorkspaceDefinition,
+) -> Tuple[list[dict], dict]:
+    calibration_result = compute_plate_calibration_from_latest(layout_path)
+    plate_points = calibration_result.plate.robot_calibration_points()
+    if len(plate_points) < 3:
+        raise RuntimeError("Calibration plate layout is missing targets 1-3.")
+    plate_xy = np.array(
+        [[pt.center_mm[0], pt.center_mm[1]] for pt in plate_points],
+        dtype=np.float64,
+    ).reshape(-1, 1, 2)
+    homography = calibration_result.homography
+    if homography is None:
+        raise RuntimeError("Plate homography unavailable.")
+    inv_h = np.linalg.inv(homography)
+    pixel_xy = cv2.perspectiveTransform(plate_xy, inv_h).reshape(-1, 2)
+    targets = []
+    for point, px in zip(plate_points, pixel_xy):
+        workspace_xy = _pixel_to_workspace_mm(workspace_def, px)
+        sequence = point.sequence if point.sequence is not None else len(targets) + 1
+        targets.append(
+            {
+                "sequence": int(sequence),
+                "workspace_mm": workspace_xy,
+                "plate_mm": (float(point.center_mm[0]), float(point.center_mm[1])),
+                "pixel": (float(px[0]), float(px[1])),
+            }
+        )
+    PLATE_STATUS.update(
+        {
+            "count": len(calibration_result.detections),
+            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "stable": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "center_px": None,
+            "movement_px": None,
+            "timestamp": time.time(),
+            "message": f"Plate markers detected: {len(calibration_result.detections)}",
+        }
+    )
+    return targets, {
+        "count": len(calibration_result.detections),
+        "reprojection_error_mm": calibration_result.reprojection_error_mm,
+    }
+
+
+def _resolve_plate_test_robot_targets(
+    layout_path: Path,
+) -> Tuple[list[dict], dict, workspace.RigidTransform, workspace.RigidTransform]:
+    if SESSION.calibration_bundle is None:
+        raise RuntimeError("Calibration bundle is not loaded.")
+    scale = float(SESSION.calibration_bundle.pixel_to_mm)
+    if scale <= 0:
+        raise RuntimeError("Calibration pixel-to-mm scale is invalid.")
+    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+        raise RuntimeError("Robot calibration points are missing; re-run robot calibration.")
+
+    calibration_result = compute_plate_calibration_from_latest(layout_path)
+    plate_points = calibration_result.plate.robot_calibration_points()
+    if len(plate_points) < 3:
+        raise RuntimeError("Calibration plate layout is missing targets 1-3.")
+
+    inv_h = np.linalg.inv(calibration_result.homography)
+
+    def _plate_to_camera_xyz(point: plate.CalibrationPoint) -> np.ndarray:
+        pt = np.array([[point.center_mm[0], point.center_mm[1]]], dtype=np.float64).reshape(-1, 1, 2)
+        px = cv2.perspectiveTransform(pt, inv_h).reshape(-1, 2)[0]
+        return np.array([px[0] * scale, px[1] * scale, 0.0], dtype=np.float64)
+
+    camera_pts = np.asarray(
+        [_plate_to_camera_xyz(pt) for pt in plate_points[:3]], dtype=np.float64
+    )
+    robot_pts = np.asarray(
+        [
+            [
+                float(pt["x"]),
+                float(pt["y"]),
+                float(pt["z"]),
+            ]
+            for pt in SESSION.robot_calibration_points[:3]
+        ],
+        dtype=np.float64,
+    )
+    transform = _rigid_transform(camera_pts, robot_pts)
+    baseline_transform = _rigid_transform(
+        np.asarray(
+            [
+                [float(pt.center_mm[0]), float(pt.center_mm[1]), 0.0]
+                for pt in plate_points[:3]
+            ],
+            dtype=np.float64,
+        ),
+        robot_pts,
+    )
+
+    targets = []
+    for point in plate_points:
+        camera_xyz = _plate_to_camera_xyz(point)
+        robot_xyz = transform.rotation @ camera_xyz + transform.translation
+        sequence = point.sequence if point.sequence is not None else len(targets) + 1
+        targets.append(
+            {
+                "sequence": int(sequence),
+                "robot_xyz": robot_xyz,
+                "plate_mm": (float(point.center_mm[0]), float(point.center_mm[1])),
+            }
+        )
+
+    PLATE_STATUS.update(
+        {
+            "count": len(calibration_result.detections),
+            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "stable": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "center_px": None,
+            "movement_px": None,
+            "timestamp": time.time(),
+            "message": f"Plate markers detected: {len(calibration_result.detections)}",
+        }
+    )
+
+    return targets, {
+        "count": len(calibration_result.detections),
+        "reprojection_error_mm": calibration_result.reprojection_error_mm,
+    }, transform, baseline_transform
+
+
+async def _await_grip_status(timeout_s: float) -> bool:
+    gripper = SESSION.gripper
+    if gripper is None:
+        return False
+    t_index = GRIPPER_DEFAULTS["t_index"]
+    deadline = time.monotonic() + max(timeout_s, 0.1)
+    while time.monotonic() < deadline:
+        try:
+            if gripper.isGripped(t_index=t_index):
+                return True
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to poll gripper grip state: %s", exc)
+            return False
+        await asyncio.sleep(0.2)
+    return False
 
 
 def _pose_from_workspace_mm(
@@ -2461,6 +2670,7 @@ def build_footer() -> dmc.AppShellFooter:
         [
             dmc.Text("Gripper control", fw=600, size="sm"),
             dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
+            dmc.Text(id="footer-gripper-meta", size="xs", c="dimmed"),
             html.Div(
                 [
                     dmc.Text("Width (mm)", size="xs", fw=600),
@@ -2694,6 +2904,28 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Text(id="gripper-status-text", size="sm", c="dimmed"),
                 html.Div(id="gripper-device-info"),
+                dmc.Stack(
+                    [
+                        dmc.Text("Finger orientation", fw=600, size="sm"),
+                        dmc.SegmentedControl(
+                            id="gripper-orientation",
+                            data=[
+                                {"label": "Inward", "value": "inward"},
+                                {"label": "Outward", "value": "outward"},
+                            ],
+                            value="inward",
+                            size="sm",
+                            color="brand",
+                            radius="md",
+                        ),
+                        dmc.Text(
+                            id="gripper-orientation-status",
+                            size="xs",
+                            c="dimmed",
+                        ),
+                    ],
+                    gap=4,
+                ),
                 dmc.Divider(),
                 dmc.Text("Calibration & settings", fw=600),
                 dmc.Grid(
@@ -3442,6 +3674,70 @@ def build_pick_place_tab() -> dmc.Stack:
         className="panel-card",
     )
 
+    plate_test_card = dmc.Card(
+        [
+            dmc.Text("Plate Pick & Place Test", fw=600, size="lg"),
+            dmc.Text(
+                "Uses calibration plate targets 1-3 and re-tracks the plate pose before running.",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Group(
+                [
+                    dmc.NumberInput(
+                        id="plate-test-approach-height",
+                        label="Approach height (mm)",
+                        value=30.0,
+                        min=0,
+                        max=200,
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-pick-height",
+                        label="Pick height (mm)",
+                        value=0.0,
+                        min=-50,
+                        max=200,
+                    ),
+                ],
+                grow=True,
+            ),
+            dmc.Group(
+                [
+                    dmc.NumberInput(
+                        id="plate-test-drop-height",
+                        label="Drop height offset (mm)",
+                        value=0.0,
+                        min=-50,
+                        max=200,
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-grip-timeout",
+                        label="Grip timeout (s)",
+                        value=PLATE_TEST_GRIP_TIMEOUT_S,
+                        min=0.5,
+                        max=10.0,
+                        step=0.5,
+                    ),
+                ],
+                grow=True,
+            ),
+            dmc.Text(
+                f"Gripper close uses {GRIPPER_FORCE_MIN} N and {GRIPPER_SPEED_MIN}% speed.",
+                size="xs",
+                c="dimmed",
+            ),
+            dmc.Button(
+                "Run plate test",
+                id="plate-test-run",
+                color="teal",
+            ),
+            dmc.Text(id="plate-test-status", size="sm", c="dimmed"),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
     manual_card = dmc.Card(
         [
             dmc.Text("Manual Control", fw=600, size="lg"),
@@ -3529,6 +3825,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 variant="separated",
             ),
             action_card,
+            plate_test_card,
         ],
         gap="md",
     )
@@ -4183,6 +4480,9 @@ def register_callbacks(app: Dash) -> None:
 
         try:
             safe_width = float(target_width)
+            min_width, max_width = _resolve_gripper_limits()
+            if min_width > max_width:
+                min_width, max_width = max_width, min_width
             if prevent_overclose:
                 current_width = SESSION.gripper.get_ext_width(
                     t_index=GRIPPER_DEFAULTS["t_index"]
@@ -4190,6 +4490,7 @@ def register_callbacks(app: Dash) -> None:
                 if isinstance(current_width, (int, float)) and current_width >= 0:
                     if safe_width < current_width:
                         safe_width = current_width
+            safe_width = min(max(safe_width, min_width), max_width)
 
             applied_force = _safe_int(force, GRIPPER_FORCE_DEFAULT)
             applied_force = min(
@@ -4213,42 +4514,86 @@ def register_callbacks(app: Dash) -> None:
             LOGGER.exception("Gripper command failed")
             return f"Gripper action failed: {exc}"
 
+    def _resolve_gripper_limits() -> Tuple[float, float]:
+        min_width = SESSION.gripper_min_width
+        max_width = SESSION.gripper_max_width
+        if SESSION.gripper is not None:
+            t_index = GRIPPER_DEFAULTS["t_index"]
+            status_snapshot = SESSION.gripper.get_status_snapshot(t_index=t_index)
+            if status_snapshot:
+                snapshot_min = status_snapshot.get("min_external_width")
+                snapshot_max = status_snapshot.get("max_external_width")
+                if isinstance(snapshot_min, (int, float)) and snapshot_min >= 0:
+                    min_width = float(snapshot_min)
+                    SESSION.gripper_min_width = min_width
+                if isinstance(snapshot_max, (int, float)) and snapshot_max >= 0:
+                    max_width = float(snapshot_max)
+                    SESSION.gripper_max_width = max_width
+            if min_width is None:
+                try:
+                    value = SESSION.gripper.get_min_ext_width(t_index=t_index)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Failed to read gripper min width: %s", exc)
+                else:
+                    if isinstance(value, (int, float)) and value >= 0:
+                        min_width = float(value)
+            if max_width is None:
+                try:
+                    value = SESSION.gripper.get_max_ext_width(t_index=t_index)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Failed to read gripper max width: %s", exc)
+                else:
+                    if isinstance(value, (int, float)) and value >= 0:
+                        max_width = float(value)
+        if min_width is None:
+            min_width = GRIPPER_CLOSE_WIDTH_DEFAULT
+        if max_width is None:
+            max_width = GRIPPER_OPEN_WIDTH_DEFAULT
+        if min_width > max_width:
+            LOGGER.warning(
+                "Gripper width limits inverted (min=%.1f, max=%.1f); swapping.",
+                min_width,
+                max_width,
+            )
+            min_width, max_width = max_width, min_width
+        return min_width, max_width
 
-def _prepare_gripper_for_calibration() -> None:
-    """Set gripper to calibration defaults and remember prior width."""
-    SESSION.robot_calibration_gripper_width = None
-    gripper = SESSION.gripper
-    if gripper is not None:
-        try:
-            width = gripper.get_ext_width(t_index=GRIPPER_DEFAULTS["t_index"])
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("Unable to read gripper width before calibration: %s", exc)
-        else:
-            if isinstance(width, (int, float)):
-                SESSION.robot_calibration_gripper_width = float(width)
-    response = _command_gripper(
-        GRIPPER_CALIBRATION_WIDTH_MM,
-        "prepping for calibration",
-        force=GRIPPER_FORCE_MIN,
-        speed=GRIPPER_SPEED_MIN,
-    )
-    LOGGER.debug("Calibration gripper prep: %s", response)
+
+    def _prepare_gripper_for_calibration() -> None:
+        """Set gripper to calibration defaults and remember prior width."""
+        SESSION.robot_calibration_gripper_width = None
+        gripper = SESSION.gripper
+        if gripper is not None:
+            try:
+                width = gripper.get_ext_width(t_index=GRIPPER_DEFAULTS["t_index"])
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Unable to read gripper width before calibration: %s", exc)
+            else:
+                if isinstance(width, (int, float)):
+                    SESSION.robot_calibration_gripper_width = float(width)
+        response = _command_gripper(
+            GRIPPER_CALIBRATION_WIDTH_MM,
+            "prepping for calibration",
+            force=GRIPPER_FORCE_MIN,
+            speed=GRIPPER_SPEED_MIN,
+        )
+        LOGGER.debug("Calibration gripper prep: %s", response)
 
 
-def _restore_calibration_gripper_width() -> None:
-    """Restore gripper width saved prior to calibration."""
-    width = SESSION.robot_calibration_gripper_width
-    if width is None:
-        return
-    response = _command_gripper(
-        width,
-        "restored after calibration",
-        force=GRIPPER_FORCE_DEFAULT,
-        speed=GRIPPER_SPEED_DEFAULT,
-        prevent_overclose=True,
-    )
-    LOGGER.debug("Calibration gripper restored: %s", response)
-    SESSION.robot_calibration_gripper_width = None
+    def _restore_calibration_gripper_width() -> None:
+        """Restore gripper width saved prior to calibration."""
+        width = SESSION.robot_calibration_gripper_width
+        if width is None:
+            return
+        response = _command_gripper(
+            width,
+            "restored after calibration",
+            force=GRIPPER_FORCE_DEFAULT,
+            speed=GRIPPER_SPEED_DEFAULT,
+            prevent_overclose=True,
+        )
+        LOGGER.debug("Calibration gripper restored: %s", response)
+        SESSION.robot_calibration_gripper_width = None
 
     @app.callback(
         Output("gripper-status-text", "children"),
@@ -4365,6 +4710,7 @@ def _restore_calibration_gripper_width() -> None:
             # Get gripper status and information
             status_text = f"2FG7 connected at {cb_ip}"
             t_index = GRIPPER_DEFAULTS["t_index"]
+            SESSION.gripper.start_status_stream()
 
             # Query gripper state
             width = SESSION.gripper.get_ext_width(t_index=t_index)
@@ -4442,23 +4788,47 @@ def _restore_calibration_gripper_width() -> None:
             )
 
     @app.callback(
-        Output("footer-gripper-open", "disabled"),
-        Output("footer-gripper-close", "disabled"),
         Output("footer-gripper-width", "disabled"),
         Output("footer-gripper-force", "disabled"),
         Output("footer-gripper-speed", "disabled"),
+        Output("footer-gripper-width-decrease", "disabled"),
+        Output("footer-gripper-width-increase", "disabled"),
+        Output("footer-gripper-force-decrease", "disabled"),
+        Output("footer-gripper-force-increase", "disabled"),
+        Output("footer-gripper-speed-decrease", "disabled"),
+        Output("footer-gripper-speed-increase", "disabled"),
         Input("gripper-connection-state", "data"),
     )
-    def _sync_footer_gripper_disabled(gripper_state: Optional[dict]) -> Tuple[bool, bool, bool, bool, bool]:
+    def _sync_footer_gripper_disabled(
+        gripper_state: Optional[dict],
+    ) -> Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]:
         status = (gripper_state or {}).get("status", "offline")
-        disabled = status != "online"
+        disabled = status != "online" or bool(SESSION.gripper_busy)
         return (
             disabled,
             disabled,
             disabled,
             disabled,
             disabled,
+            disabled,
+            disabled,
+            disabled,
+            disabled,
         )
+
+    @app.callback(
+        Output("footer-gripper-width", "min", allow_duplicate=True),
+        Output("footer-gripper-width", "max", allow_duplicate=True),
+        Input("gripper-connection-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _sync_gripper_width_limits(gripper_state: Optional[dict]) -> Tuple[float, float]:
+        if (gripper_state or {}).get("status") != "online":
+            return no_update, no_update
+        if SESSION.gripper is None:
+            return no_update, no_update
+        min_width, max_width = _resolve_gripper_limits()
+        return min_width, max_width
 
     @app.callback(
         Output("footer-visibility", "data"),
@@ -4832,6 +5202,7 @@ def _restore_calibration_gripper_width() -> None:
         trigger = callback_context.triggered_id
         frame, _depth = get_latest_frame()
         drop_text = no_update
+        gripper_min_width, gripper_max_width = _resolve_gripper_limits()
         gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
         gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
         if trigger is None:
@@ -4875,17 +5246,26 @@ def _restore_calibration_gripper_width() -> None:
             except Exception as exc:  # noqa: BLE001
                 return f"Failed to record drop position: {exc}", drop_text
             SESSION.drop_target_mm = drop_mm_xy
-            _save_drop_target(drop_mm_xy)
+            SESSION.drop_target_orientation = (pos.a, pos.b, pos.c)
+            SESSION.drop_target_robot = (pos.x, pos.y, pos.z)
+            _save_drop_target(
+                drop_mm_xy,
+                SESSION.drop_target_orientation,
+                SESSION.drop_target_robot,
+            )
             _save_settings(SETTINGS.model_copy(update={"drop_target": drop_mm_xy}))
             SESSION.last_action = "Drop position taught."
-            drop_text = f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm"
+            drop_text = (
+                f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm · "
+                f"a={pos.a:.1f}, b={pos.b:.1f}, c={pos.c:.1f}"
+            )
             return "Drop position recorded from robot pose.", drop_text
 
         if trigger == "gripper-open":
-            return _command_gripper(gripper_open_val, "opened"), drop_text
+            return _command_gripper(gripper_max_width, "opened"), drop_text
 
         if trigger == "gripper-close":
-            return _command_gripper(gripper_close_val, "closed"), drop_text
+            return _command_gripper(gripper_min_width, "closed"), drop_text
 
         if workspace_def is None:
             return "Workspace is not defined; run workspace calibration first.", drop_text
@@ -4969,6 +5349,21 @@ def _restore_calibration_gripper_width() -> None:
             drop_approach = _pose_from_workspace_mm(
                 workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
             )
+            if SESSION.drop_target_orientation is not None:
+                drop_pose.update(
+                    {
+                        "a": float(SESSION.drop_target_orientation[0]),
+                        "b": float(SESSION.drop_target_orientation[1]),
+                        "c": float(SESSION.drop_target_orientation[2]),
+                    }
+                )
+                drop_approach.update(
+                    {
+                        "a": float(SESSION.drop_target_orientation[0]),
+                        "b": float(SESSION.drop_target_orientation[1]),
+                        "c": float(SESSION.drop_target_orientation[2]),
+                    }
+                )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_pose))
             _command_gripper(gripper_open_val, "opened")
@@ -5042,22 +5437,317 @@ def _restore_calibration_gripper_width() -> None:
         return no_update, drop_text
 
     @app.callback(
+        Output("plate-test-status", "children"),
+        Input("plate-test-run", "n_clicks"),
+        State("plate-test-approach-height", "value"),
+        State("plate-test-pick-height", "value"),
+        State("plate-test-drop-height", "value"),
+        State("plate-test-grip-timeout", "value"),
+        State("robot-uri", "value"),
+        State("robot-connection-state", "data"),
+        State("gripper-connection-state", "data"),
+        prevent_initial_call=True,
+    )
+    async def _run_plate_pick_place_test(
+        _clicks: int,
+        approach_height: Optional[float],
+        pick_height: Optional[float],
+        drop_height: Optional[float],
+        grip_timeout_s: Optional[float],
+        robot_uri: Optional[str],
+        robot_state: Optional[dict],
+        gripper_state: Optional[dict],
+    ) -> str:
+        if (robot_state or {}).get("status") != "online":
+            return "Robot is not connected. Click 'Test robot connection' first."
+        if (gripper_state or {}).get("status") != "online":
+            return "Gripper is not connected. Enable gripper in Setup menu."
+        if (
+            SESSION.gripper is None
+            or not SESSION.gripper.isConnected(
+                t_index=GRIPPER_DEFAULTS["t_index"]
+            )
+        ):
+            return "Gripper session is not active; re-enable the gripper."
+        if SESSION.workspace_definition is None:
+            return "Workspace is not defined; compute it first."
+        if SESSION.drop_target_mm is None:
+            return "Teach a drop position first."
+        if SESSION.robot_calibration_min_z is None:
+            return "Robot calibration is missing; run robot calibration first."
+        frame, _depth = get_latest_frame()
+        if frame is None:
+            return "Camera stream is not running."
+
+        approach_mm = _safe_float(approach_height, 30.0)
+        pick_mm = _safe_float(pick_height, 0.0)
+        drop_mm = _safe_float(drop_height, 0.0)
+        grip_timeout = _safe_float(grip_timeout_s, PLATE_TEST_GRIP_TIMEOUT_S)
+        grip_timeout = max(grip_timeout, 0.5)
+        workspace_def = SESSION.workspace_definition
+        session = _get_robot_session()
+        if not session.posture_seen():
+            return "Robot posture stream not available yet."
+        if SESSION.drop_target_orientation is not None:
+            orientation = {
+                "a": float(SESSION.drop_target_orientation[0]),
+                "b": float(SESSION.drop_target_orientation[1]),
+                "c": float(SESSION.drop_target_orientation[2]),
+            }
+        else:
+            posture = session.position_snapshot()
+            orientation = {
+                "a": float(posture.a),
+                "b": float(posture.b),
+                "c": float(posture.c),
+            }
+
+        try:
+            (
+                targets,
+                plate_meta,
+                plate_transform,
+                baseline_transform,
+            ) = _resolve_plate_test_robot_targets(
+                DEFAULT_PLATE_PATH
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"Plate detection failed: {exc}"
+
+        if not targets:
+            return "No calibration targets found on the plate."
+
+        drop_target_mm = SESSION.drop_target_mm
+        baseline_inv_rot = baseline_transform.rotation.T
+        baseline_inv_trans = -baseline_inv_rot @ baseline_transform.translation
+
+        def _base_to_coord(base_xyz: np.ndarray) -> np.ndarray:
+            return baseline_inv_rot @ base_xyz + baseline_inv_trans
+
+        if SESSION.drop_target_robot is not None:
+            base_drop = np.array(
+                [
+                    float(SESSION.drop_target_robot[0]),
+                    float(SESSION.drop_target_robot[1]),
+                    float(SESSION.drop_target_robot[2]),
+                ],
+                dtype=np.float64,
+            )
+            drop_coord = _base_to_coord(base_drop)
+            drop_pose = {
+                "x": float(drop_coord[0]),
+                "y": float(drop_coord[1]),
+                "z": float(drop_coord[2]) + drop_mm,
+            }
+            drop_pose.update(orientation)
+            drop_approach = {
+                "x": float(drop_coord[0]),
+                "y": float(drop_coord[1]),
+                "z": float(drop_coord[2]) + approach_mm,
+            }
+            drop_approach.update(orientation)
+        else:
+            drop_pose = _pose_from_workspace_mm(
+                workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
+            )
+            drop_pose.update(orientation)
+            drop_approach = _pose_from_workspace_mm(
+                workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
+            )
+            drop_approach.update(orientation)
+        gripper_min_width, gripper_max_width = _resolve_gripper_limits()
+        summary = {"attempts": 0, "successes": 0, "details": []}
+
+        async def _run_sequence(robot_api: CodroidAPI) -> None:
+            await robot_api.power_on()
+            await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+
+            async def _move_linear_with_hold(
+                target: dict,
+                hold_seconds: float = 0.0,
+                heartbeat_interval: float = 0.2,
+            ) -> None:
+                await robot_api.set_target_pos_type(
+                    robot_api.config.target_pos_types.cpos
+                )
+                await robot_api.set_target_cpos(target)
+                await robot_api.set_robot_command(
+                    robot_api.config.commands.move_target_linear
+                )
+                if hold_seconds > 0:
+                    deadline = time.monotonic() + hold_seconds
+                    while time.monotonic() < deadline:
+                        await robot_api.send_command_heartbeat()
+                        await asyncio.sleep(heartbeat_interval)
+                await robot_api.clear_target_position()
+                await robot_api.stop_command()
+
+            await _move_linear_with_hold(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_approach),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                ),
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+            )
+            await _move_linear_with_hold(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_pose),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                ),
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+            )
+
+            for target in targets:
+                sequence = target["sequence"]
+                robot_xyz = target["robot_xyz"]
+                plate_mm = target.get("plate_mm")
+                z_axis = plate_transform.rotation @ np.array([0.0, 0.0, 1.0])
+                approach_xyz = robot_xyz + (z_axis * approach_mm)
+                pick_xyz = robot_xyz + (z_axis * pick_mm)
+                approach_coord = _base_to_coord(approach_xyz)
+                pick_coord = _base_to_coord(pick_xyz)
+                approach_pose = {
+                    "x": float(approach_coord[0]),
+                    "y": float(approach_coord[1]),
+                    "z": float(approach_coord[2]),
+                }
+                pick_pose = {
+                    "x": float(pick_coord[0]),
+                    "y": float(pick_coord[1]),
+                    "z": float(pick_coord[2]),
+                }
+                approach_pose.update(orientation)
+                pick_pose.update(orientation)
+                cycle_started_at = time.monotonic()
+                await _move_linear_with_hold(
+                    robot_api.attach_coordinate_to_cpos(
+                        robot_api.build_target_cpos(**approach_pose),
+                        coordinate_id=ROBOT_COORDINATE_ID,
+                    ),
+                    hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                )
+                await _move_linear_with_hold(
+                    robot_api.attach_coordinate_to_cpos(
+                        robot_api.build_target_cpos(**pick_pose),
+                        coordinate_id=ROBOT_COORDINATE_ID,
+                    ),
+                    hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                )
+                _command_gripper(
+                    gripper_min_width,
+                    "closed",
+                    force=GRIPPER_FORCE_MIN,
+                    speed=GRIPPER_SPEED_MIN,
+                )
+                gripped = await _await_grip_status(grip_timeout)
+                summary["attempts"] += 1
+                if plate_mm is not None:
+                    SESSION.last_pick_mm = (plate_mm[0], plate_mm[1])
+
+                if gripped:
+                    summary["successes"] += 1
+                    SESSION.robot_has_object = True
+                    await _move_linear_with_hold(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**approach_pose),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        ),
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                    )
+                    await _move_linear_with_hold(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**drop_approach),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        ),
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                    )
+                    await _move_linear_with_hold(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**drop_pose),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        ),
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                    )
+                    _command_gripper(gripper_max_width, "opened")
+                    SESSION.robot_has_object = False
+                    await _move_linear_with_hold(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**drop_approach),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        ),
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                    )
+                    summary["details"].append(f"{sequence}: dropped")
+                    _record_pick_cycle(True, cycle_started_at)
+                else:
+                    _command_gripper(gripper_max_width, "opened")
+                    await _move_linear_with_hold(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**approach_pose),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        ),
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                    )
+                    summary["details"].append(f"{sequence}: empty")
+                    _record_pick_cycle(False, cycle_started_at)
+
+            await _move_linear_with_hold(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_approach),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                ),
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+            )
+            await _move_linear_with_hold(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_pose),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                ),
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+            )
+            _command_gripper(gripper_max_width, "opened")
+            await robot_api.power_off()
+
+        try:
+            await _with_robot_api(
+                robot_uri or DEFAULT_ROBOT_URI, _run_sequence
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Plate pick & place test failed")
+            return f"Plate test failed: {exc}"
+
+        attempts = summary["attempts"]
+        successes = summary["successes"]
+        detail = ", ".join(summary["details"])
+        SESSION.last_action = (
+            f"Plate test complete: {successes}/{attempts} picked."
+        )
+        plate_note = (
+            f"Plate markers: {plate_meta['count']} · "
+            f"Reproj: {plate_meta['reprojection_error_mm']:.2f} mm"
+        )
+        message = (
+            f"Plate test complete: {successes}/{attempts} picked. {plate_note}"
+        )
+        if detail:
+            message = f"{message} ({detail})"
+        return message
+
+    @app.callback(
         Output("footer-gripper-status", "children"),
-        Input("footer-gripper-open", "n_clicks"),
-        Input("footer-gripper-close", "n_clicks"),
         Input("footer-gripper-width", "value"),
         Input("footer-gripper-force", "value"),
         Input("footer-gripper-speed", "value"),
         prevent_initial_call=True,
     )
     def _footer_gripper_actions(
-        _open_clicks: int,
-        _close_clicks: int,
         footer_width: Optional[float],
         footer_force: Optional[float],
         footer_speed: Optional[float],
     ) -> str:
         try:
+            if SESSION.gripper_busy:
+                return "Gripper is busy; wait for motion to finish."
             trigger = callback_context.triggered_id
             if trigger == "footer-gripper-width":
                 if _recent_gripper_sync("width", footer_width):
@@ -5071,23 +5761,6 @@ def _restore_calibration_gripper_width() -> None:
                 max(applied_force, GRIPPER_FORCE_MIN), GRIPPER_FORCE_MAX
             )
             applied_speed = _safe_int(footer_speed, 80)
-            if trigger == "footer-gripper-open":
-                width = _safe_float(footer_width, GRIPPER_OPEN_WIDTH_DEFAULT)
-                return _command_gripper(
-                    width,
-                    "opened",
-                    force=applied_force,
-                    speed=applied_speed,
-                )
-            if trigger == "footer-gripper-close":
-                width = _safe_float(footer_width, GRIPPER_CLOSE_WIDTH_DEFAULT)
-                return _command_gripper(
-                    width,
-                    "closed",
-                    force=applied_force,
-                    speed=applied_speed,
-                    prevent_overclose=True,
-                )
             if trigger in {"footer-gripper-width", "footer-gripper-force", "footer-gripper-speed"}:
                 width = _safe_float(
                     footer_width, GRIPPER_CLOSE_WIDTH_DEFAULT)
@@ -5101,6 +5774,68 @@ def _restore_calibration_gripper_width() -> None:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Footer gripper action failed")
             return f"Robot action failed: {exc}"
+
+    @app.callback(
+        Output("footer-gripper-width", "value", allow_duplicate=True),
+        Output("footer-gripper-force", "value", allow_duplicate=True),
+        Output("footer-gripper-speed", "value", allow_duplicate=True),
+        Input("footer-gripper-width-decrease", "n_clicks"),
+        Input("footer-gripper-width-increase", "n_clicks"),
+        Input("footer-gripper-force-decrease", "n_clicks"),
+        Input("footer-gripper-force-increase", "n_clicks"),
+        Input("footer-gripper-speed-decrease", "n_clicks"),
+        Input("footer-gripper-speed-increase", "n_clicks"),
+        State("footer-gripper-width", "value"),
+        State("footer-gripper-force", "value"),
+        State("footer-gripper-speed", "value"),
+        State("footer-gripper-width", "min"),
+        State("footer-gripper-width", "max"),
+        prevent_initial_call=True,
+    )
+    def _step_footer_gripper_controls(
+        _width_dec: int,
+        _width_inc: int,
+        _force_dec: int,
+        _force_inc: int,
+        _speed_dec: int,
+        _speed_inc: int,
+        width: Optional[float],
+        force: Optional[float],
+        speed: Optional[float],
+        width_min: Optional[float],
+        width_max: Optional[float],
+    ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        trigger = callback_context.triggered_id
+        if trigger is None:
+            return no_update, no_update, no_update
+        if SESSION.gripper_busy:
+            return no_update, no_update, no_update
+
+        width_value = _safe_float(width, GRIPPER_CLOSE_WIDTH_DEFAULT)
+        force_value = _safe_float(force, GRIPPER_FORCE_DEFAULT)
+        speed_value = _safe_float(speed, GRIPPER_SPEED_DEFAULT)
+
+        if trigger == "footer-gripper-width-decrease":
+            width_value -= 0.5
+        elif trigger == "footer-gripper-width-increase":
+            width_value += 0.5
+        elif trigger == "footer-gripper-force-decrease":
+            force_value -= 5
+        elif trigger == "footer-gripper-force-increase":
+            force_value += 5
+        elif trigger == "footer-gripper-speed-decrease":
+            speed_value -= 5
+        elif trigger == "footer-gripper-speed-increase":
+            speed_value += 5
+
+        if width_min is not None:
+            width_value = max(width_value, float(width_min))
+        if width_max is not None:
+            width_value = min(width_value, float(width_max))
+        force_value = min(max(force_value, GRIPPER_FORCE_MIN), GRIPPER_FORCE_MAX)
+        speed_value = min(max(speed_value, 0), 100)
+
+        return width_value, force_value, speed_value
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),
@@ -5180,29 +5915,72 @@ def _restore_calibration_gripper_width() -> None:
     @app.callback(
         Output("footer-gripper-width", "value"),
         Output("footer-gripper-force", "value"),
+        Output("footer-gripper-width", "min", allow_duplicate=True),
+        Output("footer-gripper-width", "max", allow_duplicate=True),
+        Output("footer-gripper-meta", "children"),
+        Output("gripper-orientation", "value"),
         Input("robot-status-interval", "n_intervals"),
         State("gripper-connection-state", "data"),
         State("footer-gripper-width", "value"),
         State("footer-gripper-force", "value"),
+        prevent_initial_call=True,
     )
     def _sync_footer_gripper_values(
         _intervals: int,
         gripper_state: Optional[dict],
         current_width: Optional[float],
         current_force: Optional[float],
-    ) -> Tuple[Optional[float], Optional[float]]:
+    ) -> Tuple[
+        Optional[float],
+        Optional[float],
+        Optional[float],
+        Optional[float],
+        str,
+        Optional[str],
+    ]:
         if (gripper_state or {}).get("status") != "online":
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
         if SESSION.gripper is None:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
+        status_snapshot = None
         try:
             t_index = GRIPPER_DEFAULTS["t_index"]
-            width = SESSION.gripper.get_ext_width(t_index=t_index)
-            force = SESSION.gripper.get_force(t_index=t_index)
+            if SESSION.gripper.get_status_snapshot(t_index=t_index) is None:
+                SESSION.gripper.start_status_stream()
+            status_snapshot = SESSION.gripper.get_status_snapshot(t_index=t_index)
+            if status_snapshot:
+                width = status_snapshot.get("external_width")
+                force = status_snapshot.get("force")
+                min_width = status_snapshot.get("min_external_width")
+                max_width = status_snapshot.get("max_external_width")
+                busy = status_snapshot.get("busy")
+                gripped = status_snapshot.get("grip_detected")
+                status = status_snapshot.get("status")
+                outward = status_snapshot.get("finger_orientation_outward")
+                orientation = None
+                if isinstance(outward, bool):
+                    orientation = "outward" if outward else "inward"
+                elif isinstance(outward, str):
+                    cleaned = outward.strip().lower()
+                    if cleaned in {"true", "1", "yes", "on"}:
+                        orientation = "outward"
+                    elif cleaned in {"false", "0", "no", "off"}:
+                        orientation = "inward"
+            else:
+                width = SESSION.gripper.get_ext_width(t_index=t_index)
+                force = SESSION.gripper.get_force(t_index=t_index)
+                min_width = SESSION.gripper.get_min_ext_width(t_index=t_index)
+                max_width = SESSION.gripper.get_max_ext_width(t_index=t_index)
+                busy = SESSION.gripper.isBusy(t_index=t_index)
+                gripped = SESSION.gripper.isGripped(t_index=t_index)
+                status = SESSION.gripper.getStatus(t_index=t_index)
+                orientation = SESSION.gripper.get_finger_orientation_label(
+                    t_index=t_index
+                )
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("Failed to poll gripper values: %s", exc)
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         width_update: Optional[float] = no_update
         force_update: Optional[float] = no_update
@@ -5216,13 +5994,146 @@ def _restore_calibration_gripper_width() -> None:
             if current_force is None or abs(force - current_force) > 0.1:
                 force_update = float(force)
 
-        if width_update is no_update and force_update is no_update:
-            return no_update, no_update
+        if (
+            isinstance(force, (int, float))
+            and force < 0
+            and status_snapshot
+            and isinstance(status_snapshot.get("max_force"), (int, float))
+        ):
+            # Avoid displaying negative force values when using status snapshots.
+            force = None
+
+        min_update: Optional[float] = no_update
+        max_update: Optional[float] = no_update
+        if isinstance(min_width, (int, float)) and min_width >= 0:
+            if (
+                SESSION.gripper_min_width is None
+                or abs(min_width - SESSION.gripper_min_width) > 0.1
+            ):
+                min_update = float(min_width)
+                SESSION.gripper_min_width = float(min_width)
+        if isinstance(max_width, (int, float)) and max_width >= 0:
+            if (
+                SESSION.gripper_max_width is None
+                or abs(max_width - SESSION.gripper_max_width) > 0.1
+            ):
+                max_update = float(max_width)
+                SESSION.gripper_max_width = float(max_width)
 
         width_value = None if width_update is no_update else float(width_update)
         force_value = None if force_update is no_update else float(force_update)
         _record_gripper_sync(width_value, force_value)
-        return width_update, force_update
+
+        if isinstance(force, (int, float)) and force >= 0:
+            SESSION.gripper_force = float(force)
+        if isinstance(busy, (bool, int, float)) and busy != -2:
+            SESSION.gripper_busy = bool(busy)
+        if isinstance(gripped, (bool, int, float)) and gripped != -2:
+            SESSION.gripper_grip_detected = bool(gripped)
+        if isinstance(status, (int, float)) and status != -2:
+            SESSION.gripper_status_code = int(status)
+        previous_orientation = SESSION.gripper_orientation
+        if orientation in {"inward", "outward"}:
+            SESSION.gripper_orientation = orientation
+
+        busy_text = (
+            "unknown"
+            if SESSION.gripper_busy is None
+            else ("yes" if SESSION.gripper_busy else "no")
+        )
+        grip_text = (
+            "unknown"
+            if SESSION.gripper_grip_detected is None
+            else ("yes" if SESSION.gripper_grip_detected else "no")
+        )
+        meta_text = (
+            f"Orientation: {SESSION.gripper_orientation or 'unknown'}"
+            f" · Busy: {busy_text}"
+            f" · Grip: {grip_text}"
+        )
+        if isinstance(force, (int, float)) and force >= 0:
+            meta_text = f"{meta_text} · Force: {float(force):.0f} N"
+
+        orientation_update: Optional[str] = no_update
+        if orientation in {"inward", "outward"} and orientation != previous_orientation:
+            orientation_update = orientation
+
+        width_min = (
+            SESSION.gripper_min_width
+            if SESSION.gripper_min_width is not None
+            else None
+        )
+        width_max = (
+            SESSION.gripper_max_width
+            if SESSION.gripper_max_width is not None
+            else None
+        )
+        if width_update is no_update and width_min is not None and width_max is not None:
+            if isinstance(current_width, (int, float)):
+                clamped = min(max(current_width, width_min), width_max)
+                if abs(clamped - current_width) > 0.05:
+                    width_update = float(clamped)
+
+        return (
+            width_update,
+            force_update,
+            min_update,
+            max_update,
+            meta_text,
+            orientation_update,
+        )
+
+    @app.callback(
+        Output("gripper-orientation-status", "children"),
+        Output("footer-gripper-width", "min", allow_duplicate=True),
+        Output("footer-gripper-width", "max", allow_duplicate=True),
+        Input("gripper-orientation", "value"),
+        State("gripper-connection-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _apply_gripper_orientation(
+        orientation: Optional[str],
+        gripper_state: Optional[dict],
+    ) -> Tuple[str, Optional[float], Optional[float]]:
+        if (gripper_state or {}).get("status") != "online":
+            return "Gripper is offline.", no_update, no_update
+        if SESSION.gripper is None:
+            return "Gripper is unavailable.", no_update, no_update
+        if orientation not in {"inward", "outward"}:
+            return no_update, no_update, no_update
+        if SESSION.gripper_orientation == orientation:
+            return no_update, no_update, no_update
+        try:
+            t_index = GRIPPER_DEFAULTS["t_index"]
+            result = SESSION.gripper.set_finger_orientation(
+                t_index=t_index,
+                orientation=orientation,
+            )
+            if isinstance(result, (int, float)) and result < 0:
+                return "Failed to update gripper orientation.", no_update, no_update
+            SESSION.gripper_orientation = orientation
+            SESSION.gripper_min_width = None
+            SESSION.gripper_max_width = None
+            min_width = SESSION.gripper.get_min_ext_width(t_index=t_index)
+            max_width = SESSION.gripper.get_max_ext_width(t_index=t_index)
+            min_update = (
+                float(min_width)
+                if isinstance(min_width, (int, float)) and min_width >= 0
+                else no_update
+            )
+            max_update = (
+                float(max_width)
+                if isinstance(max_width, (int, float)) and max_width >= 0
+                else no_update
+            )
+            if min_update is not no_update:
+                SESSION.gripper_min_width = min_update
+            if max_update is not no_update:
+                SESSION.gripper_max_width = max_update
+            return f"Orientation set to {orientation}.", min_update, max_update
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to set gripper orientation")
+            return f"Failed to set orientation: {exc}", no_update, no_update
 
     @app.callback(
         Output("holding-status", "children"),
@@ -5257,7 +6168,7 @@ def _restore_calibration_gripper_width() -> None:
         State("gripper-connection-state", "data"),
         State("robot-power-state", "data"),
         State("robot-speed-state", "data"),
-        State("calibration-bundle-path", "value"),
+        State("settings-calib-path", "value"),
     )
     def _update_monitoring_summary(
         _monitor_ticks: int,
@@ -5373,6 +6284,26 @@ def _restore_calibration_gripper_width() -> None:
                     size="sm",
                 )
             )
+        if SESSION.drop_target_orientation:
+            pick_items.append(
+                dmc.Text(
+                    "Drop orientation: "
+                    f"a={SESSION.drop_target_orientation[0]:.1f}, "
+                    f"b={SESSION.drop_target_orientation[1]:.1f}, "
+                    f"c={SESSION.drop_target_orientation[2]:.1f}",
+                    size="sm",
+                )
+            )
+        if SESSION.drop_target_robot:
+            pick_items.append(
+                dmc.Text(
+                    "Drop robot pose: "
+                    f"x={SESSION.drop_target_robot[0]:.1f}, "
+                    f"y={SESSION.drop_target_robot[1]:.1f}, "
+                    f"z={SESSION.drop_target_robot[2]:.1f}",
+                    size="sm",
+                )
+            )
         bundle_path = _safe_path(bundle_path_value, DEFAULT_BUNDLE_PATH)
         bundle_style = {} if bundle_path.exists() else {"display": "none"}
         workspace_style = {} if DEFAULT_WORKSPACE_PATH.exists() else {
@@ -5465,47 +6396,20 @@ def _restore_calibration_gripper_width() -> None:
         Output("camera-calibration-action", "children"),
         Output("calibration-progress-store", "data"),
         Input("calibrate-camera", "n_clicks"),
-        Input("load-calibration", "n_clicks"),
         Input("use-existing-calibration", "n_clicks"),
-        State("calibration-output-dir", "value"),
-        State("calibration-board-path", "value"),
-        State("calibration-bundle-path", "value"),
+        State("settings-calib-path", "value"),
         prevent_initial_call=True,
     )
     def _handle_camera_calibration_actions(
         _calibrate: int,
-        _load: int,
         _use_existing: int,
-        output_dir: str,
-        board_path: str,
         bundle_path: str,
     ) -> dmc.Alert:
         trigger = callback_context.triggered_id
 
-        output_path = _safe_path(output_dir, DEFAULT_CAPTURE_DIR)
-        board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
+        output_path = DEFAULT_CAPTURE_DIR
+        board_path = DEFAULT_BOARD_PATH
         bundle_path = _safe_path(bundle_path, DEFAULT_BUNDLE_PATH)
-
-        if trigger == "load-calibration":
-            try:
-                result = load_calibration_bundle(bundle_path)
-                alert = dmc.Alert(
-                    result,
-                    icon="✓",
-                    title="Bundle loaded",
-                    color="green",
-                )
-                return alert, {"progress": 0}
-            except Exception as exc:
-                logging.error(
-                    f"[CALIBRATE] Error loading bundle: {exc}", exc_info=True)
-                alert = dmc.Alert(
-                    str(exc)[:200],
-                    icon="!",
-                    title="Load error",
-                    color="red",
-                )
-                return alert, {"progress": 0}
 
         if trigger == "use-existing-calibration":
             try:
@@ -5616,9 +6520,9 @@ def _restore_calibration_gripper_width() -> None:
         Output("workspace-action-status", "children"),
         Input("compute-workspace", "n_clicks"),
         Input("use-existing-workspace", "n_clicks"),
-        State("marker-id-a", "value"),
-        State("marker-id-b", "value"),
-        State("marker-size", "value"),
+        State("settings-marker-a", "value"),
+        State("settings-marker-b", "value"),
+        State("settings-marker-size", "value"),
         prevent_initial_call=True,
     )
     def _handle_workspace_action(
@@ -5656,6 +6560,7 @@ def _restore_calibration_gripper_width() -> None:
         Output("plate-action-status", "children"),
         Output("plate-metrics", "children", allow_duplicate=True),
         Input("camera-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _handle_plate_actions(
         _ticks: int,
@@ -5674,11 +6579,9 @@ def _restore_calibration_gripper_width() -> None:
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
         State("application-tabs", "value"),
-        State("calibration-board-path", "value"),
-        State("marker-id-a", "value"),
-        State("marker-id-b", "value"),
-        State("marker-size", "value"),
-        State("plate-layout-path", "value"),
+        State("settings-marker-a", "value"),
+        State("settings-marker-b", "value"),
+        State("settings-marker-size", "value"),
         State("overlay-mode-select", "value"),
     )
     def _update_camera_view(
@@ -5686,11 +6589,9 @@ def _restore_calibration_gripper_width() -> None:
         active_tab: Optional[str],
         calibration_step: Optional[int],
         application_tab: Optional[str],
-        board_path: str,
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
-        plate_layout: str,
         overlay_mode: Optional[str],
     ) -> Tuple[str, str, str, str, str, str, dict]:
         frame, _depth = get_latest_frame()
@@ -5736,8 +6637,8 @@ def _restore_calibration_gripper_width() -> None:
         tab = active_tab or "calibration"
         calibration_step = calibration_step or 0
         application_tab = application_tab or "workspace"
-        board_path = _safe_path(board_path, DEFAULT_BOARD_PATH)
-        plate_path = _safe_path(plate_layout, DEFAULT_PLATE_PATH)
+        board_path = DEFAULT_BOARD_PATH
+        plate_path = DEFAULT_PLATE_PATH
         marker_ids = (
             _safe_int(marker_a, SESSION.config.marker_ids[0]),
             _safe_int(marker_b, SESSION.config.marker_ids[1]),
@@ -5945,14 +6846,41 @@ def _restore_calibration_gripper_width() -> None:
     @app.callback(
         Output("robot-power-state", "data"),
         Input("robot-status-interval", "n_intervals"),
+        State("robot-connection-state", "data"),
+        State("robot-uri", "value"),
+        State("robot-power-state", "data"),
         prevent_initial_call=True,
     )
-    def _sync_robot_power_state(_intervals: int) -> dict:
+    async def _sync_robot_power_state(
+        _intervals: int,
+        robot_state: Optional[dict],
+        robot_uri: Optional[str],
+        current_state: Optional[dict],
+    ) -> dict:
+        if (robot_state or {}).get("status") != "online":
+            return no_update
+        now = time.time()
+        if now - SESSION.robot_status_last_poll < 1.0:
+            return no_update
+        async def _poll(api: CodroidAPI) -> None:
+            await api.read_system_data()
+            await api.read_global_data()
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _poll)
+            SESSION.robot_status_last_poll = now
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Robot power poll failed: %s", exc)
+            return no_update
+
         session = _get_robot_session()
         power_on = session.robot_power_on()
         if power_on is None:
             return no_update
-        return {"value": bool(power_on), "timestamp": time.time()}
+        desired = {"value": bool(power_on), "timestamp": time.time()}
+        if current_state and current_state.get("value") == desired["value"]:
+            return no_update
+        return desired
 
     @app.callback(
         Output("robot-power-toggle", "checked"),
@@ -6047,26 +6975,29 @@ def _restore_calibration_gripper_width() -> None:
         )
         verification_completed = status == "complete"
 
+        def _step_state(is_done: bool) -> Optional[str]:
+            return "completed" if is_done else None
+
         stepper_children = [
             dmc.StepperStep(
                 label="Point 1",
                 description="Indentation 1 (origin)",
-                completed=step > 1,
+                state=_step_state(step > 1),
             ),
             dmc.StepperStep(
                 label="Point 2",
                 description="Indentation 2 (+X)",
-                completed=step > 2,
+                state=_step_state(step > 2),
             ),
             dmc.StepperStep(
                 label="Point 3",
                 description="Indentation 3 (+X/+Y)",
-                completed=step > 3,
+                state=_step_state(step > 3),
             ),
             dmc.StepperStep(
                 label="Verification",
                 description="Safe motion check",
-                completed=verification_completed,
+                state=_step_state(verification_completed),
             ),
         ]
         return (
@@ -6080,7 +7011,6 @@ def _restore_calibration_gripper_width() -> None:
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("start-robot-calibration", "n_clicks"),
-        State("plate-layout-path", "value"),
         State("plate-detection-state", "data"),
         State("robot-connection-state", "data"),
         State("robot-uri", "value"),
@@ -6088,7 +7018,6 @@ def _restore_calibration_gripper_width() -> None:
     )
     async def _start_robot_calibration(
         _clicks: int,
-        plate_layout_path: str,
         plate_state: Optional[dict],
         robot_state: Optional[dict],
         robot_uri: Optional[str],
@@ -6128,7 +7057,7 @@ def _restore_calibration_gripper_width() -> None:
 
         LOGGER.info("Plate state OK, starting calibration procedure...")
         try:
-            layout_path = _safe_path(plate_layout_path, DEFAULT_PLATE_PATH)
+            layout_path = DEFAULT_PLATE_PATH
             LOGGER.info(f"Loading plate layout from: {layout_path}")
             plate_layout = plate.load_plate_layout(layout_path)
             LOGGER.info("Plate layout loaded successfully")
