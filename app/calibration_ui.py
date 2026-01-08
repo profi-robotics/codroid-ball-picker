@@ -87,6 +87,11 @@ GRIPPER_OPEN_WIDTH_DEFAULT = 25.0
 GRIPPER_CLOSE_WIDTH_DEFAULT = 5.0
 PLATE_TEST_GRIP_TIMEOUT_S = 2.5
 PLATE_TEST_MOVE_HOLD_S = 1.0
+PLATE_TEST_MOVE_TIMEOUT_S = 25.0
+PLATE_TEST_TOLERANCE_MM = 2.0
+PLATE_TEST_Z_TOLERANCE_MM = 2.0
+PLATE_TEST_SETTLE_S = 1.5
+PLATE_TEST_MOTION_EPS_MM = 0.5
 
 
 class AppSettings(BaseModel):
@@ -204,6 +209,7 @@ class UISession:
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
     last_plate_test_capture: Optional[str] = None
+    plate_test_state: dict = field(default_factory=dict)
     last_frame_id: int = 0  # Track frame changes to avoid duplicate stream pushes
     continuous_detection: bool = False  # Enable continuous detection mode
     detection_confidence: float = 0.7
@@ -308,6 +314,14 @@ def _load_robot_calibration(path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None
         SESSION.robot_calibration_min_z = min(
             float(pt.get("z", 0.0)) for pt in SESSION.robot_calibration_points
         )
+    plate_reference = data.get("plate_reference_homography")
+    if isinstance(plate_reference, list):
+        try:
+            SESSION.plate_reference_homography = np.asarray(
+                plate_reference, dtype=np.float64
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to load plate reference homography: %s", exc)
     LOGGER.info("Loaded robot calibration data from %s", path)
     _commit_settings(robot_calibration_path=str(path))
 
@@ -322,6 +336,10 @@ def _save_robot_calibration(points: list[dict], path: Path = DEFAULT_ROBOT_CALIB
         "timestamp": time.time(),
         "coordinate_id": ROBOT_COORDINATE_ID,
     }
+    if SESSION.plate_reference_homography is not None:
+        payload["plate_reference_homography"] = (
+            np.asarray(SESSION.plate_reference_homography, dtype=np.float64).tolist()
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
     _commit_settings(robot_calibration_path=str(path))
@@ -463,6 +481,32 @@ def _update_robot_calibration_meta(robot_points: list[dict]) -> None:
     else:
         SESSION.robot_calibration_min_z = None
     _save_robot_calibration(robot_points)
+
+
+def _current_coordinate_id(session: RobotSession) -> Optional[int]:
+    status = session.robot_status_snapshot()
+    if not isinstance(status, dict):
+        return None
+    coord_id = status.get("CoordinateId")
+    if coord_id is None:
+        return None
+    try:
+        return int(coord_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_plate_test_state(
+    message: str,
+    *,
+    running: bool = True,
+    label: Optional[str] = None,
+) -> None:
+    state = {"running": running, "message": message, "timestamp": time.time()}
+    if label is not None:
+        state["label"] = label
+    SESSION.plate_test_state = state
+    SESSION.last_action = message
 
 
 def _robot_posture_ready(
@@ -1140,8 +1184,12 @@ def _resolve_plate_test_coord5_targets(
 
     reference_initialized = False
     if SESSION.plate_reference_homography is None:
-        SESSION.plate_reference_homography = calibration_result.homography.copy()
-        reference_initialized = True
+        bundle = SESSION.calibration_bundle
+        if bundle is not None and bundle.plate_homography is not None:
+            SESSION.plate_reference_homography = bundle.plate_homography.copy()
+        else:
+            SESSION.plate_reference_homography = calibration_result.homography.copy()
+            reference_initialized = True
 
     origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
     marker_base: list[np.ndarray] = []
@@ -2026,9 +2074,15 @@ async def _run_robot_plate_calibration(
         if not coord_frame:
             raise RuntimeError("Robot controller returned empty calibration frame.")
 
-        coord_frame["a"] = 0.0
-        coord_frame["b"] = 0.0
-        coord_frame["c"] = 0.0
+        def _coord_axis(keys: Tuple[str, ...]) -> float:
+            for key in keys:
+                if key in coord_frame:
+                    return _safe_float(coord_frame.get(key), 0.0)
+            return 0.0
+
+        coord_frame["a"] = _coord_axis(("a", "rx", "roll"))
+        coord_frame["b"] = _coord_axis(("b", "ry", "pitch"))
+        coord_frame["c"] = _coord_axis(("c", "rz", "yaw"))
 
         change_request_time = time.time()
         change_payload = {
@@ -5649,26 +5703,38 @@ def register_callbacks(app: Dash) -> None:
         robot_state: Optional[dict],
         gripper_state: Optional[dict],
     ) -> Tuple[str, str]:
+        def _plate_test_abort(message: str) -> Tuple[str, str]:
+            _set_plate_test_state(message, running=False)
+            return message, ""
+
         if (robot_state or {}).get("status") != "online":
-            return "Robot is not connected. Click 'Test robot connection' first.", ""
+            return _plate_test_abort(
+                "Robot is not connected. Click 'Test robot connection' first."
+            )
         if (gripper_state or {}).get("status") != "online":
-            return "Gripper is not connected. Enable gripper in Setup menu.", ""
+            return _plate_test_abort(
+                "Gripper is not connected. Enable gripper in Setup menu."
+            )
         if (
             SESSION.gripper is None
             or not SESSION.gripper.isConnected(
                 t_index=GRIPPER_DEFAULTS["t_index"]
             )
         ):
-            return "Gripper session is not active; re-enable the gripper.", ""
+            return _plate_test_abort(
+                "Gripper session is not active; re-enable the gripper."
+            )
         if SESSION.workspace_definition is None:
-            return "Workspace is not defined; compute it first.", ""
+            return _plate_test_abort("Workspace is not defined; compute it first.")
         if SESSION.drop_target_mm is None:
-            return "Teach a drop position first.", ""
+            return _plate_test_abort("Teach a drop position first.")
         if SESSION.robot_calibration_min_z is None:
-            return "Robot calibration is missing; run robot calibration first.", ""
+            return _plate_test_abort(
+                "Robot calibration is missing; run robot calibration first."
+            )
         frame, _depth = get_latest_frame()
         if frame is None:
-            return "Camera stream is not running.", ""
+            return _plate_test_abort("Camera stream is not running.")
 
         approach_mm = _safe_float(approach_height, 30.0)
         pick_mm = _safe_float(pick_height, 0.0)
@@ -5678,7 +5744,7 @@ def register_callbacks(app: Dash) -> None:
         workspace_def = SESSION.workspace_definition
         session = _get_robot_session()
         if not session.posture_seen():
-            return "Robot posture stream not available yet.", ""
+            return _plate_test_abort("Robot posture stream not available yet.")
         if SESSION.drop_target_orientation is not None:
             orientation = {
                 "a": float(SESSION.drop_target_orientation[0]),
@@ -5693,6 +5759,7 @@ def register_callbacks(app: Dash) -> None:
                 "c": float(posture.c),
             }
 
+        _set_plate_test_state("Plate test starting...", running=True)
         try:
             (
                 targets,
@@ -5701,17 +5768,46 @@ def register_callbacks(app: Dash) -> None:
                 reference_initialized,
             ) = _resolve_plate_test_coord5_targets(DEFAULT_PLATE_PATH)
         except Exception as exc:  # noqa: BLE001
-            return f"Plate detection failed: {exc}", ""
+            return _plate_test_abort(f"Plate detection failed: {exc}")
 
         if not targets:
-            return "No calibration targets found on the plate.", ""
+            return _plate_test_abort("No calibration targets found on the plate.")
 
         drop_target_mm = SESSION.drop_target_mm
+        poscfg = CodroidAPI.build_poscfg(
+            mode=int(SESSION.robot_calibration_points[0].get("mode", 0))
+        )
         baseline_inv_rot = baseline_transform.rotation.T
         baseline_inv_trans = -baseline_inv_rot @ baseline_transform.translation
 
         def _base_to_coord(base_xyz: np.ndarray) -> np.ndarray:
             return baseline_inv_rot @ base_xyz + baseline_inv_trans
+
+        def _resolve_coord5_pose(
+            posture: RobotPosture,
+            target: Optional[dict] = None,
+        ) -> Tuple[np.ndarray, str]:
+            raw_xyz = np.array(
+                [float(posture.x), float(posture.y), float(posture.z)],
+                dtype=np.float64,
+            )
+            coord_id = _current_coordinate_id(session)
+            if coord_id == ROBOT_COORDINATE_ID:
+                return raw_xyz, "robot_coord5"
+            converted_xyz = _base_to_coord(raw_xyz)
+            if coord_id == 0:
+                return converted_xyz, "base_to_coord"
+            if target is not None:
+                target_xyz = np.array(
+                    [float(target["x"]), float(target["y"]), float(target["z"])],
+                    dtype=np.float64,
+                )
+                if np.linalg.norm(raw_xyz - target_xyz) <= np.linalg.norm(
+                    converted_xyz - target_xyz
+                ):
+                    return raw_xyz, "robot_coord5_guess"
+                return converted_xyz, "base_to_coord_guess"
+            return raw_xyz, "robot_coord5_unknown"
 
         if SESSION.drop_target_robot is not None:
             base_drop = np.array(
@@ -5727,22 +5823,26 @@ def register_callbacks(app: Dash) -> None:
                 "x": float(drop_coord[0]),
                 "y": float(drop_coord[1]),
                 "z": float(drop_coord[2]) + drop_mm,
+                "poscfg": poscfg,
             }
             drop_pose.update(orientation)
             drop_approach = {
                 "x": float(drop_coord[0]),
                 "y": float(drop_coord[1]),
                 "z": float(drop_coord[2]) + approach_mm,
+                "poscfg": poscfg,
             }
             drop_approach.update(orientation)
         else:
             drop_pose = _pose_from_workspace_mm(
                 workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
             )
+            drop_pose["poscfg"] = poscfg
             drop_pose.update(orientation)
             drop_approach = _pose_from_workspace_mm(
                 workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
             )
+            drop_approach["poscfg"] = poscfg
             drop_approach.update(orientation)
         gripper_min_width, gripper_max_width = _resolve_gripper_limits()
         summary = {"attempts": 0, "successes": 0, "details": []}
@@ -5767,8 +5867,10 @@ def register_callbacks(app: Dash) -> None:
 
         def _record_move(label: str, command_pose: dict) -> None:
             posture = session.position_snapshot()
-            base_xyz = np.array([posture.x, posture.y, posture.z], dtype=np.float64)
-            coord5_xyz = _base_to_coord(base_xyz)
+            coord5_xyz, coord5_basis = _resolve_coord5_pose(
+                posture, target=command_pose
+            )
+            coord_id = _current_coordinate_id(session)
             capture["moves"].append(
                 {
                     "label": label,
@@ -5789,12 +5891,87 @@ def register_callbacks(app: Dash) -> None:
                         "b": float(posture.b),
                         "c": float(posture.c),
                     },
+                    "posture_coord5_basis": coord5_basis,
+                    "posture_coordinate_id": coord_id,
                 }
             )
 
         async def _run_sequence(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
             await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+            speed_rate = max(float(SESSION.robot_speed_rate), 0.1)
+            await robot_api.set_manual_move_rate(speed_rate)
+            capture["robot_speed_rate"] = speed_rate
+            speed_percent = int(round(speed_rate * 100))
+
+            def _update_step(label: str) -> None:
+                message = f"Plate test: {label.replace('_', ' ')} (speed {speed_percent}%)"
+                _set_plate_test_state(message, running=True, label=label)
+
+            async def _await_coord5_motion_settle(
+                target: dict,
+                *,
+                label: str,
+                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
+                settle_s: float = PLATE_TEST_SETTLE_S,
+                motion_eps_mm: float = PLATE_TEST_MOTION_EPS_MM,
+            ) -> None:
+                deadline = time.monotonic() + timeout_s
+                start = session.position_snapshot()
+                coord5_xyz, _coord_basis = _resolve_coord5_pose(
+                    start, target=target
+                )
+                if (
+                    abs(float(coord5_xyz[0]) - float(target["x"]))
+                    <= PLATE_TEST_TOLERANCE_MM
+                    and abs(float(coord5_xyz[1]) - float(target["y"]))
+                    <= PLATE_TEST_TOLERANCE_MM
+                    and abs(float(coord5_xyz[2]) - float(target["z"]))
+                    <= PLATE_TEST_Z_TOLERANCE_MM
+                ):
+                    return
+                last = start
+                moved = False
+                settle_deadline: Optional[float] = None
+                while time.monotonic() < deadline:
+                    await robot_api.send_command_heartbeat()
+                    await asyncio.sleep(0.2)
+                    curr = session.position_snapshot()
+                    base_delta = np.linalg.norm(
+                        [
+                            float(curr.x) - float(last.x),
+                            float(curr.y) - float(last.y),
+                            float(curr.z) - float(last.z),
+                        ]
+                    )
+                    if base_delta > motion_eps_mm:
+                        moved = True
+                        settle_deadline = time.monotonic() + settle_s
+                    if moved and settle_deadline is not None:
+                        if base_delta > motion_eps_mm:
+                            settle_deadline = time.monotonic() + settle_s
+                        elif time.monotonic() >= settle_deadline:
+                            return
+                    last = curr
+                total = np.linalg.norm(
+                    [
+                        float(last.x) - float(start.x),
+                        float(last.y) - float(start.y),
+                        float(last.z) - float(start.z),
+                    ]
+                )
+                if not moved:
+                    status = session.robot_status_snapshot()
+                    LOGGER.warning(
+                        "Plate test move timeout at %s: no motion detected (status=%s).",
+                        label,
+                        status,
+                    )
+                    return
+                raise RuntimeError(
+                    f"Plate test move timeout at {label}: motion did not settle "
+                    f"(total={total:.2f} mm)."
+                )
 
             async def _move_linear_with_hold(
                 command_pose: dict,
@@ -5802,6 +5979,7 @@ def register_callbacks(app: Dash) -> None:
                 heartbeat_interval: float = 0.2,
                 label: str = "move",
             ) -> None:
+                _update_step(label)
                 await robot_api.set_target_pos_type(
                     robot_api.config.target_pos_types.cpos
                 )
@@ -5814,6 +5992,7 @@ def register_callbacks(app: Dash) -> None:
                 await robot_api.set_robot_command(
                     robot_api.config.commands.move_target_linear
                 )
+                await _await_coord5_motion_settle(command_pose, label=label)
                 if hold_seconds > 0:
                     deadline = time.monotonic() + hold_seconds
                     while time.monotonic() < deadline:
@@ -5848,11 +6027,13 @@ def register_callbacks(app: Dash) -> None:
                     "x": float(approach_coord[0]),
                     "y": float(approach_coord[1]),
                     "z": float(approach_coord[2]),
+                    "poscfg": poscfg,
                 }
                 pick_pose = {
                     "x": float(pick_coord[0]),
                     "y": float(pick_coord[1]),
                     "z": float(pick_coord[2]),
+                    "poscfg": poscfg,
                 }
                 approach_pose.update(orientation)
                 pick_pose.update(orientation)
@@ -5941,7 +6122,9 @@ def register_callbacks(app: Dash) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Plate pick & place test failed")
-            return f"Plate test failed: {exc}", ""
+            message = f"Plate test failed: {exc}"
+            _set_plate_test_state(message, running=False)
+            return message, ""
 
         attempts = summary["attempts"]
         successes = summary["successes"]
@@ -5963,7 +6146,19 @@ def register_callbacks(app: Dash) -> None:
         )
         if detail:
             message = f"{message} ({detail})"
+        _set_plate_test_state(message, running=False)
         return message, analysis
+
+    @app.callback(
+        Output("plate-test-status", "children", allow_duplicate=True),
+        Input("monitor-interval", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def _refresh_plate_test_status(_ticks: int) -> str:
+        state = SESSION.plate_test_state or {}
+        if state.get("running"):
+            return state.get("message", "")
+        return no_update
 
     @app.callback(
         Output("footer-gripper-status", "children"),
@@ -7321,6 +7516,14 @@ def register_callbacks(app: Dash) -> None:
                 robot_points,
                 plate_layout,
             )
+            try:
+                plate_result = compute_plate_calibration_from_latest(layout_path)
+                SESSION.plate_reference_homography = plate_result.homography.copy()
+                LOGGER.info("Captured plate reference homography for plate test.")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "Failed to capture plate reference homography: %s", exc
+                )
             _update_robot_calibration_meta(robot_points)
             SESSION.robot_calibration_baseline_px = None
             LOGGER.info("Calibration results applied successfully")

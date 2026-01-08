@@ -60,6 +60,9 @@ After all targets are processed:
 
 - Re-run plate detection any time the plate is repositioned to avoid offset
   errors.
+- The plate test compares the live pose to the reference pose captured during
+  robot calibration. Re-run robot calibration if the plate baseline changes
+  significantly.
 - Keep approach heights conservative during testing to avoid collisions.
 - If the gripper reports **busy**, wait until it clears before issuing another
   grip command.
