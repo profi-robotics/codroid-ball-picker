@@ -1086,10 +1086,15 @@ def _resolve_plate_test_robot_targets(
         dtype=np.float64,
     )
     transform = _rigid_transform(camera_pts, robot_pts)
+    origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
     baseline_transform = _rigid_transform(
         np.asarray(
             [
-                [float(pt.center_mm[0]), float(pt.center_mm[1]), 0.0]
+                [
+                    float(pt.center_mm[0] - origin_mm[0]),
+                    float(pt.center_mm[1] - origin_mm[1]),
+                    0.0,
+                ]
                 for pt in plate_points[:3]
             ],
             dtype=np.float64,
@@ -5506,7 +5511,7 @@ def register_callbacks(app: Dash) -> None:
             (
                 targets,
                 plate_meta,
-                plate_transform,
+                _plate_transform,
                 baseline_transform,
             ) = _resolve_plate_test_robot_targets(
                 DEFAULT_PLATE_PATH
@@ -5601,11 +5606,13 @@ def register_callbacks(app: Dash) -> None:
                 sequence = target["sequence"]
                 robot_xyz = target["robot_xyz"]
                 plate_mm = target.get("plate_mm")
-                z_axis = plate_transform.rotation @ np.array([0.0, 0.0, 1.0])
-                approach_xyz = robot_xyz + (z_axis * approach_mm)
-                pick_xyz = robot_xyz + (z_axis * pick_mm)
-                approach_coord = _base_to_coord(approach_xyz)
-                pick_coord = _base_to_coord(pick_xyz)
+                target_coord = _base_to_coord(robot_xyz)
+                approach_coord = target_coord + np.array(
+                    [0.0, 0.0, approach_mm], dtype=np.float64
+                )
+                pick_coord = target_coord + np.array(
+                    [0.0, 0.0, pick_mm], dtype=np.float64
+                )
                 approach_pose = {
                     "x": float(approach_coord[0]),
                     "y": float(approach_coord[1]),
