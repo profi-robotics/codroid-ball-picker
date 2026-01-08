@@ -24,6 +24,10 @@ Use **Pick & Place → Plate Pick & Place Test** in the calibration UI. Set the
 approach/pick/drop heights and the grip timeout, then run the test. The run
 always re-tracks the plate pose before moving.
 
+After each run, the UI shows a short analysis of commanded vs. reported
+positions and saves a capture log under `data/plate_test_runs/` for deeper
+inspection.
+
 ## Target List
 
 Use the three calibration indentation targets in order: **1 → 2 → 3**. These are
@@ -59,3 +63,5 @@ After all targets are processed:
 - Keep approach heights conservative during testing to avoid collisions.
 - If the gripper reports **busy**, wait until it clears before issuing another
   grip command.
+- Plate test captures include robot postures, commanded poses, and plate marker
+  positions in Coord5 space for offline analysis.
