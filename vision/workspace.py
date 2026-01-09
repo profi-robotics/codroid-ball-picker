@@ -158,17 +158,23 @@ def compute_workspace(
     # This naturally gives us the correct orientation for the workspace
     y_axis_px = np.array([-x_axis_px[1], x_axis_px[0]])
 
-    # Project diagonal vector onto the rotated axes to get width and height
+    # Project diagonal vector onto the rotated axes to get width and height.
+    # If the axis direction is flipped relative to the diagonal, flip it so
+    # +x/+y always point from marker_a toward marker_b.
     width_px = np.dot(diagonal_px, x_axis_px)
     height_px = np.dot(diagonal_px, y_axis_px)
+    if width_px < 0:
+        x_axis_px = -x_axis_px
+        width_px = -width_px
+    if height_px < 0:
+        y_axis_px = -y_axis_px
+        height_px = -height_px
 
-    # Convert to mm (preserve sign to maintain correct direction)
+    # Convert to mm (positive dimensions aligned with corrected axes).
     width_mm = width_px * scale_avg
     height_mm = height_px * scale_avg
-
-    # Take absolute values for dimension storage
-    width_mm_abs = abs(width_mm)
-    height_mm_abs = abs(height_mm)
+    width_mm_abs = float(width_mm)
+    height_mm_abs = float(height_mm)
 
     # Convert pixel axes to mm space (normalized directions in 3D)
     x_dir = np.array([x_axis_px[0], x_axis_px[1], 0.0])

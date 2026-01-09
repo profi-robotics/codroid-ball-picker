@@ -564,6 +564,26 @@ async def _ensure_coordinate5_active(
     )
 
 
+def _log_move_target(
+    label: str,
+    pose: dict,
+    *,
+    coordinate_id: Optional[int] = None,
+) -> None:
+    suffix = f" coord_id={coordinate_id}" if coordinate_id is not None else ""
+    LOGGER.info(
+        "Move %s%s -> x=%.3f, y=%.3f, z=%.3f, a=%.3f, b=%.3f, c=%.3f",
+        label,
+        suffix,
+        float(pose.get("x", 0.0)),
+        float(pose.get("y", 0.0)),
+        float(pose.get("z", 0.0)),
+        float(pose.get("a", 0.0)),
+        float(pose.get("b", 0.0)),
+        float(pose.get("c", 0.0)),
+    )
+
+
 def _set_plate_test_state(
     message: str,
     *,
@@ -2131,7 +2151,7 @@ async def _run_robot_plate_calibration(
         calibration_request_time = time.time()
         payload_points = [
             robot_api.attach_coordinate_to_cpos(
-                point, coordinate_id=ROBOT_COORDINATE_ID
+                point, coordinate_id=0
             )
             for point in cpos_points
         ]
@@ -4005,6 +4025,11 @@ def build_pick_place_tab() -> dmc.Stack:
                 id="teach-drop-position",
                 variant="light",
             ),
+            dmc.Button(
+                "Return to drop position",
+                id="return-to-drop-position",
+                variant="outline",
+            ),
             dmc.Text(id="drop-position-metrics", size="sm"),
             dmc.NumberInput(
                 id="drop-height",
@@ -5584,6 +5609,7 @@ def register_callbacks(app: Dash) -> None:
         Output("pick-place-status", "children"),
         Output("drop-position-metrics", "children", allow_duplicate=True),
         Input("teach-drop-position", "n_clicks"),
+        Input("return-to-drop-position", "n_clicks"),
         Input("execute-pick", "n_clicks"),
         Input("execute-drop", "n_clicks"),
         Input("execute-pick-drop", "n_clicks"),
@@ -5602,6 +5628,7 @@ def register_callbacks(app: Dash) -> None:
     )
     async def _handle_pick_place(
         _teach_drop: int,
+        _return_to_drop: int,
         _pick_clicks: int,
         _drop_action: int,
         _pick_drop_clicks: int,
@@ -5625,7 +5652,7 @@ def register_callbacks(app: Dash) -> None:
         gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
         if trigger is None:
             return no_update, no_update
-        if frame is None and trigger not in {"teach-drop-position", "manual-release", "gripper-open", "gripper-close"}:
+        if frame is None and trigger not in {"teach-drop-position", "return-to-drop-position", "manual-release", "gripper-open", "gripper-close"}:
             return "Camera stream is not running.", drop_text
 
         workspace_def = SESSION.workspace_definition
@@ -5686,6 +5713,43 @@ def register_callbacks(app: Dash) -> None:
                 f"a={pos.a:.1f}, b={pos.b:.1f}, c={pos.c:.1f}"
             )
             return "Drop position recorded from robot pose.", drop_text
+
+        if trigger == "return-to-drop-position":
+            if SESSION.drop_target_robot is None:
+                return "No drop position has been taught yet.", drop_text
+            try:
+                await _ensure_robot_coord5_for_uri(robot_uri)
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed to set CoordinateId 5: {exc}", drop_text
+            session = _get_robot_session()
+            target_coord_id = SESSION.drop_target_coord_id or 5
+            if target_coord_id != _current_coordinate_id(session):
+                return f"Robot is not in coordinate system {target_coord_id}; switch coordinate systems first.", drop_text
+            drop_robot_xyz = SESSION.drop_target_robot
+            drop_orient = SESSION.drop_target_orientation or (0.0, 0.0, 0.0)
+            try:
+                async def _return_to_drop(robot_api: CodroidAPI) -> None:
+                    await robot_api.power_on()
+                    await _ensure_coordinate5_active(robot_api)
+                    target_pose = {
+                        "x": float(drop_robot_xyz[0]),
+                        "y": float(drop_robot_xyz[1]),
+                        "z": float(drop_robot_xyz[2]),
+                        "a": float(drop_orient[0]),
+                        "b": float(drop_orient[1]),
+                        "c": float(drop_orient[2]),
+                    }
+                    _log_move_target(
+                        "return_drop", target_pose, coordinate_id=ROBOT_COORDINATE_ID
+                    )
+                    await robot_api.move_to_cartesian_target_linear(
+                        robot_api.build_target_cpos(**target_pose)
+                    )
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _return_to_drop)
+                SESSION.last_action = "Returned to drop position."
+                return "Robot moved to drop position.", drop_text
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed to move to drop position: {exc}", drop_text
 
         if trigger == "gripper-open":
             return _command_gripper(gripper_max_width, "opened"), drop_text
@@ -5765,9 +5829,18 @@ def register_callbacks(app: Dash) -> None:
         async def _pick_action(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
             await _ensure_coordinate5_active(robot_api)
+            _log_move_target(
+                "pick_approach", approach_pose, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
+            _log_move_target(
+                "pick_pose", pick_pose, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**pick_pose))
             _command_gripper(gripper_close_val, "closed")
+            _log_move_target(
+                "pick_retreat", approach_pose, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
             SESSION.robot_has_object = True
 
@@ -5795,9 +5868,18 @@ def register_callbacks(app: Dash) -> None:
                         "c": float(SESSION.drop_target_orientation[2]),
                     }
                 )
+            _log_move_target(
+                "drop_approach", drop_approach, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
+            _log_move_target(
+                "drop_pose", drop_pose, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_pose))
             _command_gripper(gripper_open_val, "opened")
+            _log_move_target(
+                "drop_retreat", drop_approach, coordinate_id=ROBOT_COORDINATE_ID
+            )
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
             await robot_api.power_off()
             SESSION.robot_has_object = False
@@ -6252,6 +6334,9 @@ def register_callbacks(app: Dash) -> None:
                 label: str = "move",
             ) -> None:
                 _update_step(label)
+                _log_move_target(
+                    label, command_pose, coordinate_id=plate_test_coord_id
+                )
                 await robot_api.set_target_pos_type(
                     robot_api.config.target_pos_types.cpos
                 )
@@ -7987,6 +8072,7 @@ def register_callbacks(app: Dash) -> None:
                 label: str,
                 hold_seconds: float = VERIFICATION_HOLD_SECONDS,
             ) -> None:
+                _log_move_target(label, target, coordinate_id=0)
                 await api.set_target_pos_type(api.config.target_pos_types.cpos)
                 await api.set_target_cpos(target)
                 await api.set_robot_command(api.config.commands.move_target_linear)
