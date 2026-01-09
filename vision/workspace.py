@@ -154,9 +154,9 @@ def compute_workspace(
     else:
         x_axis_px = np.array([1.0, 0.0])
 
-    # Y-axis: perpendicular to x-axis (rotate 90 degrees counterclockwise in pixel space)
-    # This naturally gives us the correct orientation for the workspace
-    y_axis_px = np.array([-x_axis_px[1], x_axis_px[0]])
+    # Y-axis: perpendicular to x-axis (rotate 90 degrees clockwise in pixel space)
+    # Image coordinates use +Y downward.
+    y_axis_px = np.array([x_axis_px[1], -x_axis_px[0]])
 
     # Project diagonal vector onto the rotated axes to get width and height.
     # If the axis direction is flipped relative to the diagonal, flip it so

@@ -1355,7 +1355,8 @@ def _resolve_plate_test_coord5_targets(
         targets.append(
             {
                 "sequence": int(sequence),
-                "coord5_xy": (float(adj_xy[0]), float(adj_xy[1])),
+                "reference_xy": (float(base_xy[0]), float(base_xy[1])),
+                "adjusted_xy": (float(adj_xy[0]), float(adj_xy[1])),
                 "plate_mm": (float(point.center_mm[0]), float(point.center_mm[1])),
             }
         )
@@ -1363,7 +1364,8 @@ def _resolve_plate_test_coord5_targets(
     for marker_id, meta in marker_info.items():
         base_xy = np.asarray(meta["base_xy"], dtype=np.float64)
         adj_xy = (r2 @ base_xy) + t2
-        meta["coord5_xy"] = (float(adj_xy[0]), float(adj_xy[1]))
+        meta["reference_xy"] = (float(base_xy[0]), float(base_xy[1]))
+        meta["adjusted_xy"] = (float(adj_xy[0]), float(adj_xy[1]))
 
     PLATE_STATUS.update(
         {
@@ -5742,9 +5744,32 @@ def register_callbacks(app: Dash) -> None:
                     _log_move_target(
                         "return_drop", target_pose, coordinate_id=ROBOT_COORDINATE_ID
                     )
-                    await robot_api.move_to_cartesian_target_linear(
-                        robot_api.build_target_cpos(**target_pose)
+
+                    # Use the same hold pattern as plate test movements
+                    await robot_api.set_target_pos_type(
+                        robot_api.config.target_pos_types.cpos
                     )
+                    await robot_api.set_target_cpos(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**target_pose),
+                            coordinate_id=ROBOT_COORDINATE_ID,
+                        )
+                    )
+                    await robot_api.set_robot_command(
+                        robot_api.config.commands.move_target_linear
+                    )
+
+                    # Hold with heartbeats for 5 seconds to ensure movement completes
+                    hold_seconds = 5.0
+                    heartbeat_interval = 0.2
+                    deadline = time.monotonic() + hold_seconds
+                    while time.monotonic() < deadline:
+                        await robot_api.send_command_heartbeat()
+                        await asyncio.sleep(heartbeat_interval)
+
+                    await robot_api.clear_target_position()
+                    await robot_api.stop_command()
+
                 await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _return_to_drop)
                 SESSION.last_action = "Returned to drop position."
                 return "Robot moved to drop position.", drop_text
@@ -6376,7 +6401,9 @@ def register_callbacks(app: Dash) -> None:
 
             for target in targets:
                 sequence = target["sequence"]
-                coord_xy = target["coord5_xy"]
+                # Use reference coordinates for coord system 5 (static frame)
+                # Use adjusted coordinates for base system (accounts for plate movement)
+                coord_xy = target["reference_xy"] if not use_base_coordinates else target["adjusted_xy"]
                 plate_mm = target.get("plate_mm")
                 approach_coord = np.array(
                     [coord_xy[0], coord_xy[1], approach_mm], dtype=np.float64
@@ -8016,7 +8043,33 @@ def register_callbacks(app: Dash) -> None:
 
         async def _verification_motion(api: CodroidAPI) -> None:
             await api.power_on()
-            await api.set_current_coordinate_id(0)
+            await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+
+            # Compute coordinate system 5 positions from plate layout
+            try:
+                plate_layout = plate.CalibrationPlate.load(
+                    DEFAULT_PLATE_LAYOUT_PATH)
+                plate_points = plate_layout.robot_calibration_points()
+                if len(plate_points) < 3:
+                    raise RuntimeError(
+                        "Plate layout missing calibration points.")
+                # Positions relative to Point 1 (origin)
+                origin_mm = np.asarray(
+                    plate_points[0].center_mm, dtype=np.float64)
+                coord5_positions = [
+                    np.array([
+                        float(pt.center_mm[0] - origin_mm[0]),
+                        float(pt.center_mm[1] - origin_mm[1]),
+                        0.0,
+                    ], dtype=np.float64)
+                    for pt in plate_points[:3]
+                ]
+            except Exception as exc:
+                LOGGER.warning(
+                    "Failed to load plate layout for verification, using base coordinates: %s", exc)
+                # Fallback to base coordinates if plate layout unavailable
+                await api.set_current_coordinate_id(0)
+                coord5_positions = None
 
             async def _await_motion_then_settle(
                 *,
@@ -8071,10 +8124,17 @@ def register_callbacks(app: Dash) -> None:
                 *,
                 label: str,
                 hold_seconds: float = VERIFICATION_HOLD_SECONDS,
+                coord_id: int,
             ) -> None:
-                _log_move_target(label, target, coordinate_id=0)
+                _log_move_target(label, target, coordinate_id=coord_id)
                 await api.set_target_pos_type(api.config.target_pos_types.cpos)
-                await api.set_target_cpos(target)
+                if coord_id == ROBOT_COORDINATE_ID:
+                    await api.set_target_cpos(
+                        api.attach_coordinate_to_cpos(
+                            target, coordinate_id=ROBOT_COORDINATE_ID)
+                    )
+                else:
+                    await api.set_target_cpos(target)
                 await api.set_robot_command(api.config.commands.move_target_linear)
                 await _await_motion_then_settle(label=label)
                 if hold_seconds > 0:
@@ -8088,19 +8148,32 @@ def register_callbacks(app: Dash) -> None:
             def _safe_z(value: float) -> float:
                 return max(float(value), float(min_z))
 
-            def _target(point: dict, z_value: float) -> dict:
+            def _target(point: dict, z_value: float, coord5_pos: Optional[np.ndarray] = None) -> dict:
                 poscfg = CodroidAPI.build_poscfg(
                     mode=int(point.get("mode", 0))
                 )
-                return api.build_target_cpos(
-                    x=float(point["x"]),
-                    y=float(point["y"]),
-                    z=_safe_z(z_value),
-                    a=float(point.get("a", 0.0)),
-                    b=float(point.get("b", 0.0)),
-                    c=float(point.get("c", 0.0)),
-                    poscfg=poscfg,
-                )
+                if coord5_pos is not None:
+                    # Use coordinate system 5 positions (relative to Point 1)
+                    return api.build_target_cpos(
+                        x=float(coord5_pos[0]),
+                        y=float(coord5_pos[1]),
+                        z=_safe_z(z_value),
+                        a=float(point.get("a", 0.0)),
+                        b=float(point.get("b", 0.0)),
+                        c=float(point.get("c", 0.0)),
+                        poscfg=poscfg,
+                    )
+                else:
+                    # Fallback to base coordinates
+                    return api.build_target_cpos(
+                        x=float(point["x"]),
+                        y=float(point["y"]),
+                        z=_safe_z(z_value),
+                        a=float(point.get("a", 0.0)),
+                        b=float(point.get("b", 0.0)),
+                        c=float(point.get("c", 0.0)),
+                        poscfg=poscfg,
+                    )
 
             p1, p2, p3 = points
             z1 = _safe_z(p1.get("z", 0.0))
@@ -8110,20 +8183,27 @@ def register_callbacks(app: Dash) -> None:
             raise_2 = z2 + VERIFICATION_RAISE_MM
             raise_3 = z3 + VERIFICATION_RAISE_MM
 
-            await _move_linear_with_hold(_target(p3, raise_3), label="p3_raise")
-            await _move_linear_with_hold(_target(p1, raise_1), label="p1_raise")
-            await _move_linear_with_hold(_target(p1, z1), label="p1_down")
-            await _move_linear_with_hold(_target(p1, raise_1), label="p1_raise_return")
-            await _move_linear_with_hold(_target(p2, raise_2), label="p2_raise")
-            await _move_linear_with_hold(_target(p2, z2), label="p2_down")
-            await _move_linear_with_hold(_target(p2, raise_2), label="p2_raise_return")
-            await _move_linear_with_hold(_target(p3, raise_3), label="p3_raise")
-            await _move_linear_with_hold(_target(p3, z3), label="p3_down")
-            await _move_linear_with_hold(_target(p3, raise_3), label="p3_raise_return")
+            # Determine which coordinate system to use
+            coord_id = 0 if coord5_positions is None else ROBOT_COORDINATE_ID
+            c5p1 = coord5_positions[0] if coord5_positions is not None else None
+            c5p2 = coord5_positions[1] if coord5_positions is not None else None
+            c5p3 = coord5_positions[2] if coord5_positions is not None else None
+
+            await _move_linear_with_hold(_target(p3, raise_3, c5p3), label="p3_raise", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p1, raise_1, c5p1), label="p1_raise", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p1, z1, c5p1), label="p1_down", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p1, raise_1, c5p1), label="p1_raise_return", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p2, raise_2, c5p2), label="p2_raise", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p2, z2, c5p2), label="p2_down", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p2, raise_2, c5p2), label="p2_raise_return", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p3, raise_3, c5p3), label="p3_raise", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p3, z3, c5p3), label="p3_down", coord_id=coord_id)
+            await _move_linear_with_hold(_target(p3, raise_3, c5p3), label="p3_raise_return", coord_id=coord_id)
             await _move_linear_with_hold(
-                _target(p1, z1), label="p1_home", hold_seconds=0.0
+                _target(p1, z1, c5p1), label="p1_home", hold_seconds=0.0, coord_id=coord_id
             )
-            await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+            if coord_id != ROBOT_COORDINATE_ID:
+                await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
 
         try:
             await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _verification_motion)
