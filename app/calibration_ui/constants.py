@@ -1,0 +1,53 @@
+"""Shared immutable configuration values for the calibration UI."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Tuple
+
+DEFAULT_BOARD_PATH = Path("data/markers/camera_calibration/camera_calibration_board.json")
+DEFAULT_PLATE_PATH = Path("data/markers/robot_calibration/calibration_plate_layout.json")
+DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
+DEFAULT_WORKSPACE_PATH = Path("data/workspace_definition.npz")
+DEFAULT_ROBOT_CALIBRATION_PATH = Path("data/robot_calibration.json")
+DEFAULT_CAPTURE_DIR = Path("data/calibration")
+DEFAULT_RESOLUTION = (1920, 1080)
+DEFAULT_FPS = 30.0
+DEFAULT_MODEL_DIR = Path("data/models")
+DEFAULT_DROP_MARKER_ID = 30
+DROP_TARGET_PATH = Path("data/drop_target.json")
+SETTINGS_PATH = Path("data/app_settings.json")
+ROBOT_COORDINATE_ID = 5
+PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
+MIN_PLATE_MARKERS = 2
+PLATE_MOVEMENT_THRESHOLD_PX = 500.0
+PLATE_VISIBILITY_MAX_AGE_S = 5.0
+ROBOT_POSTURE_MAX_AGE_S = 2.0
+VERIFICATION_RAISE_MM = 300.0
+ROBOT_COORDINATE_TIMEOUT_S = 60.0
+VERIFICATION_HOLD_SECONDS = 5.0
+VERIFICATION_MOVE_TIMEOUT_S = 20.0
+VERIFICATION_TOLERANCE_MM = 2.0
+VERIFICATION_Z_TOLERANCE_MM = 2.0
+VERIFICATION_SETTLE_S = 1.5
+VERIFICATION_MOTION_EPS_MM = 0.5
+FLANGE_BUTTON_PORT = 41
+FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
+GRIPPER_FORCE_MIN = 20
+GRIPPER_FORCE_MAX = 140
+GRIPPER_FORCE_DEFAULT = 20
+GRIPPER_SPEED_DEFAULT = 10
+GRIPPER_SPEED_MIN = 10
+GRIPPER_CALIBRATION_WIDTH_MM = 5.0
+GRIPPER_OPEN_WIDTH_DEFAULT = 25.0
+GRIPPER_CLOSE_WIDTH_DEFAULT = 5.0
+PLATE_TEST_GRIP_TIMEOUT_S = 2.5
+PLATE_TEST_MOVE_HOLD_S = 1.0
+PLATE_TEST_MOVE_TIMEOUT_S = 25.0
+PLATE_TEST_TOLERANCE_MM = 2.0
+PLATE_TEST_Z_TOLERANCE_MM = 2.0
+PLATE_TEST_SETTLE_S = 1.5
+PLATE_TEST_MOTION_EPS_MM = 0.5
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+ASSETS_DIR = ROOT_DIR / "assets"
