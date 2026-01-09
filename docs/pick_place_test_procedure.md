@@ -63,6 +63,8 @@ After all targets are processed:
 - The plate test compares the live pose to the reference pose captured during
   robot calibration. Re-run robot calibration if the plate baseline changes
   significantly.
+- The plate test uses base-frame poses derived from the saved robot calibration
+  points; re-run robot calibration if the robot controller resets its frames.
 - If the drop-off pose was taught under a different robot coordinate frame or
   before recalibrating the robot, re-teach the drop-off position.
 - Keep approach heights conservative during testing to avoid collisions.

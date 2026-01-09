@@ -92,6 +92,7 @@ PLATE_TEST_TOLERANCE_MM = 2.0
 PLATE_TEST_Z_TOLERANCE_MM = 2.0
 PLATE_TEST_SETTLE_S = 0.4
 PLATE_TEST_MOTION_EPS_MM = 0.5
+PLATE_TEST_USE_BASE_COORDINATES = True
 
 
 class AppSettings(BaseModel):
@@ -509,6 +510,58 @@ def _current_coordinate_id(session: RobotSession) -> Optional[int]:
         return int(coord_id)
     except (TypeError, ValueError):
         return None
+
+
+async def _ensure_robot_coordinate(
+    robot_api: CodroidAPI,
+    expected_id: int,
+    *,
+    timeout_s: float = 5.0,
+    require: bool = True,
+) -> None:
+    """Wait for the robot to report the desired coordinate frame."""
+    await robot_api.set_current_coordinate_id(expected_id)
+    session = _get_robot_session()
+    deadline = time.monotonic() + timeout_s
+    coord_id = None
+    resent = False
+    while time.monotonic() < deadline:
+        status = session.robot_status_snapshot()
+        if isinstance(status, dict):
+            coord_id = status.get("CoordinateId")
+        if coord_id is not None:
+            try:
+                if int(coord_id) == expected_id:
+                    return
+            except (TypeError, ValueError):
+                pass
+        if not resent and time.monotonic() > deadline - (timeout_s / 2):
+            await robot_api.set_current_coordinate_id(expected_id)
+            resent = True
+        await asyncio.sleep(0.1)
+    if not require:
+        LOGGER.warning(
+            "CoordinateId did not switch to %s within %.1fs (last=%s).",
+            expected_id,
+            timeout_s,
+            coord_id,
+        )
+        return
+    raise RuntimeError(
+        f"Failed to switch robot to CoordinateId {expected_id}. "
+        f"Current CoordinateId={coord_id}."
+    )
+
+
+async def _ensure_coordinate5_active(
+    robot_api: CodroidAPI,
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    """Activate CoordinateId 5 before issuing motion commands."""
+    await _ensure_robot_coordinate(
+        robot_api, ROBOT_COORDINATE_ID, timeout_s=timeout_s
+    )
 
 
 def _set_plate_test_state(
@@ -1805,6 +1858,11 @@ def load_workspace_definition(workspace_path: Path = DEFAULT_WORKSPACE_PATH) -> 
     return SESSION.workspace_definition
 
 
+def _clear_workspace_definition(path: Path = DEFAULT_WORKSPACE_PATH) -> None:
+    """Drop any cached workspace definition without deleting the saved file."""
+    SESSION.workspace_definition = None
+
+
 def compute_plate_calibration_from_latest(layout_path: Path) -> plate.PlateCalibration:
     frame, _depth = get_latest_frame()
     if frame is None:
@@ -2581,6 +2639,65 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
         }
     )
     return vis, status, metric
+
+
+def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
+    """Update PLATE_STATUS without modifying the displayed overlay frame."""
+    if not layout_path.exists():
+        PLATE_STATUS.update(
+            {
+                "count": 0,
+                "ok": False,
+                "stable": False,
+                "center_px": None,
+                "movement_px": None,
+                "timestamp": time.time(),
+                "message": "Layout not found",
+            }
+        )
+        return
+    plate_layout = plate.load_plate_layout(layout_path)
+    try:
+        calibration_result = plate.estimate_plate_calibration(
+            frame, plate_layout)
+    except Exception as exc:
+        PLATE_STATUS.update(
+            {
+                "count": 0,
+                "ok": False,
+                "stable": False,
+                "center_px": None,
+                "movement_px": None,
+                "timestamp": time.time(),
+                "message": str(exc),
+            }
+        )
+        return
+
+    status = f"Plate markers detected: {len(calibration_result.detections)}"
+    center_px = _plate_center_px(calibration_result.detections)
+    center_list = None
+    if center_px is not None:
+        center_list = [float(center_px[0]), float(center_px[1])]
+    movement_px = None
+    stable = len(calibration_result.detections) >= MIN_PLATE_MARKERS
+    baseline_px = SESSION.robot_calibration_baseline_px
+    if baseline_px is not None and center_px is not None:
+        movement_px = float(np.linalg.norm(center_px - baseline_px))
+        if movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+            stable = False
+            status = f"Plate moved ({movement_px:.1f}px); hold it steady."
+    PLATE_STATUS.update(
+        {
+            "count": len(calibration_result.detections),
+            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "stable": stable,
+            "center_px": center_list,
+            "movement_px": movement_px,
+            "timestamp": time.time(),
+            "message": status,
+        }
+    )
 
 
 def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
@@ -3517,6 +3634,13 @@ def build_workspace_step_content() -> dmc.Stack:
                 variant="outline",
                 style={"display": "none"},
             ),
+            dmc.Button(
+                "Clear workspace",
+                id="clear-workspace",
+                variant="outline",
+                color="red",
+                size="xs",
+            ),
             dmc.Text(id="workspace-action-status", size="sm", c="dimmed"),
             dmc.Text(id="workspace-metrics", size="sm"),
         ],
@@ -4408,6 +4532,14 @@ async def _probe_robot(uri: str) -> dict:
 async def _with_robot_api(uri: str, action: Callable[[CodroidAPI], Awaitable[None]]) -> None:
     session = _get_robot_session()
     await session.run_with_robot(uri or DEFAULT_ROBOT_URI, action)
+
+
+async def _ensure_robot_coord5_for_uri(uri: Optional[str]) -> None:
+    """Switch the robot to CoordinateId 5 via the provided URI."""
+    async def _activate(api: CodroidAPI) -> None:
+        await _ensure_coordinate5_active(api)
+
+    await _with_robot_api(uri or DEFAULT_ROBOT_URI, _activate)
 
 
 def _run_charuco_task(board_path: Path) -> Callable[[np.ndarray], OverlayResult]:
@@ -5522,6 +5654,10 @@ def register_callbacks(app: Dash) -> None:
         if trigger == "teach-drop-position":
             if workspace_def is None:
                 return "Workspace is not defined; compute it first.", drop_text
+            try:
+                await _ensure_robot_coord5_for_uri(robot_uri)
+            except Exception as exc:  # noqa: BLE001
+                return f"Failed to set CoordinateId 5: {exc}", drop_text
             session = _get_robot_session()
             if not session.posture_seen():
                 return "Robot posture stream not available yet.", drop_text
@@ -5628,6 +5764,7 @@ def register_callbacks(app: Dash) -> None:
 
         async def _pick_action(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
+            await _ensure_coordinate5_active(robot_api)
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
             await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**pick_pose))
             _command_gripper(gripper_close_val, "closed")
@@ -5635,6 +5772,8 @@ def register_callbacks(app: Dash) -> None:
             SESSION.robot_has_object = True
 
         async def _drop_action(robot_api: CodroidAPI, drop_target_mm: Tuple[float, float]) -> None:
+            await robot_api.power_on()
+            await _ensure_coordinate5_active(robot_api)
             drop_pose = _pose_from_workspace_mm(
                 workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
             )
@@ -5793,7 +5932,14 @@ def register_callbacks(app: Dash) -> None:
         session = _get_robot_session()
         if not session.posture_seen():
             return _plate_test_abort("Robot posture stream not available yet.")
-        if SESSION.drop_target_orientation is not None:
+        use_base_coordinates = PLATE_TEST_USE_BASE_COORDINATES
+        if (
+            SESSION.drop_target_orientation is not None
+            and (
+                not use_base_coordinates
+                or SESSION.drop_target_coord_id in (None, 0)
+            )
+        ):
             orientation = {
                 "a": float(SESSION.drop_target_orientation[0]),
                 "b": float(SESSION.drop_target_orientation[1]),
@@ -5830,6 +5976,14 @@ def register_callbacks(app: Dash) -> None:
 
         def _base_to_coord(base_xyz: np.ndarray) -> np.ndarray:
             return baseline_inv_rot @ base_xyz + baseline_inv_trans
+
+        def _coord_to_base(coord_xyz: np.ndarray) -> np.ndarray:
+            return (
+                baseline_transform.rotation @ coord_xyz
+                + baseline_transform.translation
+            )
+
+        plate_test_coord_id = 0 if use_base_coordinates else ROBOT_COORDINATE_ID
 
         def _resolve_coord5_pose(
             posture: RobotPosture,
@@ -5870,65 +6024,83 @@ def register_callbacks(app: Dash) -> None:
             coord_pose["z"] = float(coord_xyz[2])
             return coord_pose
 
+        def _base_pose_from_coord5(coord_pose: dict) -> dict:
+            coord_xyz = np.array(
+                [coord_pose["x"], coord_pose["y"], coord_pose["z"]],
+                dtype=np.float64,
+            )
+            base_xyz = _coord_to_base(coord_xyz)
+            base_pose = dict(coord_pose)
+            base_pose["x"] = float(base_xyz[0])
+            base_pose["y"] = float(base_xyz[1])
+            base_pose["z"] = float(base_xyz[2])
+            return base_pose
+
         if (
             SESSION.drop_target_robot is not None
             and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
         ):
-            drop_pose = {
+            drop_pose_coord5 = {
                 "x": float(SESSION.drop_target_robot[0]),
                 "y": float(SESSION.drop_target_robot[1]),
                 "z": float(SESSION.drop_target_robot[2]) + drop_mm,
                 "poscfg": poscfg,
             }
-            drop_pose.update(orientation)
-            drop_approach = {
+            drop_pose_coord5.update(orientation)
+            drop_approach_coord5 = {
                 "x": float(SESSION.drop_target_robot[0]),
                 "y": float(SESSION.drop_target_robot[1]),
                 "z": float(SESSION.drop_target_robot[2]) + approach_mm,
                 "poscfg": poscfg,
             }
-            drop_approach.update(orientation)
+            drop_approach_coord5.update(orientation)
+            drop_pose_base = _base_pose_from_coord5(drop_pose_coord5)
+            drop_approach_base = _base_pose_from_coord5(drop_approach_coord5)
         else:
             if SESSION.drop_target_robot is not None:
-                base_drop_pose = {
+                drop_pose_base = {
                     "x": float(SESSION.drop_target_robot[0]),
                     "y": float(SESSION.drop_target_robot[1]),
                     "z": float(SESSION.drop_target_robot[2]) + drop_mm,
                     "poscfg": poscfg,
                 }
-                base_drop_pose.update(orientation)
-                base_drop_approach = {
+                drop_pose_base.update(orientation)
+                drop_approach_base = {
                     "x": float(SESSION.drop_target_robot[0]),
                     "y": float(SESSION.drop_target_robot[1]),
                     "z": float(SESSION.drop_target_robot[2]) + approach_mm,
                     "poscfg": poscfg,
                 }
-                base_drop_approach.update(orientation)
+                drop_approach_base.update(orientation)
             else:
-                base_drop_pose = _pose_from_workspace_mm(
+                drop_pose_base = _pose_from_workspace_mm(
                     workspace_def,
                     drop_target_mm[0],
                     drop_target_mm[1],
                     drop_mm,
                 )
-                base_drop_pose["poscfg"] = poscfg
-                base_drop_pose.update(orientation)
-                base_drop_approach = _pose_from_workspace_mm(
+                drop_pose_base["poscfg"] = poscfg
+                drop_pose_base.update(orientation)
+                drop_approach_base = _pose_from_workspace_mm(
                     workspace_def,
                     drop_target_mm[0],
                     drop_target_mm[1],
                     approach_mm,
                 )
-                base_drop_approach["poscfg"] = poscfg
-                base_drop_approach.update(orientation)
-            drop_pose = _coord5_pose_from_base(base_drop_pose)
-            drop_approach = _coord5_pose_from_base(base_drop_approach)
+                drop_approach_base["poscfg"] = poscfg
+                drop_approach_base.update(orientation)
+            drop_pose_coord5 = _coord5_pose_from_base(drop_pose_base)
+            drop_approach_coord5 = _coord5_pose_from_base(drop_approach_base)
+        drop_pose = drop_pose_base if use_base_coordinates else drop_pose_coord5
+        drop_approach = (
+            drop_approach_base if use_base_coordinates else drop_approach_coord5
+        )
         gripper_min_width, gripper_max_width = _resolve_gripper_limits()
         summary = {"attempts": 0, "successes": 0, "details": []}
 
         capture: dict = {
             "timestamp": time.time(),
-            "coordinate_id": ROBOT_COORDINATE_ID,
+            "coordinate_id": plate_test_coord_id,
             "approach_height_mm": float(approach_mm),
             "pick_height_mm": float(pick_mm),
             "drop_height_mm": float(drop_mm),
@@ -5937,29 +6109,35 @@ def register_callbacks(app: Dash) -> None:
             "plate_meta": plate_meta,
             "drop_target": {
                 "workspace_mm": drop_target_mm,
-                "coord5_pose": drop_pose,
-                "coord5_approach": drop_approach,
+                "coord5_pose": drop_pose_coord5,
+                "coord5_approach": drop_approach_coord5,
             },
             "moves": [],
             "grip_events": [],
         }
 
-        def _record_move(label: str, command_pose: dict) -> None:
+        def _record_move(
+            label: str, command_pose: dict, command_coord_id: int
+        ) -> None:
             posture = session.position_snapshot()
             coord5_xyz, coord5_basis = _resolve_coord5_pose(
                 posture, target=command_pose
             )
             coord_id = _current_coordinate_id(session)
+            if command_coord_id == ROBOT_COORDINATE_ID:
+                command_coord5 = command_pose
+            else:
+                command_coord5 = _coord5_pose_from_base(command_pose)
             capture["moves"].append(
                 {
                     "label": label,
                     "command_coord5": {
-                        "x": float(command_pose["x"]),
-                        "y": float(command_pose["y"]),
-                        "z": float(command_pose["z"]),
-                        "a": float(command_pose.get("a", 0.0)),
-                        "b": float(command_pose.get("b", 0.0)),
-                        "c": float(command_pose.get("c", 0.0)),
+                        "x": float(command_coord5["x"]),
+                        "y": float(command_coord5["y"]),
+                        "z": float(command_coord5["z"]),
+                        "a": float(command_coord5.get("a", 0.0)),
+                        "b": float(command_coord5.get("b", 0.0)),
+                        "c": float(command_coord5.get("c", 0.0)),
                     },
                     "posture_base": _posture_to_dict(posture),
                     "posture_coord5": {
@@ -5977,7 +6155,7 @@ def register_callbacks(app: Dash) -> None:
 
         async def _run_sequence(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
-            await robot_api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
+            await robot_api.set_current_coordinate_id(plate_test_coord_id)
             speed_rate = max(float(SESSION.robot_speed_rate), 0.1)
             await robot_api.set_manual_move_rate(speed_rate)
             capture["robot_speed_rate"] = speed_rate
@@ -5987,42 +6165,63 @@ def register_callbacks(app: Dash) -> None:
                 message = f"Plate test: {label.replace('_', ' ')} (speed {speed_percent}%)"
                 _set_plate_test_state(message, running=True, label=label)
 
-            async def _await_coord5_motion_settle(
+            def _pose_xyz(
+                posture: RobotPosture,
+                command_coord_id: int,
+                target: dict,
+            ) -> np.ndarray:
+                if command_coord_id == ROBOT_COORDINATE_ID:
+                    coord5_xyz, _coord_basis = _resolve_coord5_pose(
+                        posture, target=target
+                    )
+                    return coord5_xyz
+                return np.array(
+                    [
+                        float(posture.x),
+                        float(posture.y),
+                        float(posture.z),
+                    ],
+                    dtype=np.float64,
+                )
+
+            async def _await_motion_settle(
                 target: dict,
                 *,
                 label: str,
+                command_coord_id: int,
                 timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
                 settle_s: float = PLATE_TEST_SETTLE_S,
                 motion_eps_mm: float = PLATE_TEST_MOTION_EPS_MM,
             ) -> None:
                 deadline = time.monotonic() + timeout_s
                 start = session.position_snapshot()
-                coord5_xyz, _coord_basis = _resolve_coord5_pose(
-                    start, target=target
+                start_xyz = _pose_xyz(start, command_coord_id, target)
+                target_xyz = np.array(
+                    [
+                        float(target["x"]),
+                        float(target["y"]),
+                        float(target["z"]),
+                    ],
+                    dtype=np.float64,
                 )
                 if (
-                    abs(float(coord5_xyz[0]) - float(target["x"]))
+                    abs(float(start_xyz[0]) - float(target_xyz[0]))
                     <= PLATE_TEST_TOLERANCE_MM
-                    and abs(float(coord5_xyz[1]) - float(target["y"]))
+                    and abs(float(start_xyz[1]) - float(target_xyz[1]))
                     <= PLATE_TEST_TOLERANCE_MM
-                    and abs(float(coord5_xyz[2]) - float(target["z"]))
+                    and abs(float(start_xyz[2]) - float(target_xyz[2]))
                     <= PLATE_TEST_Z_TOLERANCE_MM
                 ):
                     return
-                last = start
+                last_xyz = start_xyz
                 moved = False
                 settle_deadline: Optional[float] = None
                 while time.monotonic() < deadline:
                     await robot_api.send_command_heartbeat()
                     await asyncio.sleep(0.2)
                     curr = session.position_snapshot()
-                    base_delta = np.linalg.norm(
-                        [
-                            float(curr.x) - float(last.x),
-                            float(curr.y) - float(last.y),
-                            float(curr.z) - float(last.z),
-                        ]
-                    )
+                    curr_xyz = _pose_xyz(curr, command_coord_id, target)
+                    base_delta = float(np.linalg.norm(curr_xyz - last_xyz))
                     if base_delta > motion_eps_mm:
                         moved = True
                         settle_deadline = time.monotonic() + settle_s
@@ -6031,14 +6230,8 @@ def register_callbacks(app: Dash) -> None:
                             settle_deadline = time.monotonic() + settle_s
                         elif time.monotonic() >= settle_deadline:
                             return
-                    last = curr
-                total = np.linalg.norm(
-                    [
-                        float(last.x) - float(start.x),
-                        float(last.y) - float(start.y),
-                        float(last.z) - float(start.z),
-                    ]
-                )
+                    last_xyz = curr_xyz
+                total = float(np.linalg.norm(last_xyz - start_xyz))
                 if not moved:
                     status = session.robot_status_snapshot()
                     LOGGER.warning(
@@ -6065,13 +6258,17 @@ def register_callbacks(app: Dash) -> None:
                 await robot_api.set_target_cpos(
                     robot_api.attach_coordinate_to_cpos(
                         robot_api.build_target_cpos(**command_pose),
-                        coordinate_id=ROBOT_COORDINATE_ID,
+                        coordinate_id=plate_test_coord_id,
                     )
                 )
                 await robot_api.set_robot_command(
                     robot_api.config.commands.move_target_linear
                 )
-                await _await_coord5_motion_settle(command_pose, label=label)
+                await _await_motion_settle(
+                    command_pose,
+                    label=label,
+                    command_coord_id=plate_test_coord_id,
+                )
                 if hold_seconds > 0:
                     deadline = time.monotonic() + hold_seconds
                     while time.monotonic() < deadline:
@@ -6079,7 +6276,7 @@ def register_callbacks(app: Dash) -> None:
                         await asyncio.sleep(heartbeat_interval)
                 await robot_api.clear_target_position()
                 await robot_api.stop_command()
-                _record_move(label, command_pose)
+                _record_move(label, command_pose, plate_test_coord_id)
 
             await _move_linear_with_hold(
                 drop_approach,
@@ -6102,20 +6299,44 @@ def register_callbacks(app: Dash) -> None:
                 pick_coord = np.array(
                     [coord_xy[0], coord_xy[1], pick_mm], dtype=np.float64
                 )
-                approach_pose = {
+                approach_pose_coord5 = {
                     "x": float(approach_coord[0]),
                     "y": float(approach_coord[1]),
                     "z": float(approach_coord[2]),
                     "poscfg": poscfg,
                 }
-                pick_pose = {
+                pick_pose_coord5 = {
                     "x": float(pick_coord[0]),
                     "y": float(pick_coord[1]),
                     "z": float(pick_coord[2]),
                     "poscfg": poscfg,
                 }
-                approach_pose.update(orientation)
-                pick_pose.update(orientation)
+                approach_pose_coord5.update(orientation)
+                pick_pose_coord5.update(orientation)
+                approach_base = _coord_to_base(approach_coord)
+                pick_base = _coord_to_base(pick_coord)
+                approach_pose_base = {
+                    "x": float(approach_base[0]),
+                    "y": float(approach_base[1]),
+                    "z": float(approach_base[2]),
+                    "poscfg": poscfg,
+                }
+                pick_pose_base = {
+                    "x": float(pick_base[0]),
+                    "y": float(pick_base[1]),
+                    "z": float(pick_base[2]),
+                    "poscfg": poscfg,
+                }
+                approach_pose_base.update(orientation)
+                pick_pose_base.update(orientation)
+                approach_pose = (
+                    approach_pose_base
+                    if use_base_coordinates
+                    else approach_pose_coord5
+                )
+                pick_pose = (
+                    pick_pose_base if use_base_coordinates else pick_pose_coord5
+                )
                 cycle_started_at = time.monotonic()
                 await _move_linear_with_hold(
                     approach_pose,
@@ -6881,28 +7102,6 @@ def register_callbacks(app: Dash) -> None:
         return disabled, disabled, disabled, disabled, disabled
 
     @app.callback(
-        Output("calibrate-camera", "disabled"),
-        Output("markers-detected-icon", "color"),
-        Input("camera-calibration-metrics", "children"),
-        prevent_initial_call=True,
-    )
-    def _update_calibrate_button_state(metrics: str) -> Tuple[bool, str]:
-        """Enable Calibrate button and update icon when markers are detected (>= 16)"""
-        if not metrics or "ChArUco corners:" not in metrics:
-            return True, "gray"
-        try:
-            # Extract corner count from "ChArUco corners: X"
-            parts = metrics.split(":")
-            if len(parts) >= 2:
-                count = int(parts[-1].strip().split()[0])
-                is_disabled = count < 16
-                color = "red" if is_disabled else "green"
-                return is_disabled, color
-        except (ValueError, IndexError):
-            pass
-        return True, "gray"
-
-    @app.callback(
         Output("camera-calibration-action", "children"),
         Output("calibration-progress-store", "data"),
         Input("calibrate-camera", "n_clicks"),
@@ -7030,6 +7229,7 @@ def register_callbacks(app: Dash) -> None:
         Output("workspace-action-status", "children"),
         Input("compute-workspace", "n_clicks"),
         Input("use-existing-workspace", "n_clicks"),
+        Input("clear-workspace", "n_clicks"),
         State("settings-marker-a", "value"),
         State("settings-marker-b", "value"),
         State("settings-marker-size", "value"),
@@ -7038,6 +7238,7 @@ def register_callbacks(app: Dash) -> None:
     def _handle_workspace_action(
         _clicks: int,
         _use_existing: int,
+        _clear: int,
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
@@ -7052,7 +7253,11 @@ def register_callbacks(app: Dash) -> None:
             # Load calibration bundle from disk if not already in memory
             if SESSION.calibration_bundle is None and DEFAULT_BUNDLE_PATH.exists():
                 load_calibration_bundle(DEFAULT_BUNDLE_PATH)
-            if callback_context.triggered_id == "use-existing-workspace":
+            trigger = callback_context.triggered_id
+            if trigger == "clear-workspace":
+                _clear_workspace_definition(DEFAULT_WORKSPACE_PATH)
+                return "Workspace definition cleared; robot movement unrestricted."
+            if trigger == "use-existing-workspace":
                 ws = load_workspace_definition(DEFAULT_WORKSPACE_PATH)
                 return (
                     f"Workspace loaded from {DEFAULT_WORKSPACE_PATH}: "
@@ -7085,6 +7290,8 @@ def register_callbacks(app: Dash) -> None:
         Output("plate-metrics", "children"),
         Output("detection-metrics", "children"),
         Output("plate-detection-state", "data"),
+        Output("calibrate-camera", "disabled"),
+        Output("markers-detected-icon", "color"),
         Input("camera-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
@@ -7103,8 +7310,23 @@ def register_callbacks(app: Dash) -> None:
         marker_b: Optional[float],
         marker_size: Optional[float],
         overlay_mode: Optional[str],
-    ) -> Tuple[str, str, str, str, str, str, dict]:
+    ) -> Tuple[str, str, str, str, str, str, dict, bool, str]:
         frame, _depth = get_latest_frame()
+
+        def _camera_calibration_state(
+            metrics_text: str, step: int
+        ) -> Tuple[bool, str]:
+            if step != 0:
+                return True, "gray"
+            if not metrics_text or "ChArUco corners:" not in metrics_text:
+                return True, "gray"
+            try:
+                count = int(metrics_text.split(":")[-1].strip().split()[0])
+                is_disabled = count < 16
+                return is_disabled, "green" if not is_disabled else "red"
+            except (ValueError, IndexError):
+                return True, "gray"
+
         plate_state = {
             "count": 0,
             "ok": False,
@@ -7135,6 +7357,8 @@ def register_callbacks(app: Dash) -> None:
                 "Plate error: --",
                 "Detections: --",
                 plate_state,
+                True,
+                "gray",
             )
 
         # Check if this is a new frame by comparing object identity
@@ -7185,6 +7409,10 @@ def register_callbacks(app: Dash) -> None:
         if task is not None:
             FRAME_PROCESSOR.submit(task, frame)
             overlay = FRAME_PROCESSOR.get_latest(task.key)
+            if calibration_step == 1 and task.key != "calibration-plate":
+                _refresh_plate_status(frame, plate_path)
+        elif calibration_step == 1:
+            _refresh_plate_status(frame, plate_path)
 
         vis = overlay.vis if overlay else frame
         status_text = overlay.status if overlay else "No overlay applied."
@@ -7206,6 +7434,9 @@ def register_callbacks(app: Dash) -> None:
                     MJPEG_STREAM.add_frame(vis)
                 overlay_fps_text = _format_fps(
                     capture_fps, MJPEG_STREAM.get_fps())
+                calibrate_disabled, marker_color = _camera_calibration_state(
+                    metric_text, calibration_step
+                )
                 return (
                     status_text,
                     overlay_fps_text,
@@ -7214,19 +7445,27 @@ def register_callbacks(app: Dash) -> None:
                     "Plate error: --",
                     "Detections: --",
                     plate_state,
+                    calibrate_disabled,
+                    marker_color,
                 )
             if is_new_frame:
                 MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
                 capture_fps, MJPEG_STREAM.get_fps())
+            metrics_text = "ChArUco corners: --"
+            calibrate_disabled, marker_color = _camera_calibration_state(
+                metrics_text, calibration_step
+            )
             return (
                 status_text,
                 overlay_fps_text,
-                "ChArUco corners: --",
+                metrics_text,
                 "Workspace: --",
                 metric_text,
                 "Detections: --",
                 plate_state,
+                calibrate_disabled,
+                marker_color,
             )
 
         if tab == "applications":
@@ -7234,28 +7473,40 @@ def register_callbacks(app: Dash) -> None:
                 MJPEG_STREAM.add_frame(vis)
             overlay_fps_text = _format_fps(
                 capture_fps, MJPEG_STREAM.get_fps())
+            metrics_text = "ChArUco corners: --"
+            calibrate_disabled, marker_color = _camera_calibration_state(
+                metrics_text, calibration_step
+            )
             return (
                 status_text,
                 overlay_fps_text,
-                "ChArUco corners: --",
+                metrics_text,
                 metric_text if application_tab == "workspace" else "Workspace: --",
                 "Plate error: --",
                 metric_text if application_tab == "pick-place" else "Detections: --",
                 plate_state,
+                calibrate_disabled,
+                marker_color,
             )
 
         # Monitoring or any other tab: keep stream alive and surface metrics.
         if is_new_frame:
             MJPEG_STREAM.add_frame(vis)
         overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
+        metrics_text = "ChArUco corners: --"
+        calibrate_disabled, marker_color = _camera_calibration_state(
+            metrics_text, calibration_step
+        )
         return (
             status_text,
             overlay_fps_text,
-            "ChArUco corners: --",
+            metrics_text,
             "Workspace: --",
             "Plate error: --",
             "Detections: --",
             plate_state,
+            calibrate_disabled,
+            marker_color,
         )
 
     @app.callback(
