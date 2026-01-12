@@ -107,11 +107,11 @@ COORD5_MAX_Z_MM = 0.0
 
 def _clamp_z_for_coord5(z: float, *, use_base_coords: bool) -> float:
     """Clamp Z to safe maximum when using coordinate system 5.
-    
+
     CRITICAL: Coord5 Z-axis is INVERTED:
     - Negative Z = UP (safe, away from table)
     - Positive Z = DOWN (dangerous, toward table)
-    
+
     This prevents the robot from diving into the table by clamping
     Z values that are TOO POSITIVE (too far down).
     """
@@ -1371,10 +1371,12 @@ def _resolve_plate_test_coord5_targets(
         ),
         robot_pts,
     )
-    
+
     # Debug logging for coordinate transformation
-    LOGGER.info("Baseline transform rotation:\n%s", baseline_transform.rotation)
-    LOGGER.info("Baseline transform translation: %s", baseline_transform.translation)
+    LOGGER.info("Baseline transform rotation:\n%s",
+                baseline_transform.rotation)
+    LOGGER.info("Baseline transform translation: %s",
+                baseline_transform.translation)
     LOGGER.info("Plate points (relative to P1): %s",
                 [(pt.center_mm[0] - origin_mm[0], pt.center_mm[1] - origin_mm[1])
                  for pt in plate_points[:3]])
@@ -5701,7 +5703,8 @@ def register_callbacks(app: Dash) -> None:
             return "Camera stream is not running.", drop_text
 
         workspace_def = SESSION.workspace_definition
-        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
+        # Negative = UP from table in coord5
+        approach_mm = _safe_float(approach_height, -30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
 
@@ -5827,7 +5830,8 @@ def register_callbacks(app: Dash) -> None:
 
         if workspace_def is None:
             return "Workspace is not defined; run workspace calibration first.", drop_text
-        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
+        # Negative = UP from table in coord5
+        approach_mm = _safe_float(approach_height, -30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
         gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
@@ -6073,7 +6077,8 @@ def register_callbacks(app: Dash) -> None:
         if frame is None:
             return _plate_test_abort("Camera stream is not running.")
 
-        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
+        # Negative = UP from table in coord5
+        approach_mm = _safe_float(approach_height, -30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
         grip_timeout = _safe_float(grip_timeout_s, PLATE_TEST_GRIP_TIMEOUT_S)
@@ -6464,7 +6469,7 @@ def register_callbacks(app: Dash) -> None:
                 # Use adjusted coordinates for base system (accounts for plate movement)
                 coord_xy = target["reference_xy"] if not use_base_coordinates else target["adjusted_xy"]
                 plate_mm = target.get("plate_mm")
-                
+
                 # Debug logging to diagnose coordinate issues
                 LOGGER.info(
                     "Target %d: plate_mm=(%.1f, %.1f), reference_xy=(%.1f, %.1f), adjusted_xy=(%.1f, %.1f), using %s",
@@ -6477,7 +6482,7 @@ def register_callbacks(app: Dash) -> None:
                     target["adjusted_xy"][1],
                     "coord5" if not use_base_coordinates else "base",
                 )
-                
+
                 approach_coord = np.array(
                     [coord_xy[0], coord_xy[1], approach_mm], dtype=np.float64
                 )
