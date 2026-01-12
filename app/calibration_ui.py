@@ -1346,6 +1346,11 @@ def _resolve_plate_test_coord5_targets(
         np.vstack(marker_curr),
     )
 
+    # Debug: log plate offset tracking transformation
+    LOGGER.info("Plate offset tracking: detected %d markers", len(marker_base))
+    LOGGER.info("Plate offset r2 (rotation):\n%s", r2)
+    LOGGER.info("Plate offset t2 (translation): %s", t2)
+
     robot_pts = np.asarray(
         [
             [
