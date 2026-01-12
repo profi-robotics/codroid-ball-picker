@@ -725,6 +725,298 @@ ROBOT_CALIBRATION_GUIDANCE = {
 }
 
 
+class OperationAbort(RuntimeError):
+    """Raised when an operation should abort immediately."""
+
+
+class OperationPaused(RuntimeError):
+    """Raised when an operation should pause and wait for resume."""
+
+
+OPERATION_STATE_LOCK = threading.Lock()
+OPERATION_STATE = {
+    "status": "idle",
+    "source": "",
+    "label": "",
+    "message": "Program idle.",
+    "run_id": 0,
+    "started_at": None,
+    "updated_at": time.time(),
+    "pause_reason": None,
+}
+
+ROBOT_ERROR_LOCK = threading.Lock()
+ROBOT_ERROR_STATE = {
+    "active": False,
+    "error_type": None,
+    "message": "",
+    "detected_at": None,
+    "acknowledged": False,
+    "physical_pressed": False,
+}
+
+
+def _operation_snapshot() -> dict:
+    with OPERATION_STATE_LOCK:
+        return dict(OPERATION_STATE)
+
+
+def _update_operation_state(**updates: Any) -> dict:
+    with OPERATION_STATE_LOCK:
+        OPERATION_STATE.update(updates)
+        OPERATION_STATE["updated_at"] = time.time()
+        return dict(OPERATION_STATE)
+
+
+def _begin_operation(source: str, label: str, message: Optional[str] = None) -> int:
+    with OPERATION_STATE_LOCK:
+        status = OPERATION_STATE.get("status", "idle")
+        if status in {"running", "paused"}:
+            raise RuntimeError("Another program is already running.")
+        run_id = int(OPERATION_STATE.get("run_id", 0)) + 1
+        OPERATION_STATE.update(
+            {
+                "status": "running",
+                "source": source,
+                "label": label,
+                "message": message or f"{label} running.",
+                "run_id": run_id,
+                "started_at": time.time(),
+                "pause_reason": None,
+            }
+        )
+        OPERATION_STATE["updated_at"] = time.time()
+        return run_id
+
+
+def _finish_operation(run_id: int, *, status: str, message: str) -> None:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("run_id") != run_id:
+            return
+        OPERATION_STATE.update(
+            {
+                "status": status,
+                "message": message,
+                "source": "" if status == "idle" else OPERATION_STATE.get("source", ""),
+                "label": "" if status == "idle" else OPERATION_STATE.get("label", ""),
+                "pause_reason": None,
+            }
+        )
+        if status == "idle":
+            OPERATION_STATE["started_at"] = None
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _update_operation_message(message: str, *, label: Optional[str] = None) -> None:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("status") not in {"running", "paused"}:
+            return
+        OPERATION_STATE["message"] = message
+        if label is not None:
+            OPERATION_STATE["label"] = label
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _pause_operation(reason: str, message: str) -> None:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("status") != "running":
+            return
+        OPERATION_STATE.update(
+            {
+                "status": "paused",
+                "pause_reason": reason,
+                "message": message,
+            }
+        )
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _resume_operation(message: str) -> None:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("status") != "paused":
+            return
+        OPERATION_STATE.update(
+            {
+                "status": "running",
+                "pause_reason": None,
+                "message": message,
+            }
+        )
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _request_stop_operation(message: str) -> None:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("status") not in {"running", "paused"}:
+            return
+        OPERATION_STATE.update(
+            {
+                "status": "stopping",
+                "message": message,
+            }
+        )
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _reset_operation_state(message: str) -> None:
+    with OPERATION_STATE_LOCK:
+        OPERATION_STATE.update(
+            {
+                "status": "idle",
+                "source": "",
+                "label": "",
+                "message": message,
+                "pause_reason": None,
+                "started_at": None,
+                "run_id": int(OPERATION_STATE.get("run_id", 0)) + 1,
+            }
+        )
+        OPERATION_STATE["updated_at"] = time.time()
+
+
+def _operation_status(run_id: int) -> str:
+    with OPERATION_STATE_LOCK:
+        if OPERATION_STATE.get("run_id") != run_id:
+            return "superseded"
+        return OPERATION_STATE.get("status", "idle")
+
+
+def _ensure_operation_active(run_id: int) -> None:
+    status = _operation_status(run_id)
+    if status == "paused":
+        raise OperationPaused("Program paused.")
+    if status in {"stopping", "stopped", "idle", "superseded"}:
+        raise OperationAbort("Program stopped.")
+
+
+async def _wait_for_operation_resume(run_id: int) -> None:
+    while True:
+        status = _operation_status(run_id)
+        if status == "paused":
+            await asyncio.sleep(0.2)
+            continue
+        if status in {"stopping", "stopped", "idle", "superseded"}:
+            raise OperationAbort("Program stopped.")
+        return
+
+
+def _error_snapshot() -> dict:
+    with ROBOT_ERROR_LOCK:
+        return dict(ROBOT_ERROR_STATE)
+
+
+def _update_robot_error_state(**updates: Any) -> dict:
+    with ROBOT_ERROR_LOCK:
+        ROBOT_ERROR_STATE.update(updates)
+        return dict(ROBOT_ERROR_STATE)
+
+
+def _activate_robot_error(
+    error_type: str,
+    *,
+    message: str,
+    physical_pressed: bool,
+) -> dict:
+    with ROBOT_ERROR_LOCK:
+        is_new = (
+            not ROBOT_ERROR_STATE.get("active")
+            or ROBOT_ERROR_STATE.get("error_type") != error_type
+        )
+        ROBOT_ERROR_STATE.update(
+            {
+                "active": True,
+                "error_type": error_type,
+                "message": message,
+                "detected_at": time.time(),
+                "acknowledged": False,
+                "physical_pressed": physical_pressed,
+            }
+        )
+        snapshot = dict(ROBOT_ERROR_STATE)
+    if is_new:
+        _pause_operation(error_type, message)
+    return snapshot
+
+
+def _acknowledge_robot_error() -> dict:
+    with ROBOT_ERROR_LOCK:
+        error_type = ROBOT_ERROR_STATE.get("error_type")
+        message = ROBOT_ERROR_STATE.get("message", "")
+    return _update_robot_error_state(
+        active=False,
+        acknowledged=True,
+        error_type=error_type,
+        message=message,
+        physical_pressed=False,
+    )
+
+
+def _coerce_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes", "enabled"}
+    return False
+
+
+def _status_flag(status: dict, keys: Tuple[str, ...]) -> bool:
+    for key in keys:
+        if key in status and _coerce_truthy(status.get(key)):
+            return True
+    return False
+
+
+def _alarm_contains(status: dict, keywords: Tuple[str, ...]) -> bool:
+    alarms = status.get("alarms") or status.get("alarm") or []
+    if isinstance(alarms, dict):
+        alarms = [alarms]
+    if not isinstance(alarms, list):
+        alarms = [alarms]
+    for alarm in alarms:
+        text = str(alarm).lower()
+        if any(keyword in text for keyword in keywords):
+            return True
+    return False
+
+
+def _detect_emergency_stop_status(status: dict) -> bool:
+    emergency_keys = (
+        "emergency_stop",
+        "emergencyStop",
+        "estop",
+        "e_stop",
+        "EmergencyStop",
+        "EStop",
+    )
+    if _status_flag(status, emergency_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, emergency_keys):
+        return True
+    if _alarm_contains(status, ("emergency", "e-stop", "estop")):
+        return True
+    payload_text = str(status).lower()
+    return "emergency" in payload_text and "stop" in payload_text
+
+
+def _detect_overspeed_status(status: dict) -> bool:
+    overspeed_keys = (
+        "overspeed",
+        "over_speed",
+        "overSpeed",
+        "speed_alarm",
+        "overspeed_alarm",
+    )
+    if _status_flag(status, overspeed_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, overspeed_keys):
+        return True
+    return _alarm_contains(status, ("overspeed", "over speed"))
+
+
 def _restore_persisted_state() -> None:
     if SESSION.calibration_bundle is None and DEFAULT_BUNDLE_PATH.exists():
         try:
@@ -3184,6 +3476,51 @@ def build_footer() -> dmc.AppShellFooter:
         },
     )
 
+    program_pause_button = dmc.Button(
+        "Pause",
+        id="program-pause",
+        color="yellow",
+        size="sm",
+        radius="md",
+        variant="filled",
+        leftSection=dmc.ActionIcon(
+            "⏸",
+            size="sm",
+            variant="transparent",
+            color="black",
+        ),
+        style={
+            "fontWeight": 700,
+            "minWidth": "110px",
+        },
+    )
+
+    program_stop_button = dmc.Button(
+        "Stop",
+        id="program-stop",
+        color="red",
+        size="sm",
+        radius="md",
+        variant="outline",
+        style={
+            "fontWeight": 700,
+            "minWidth": "90px",
+        },
+    )
+
+    program_reset_button = dmc.Button(
+        "Reset",
+        id="program-reset",
+        color="gray",
+        size="sm",
+        radius="md",
+        variant="light",
+        style={
+            "fontWeight": 700,
+            "minWidth": "90px",
+        },
+    )
+
     stop_column = dmc.Stack(
         [
             dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
@@ -3203,6 +3540,19 @@ def build_footer() -> dmc.AppShellFooter:
             ),
         ],
         gap=6,
+        align="center",
+    )
+
+    program_control_column = dmc.Stack(
+        [
+            dmc.Text("Program control", fw=700, size="sm", c="orange"),
+            dmc.Group(
+                [program_pause_button, program_stop_button, program_reset_button],
+                gap="xs",
+            ),
+            dmc.Text(id="program-status-text", size="xs", c="dimmed"),
+        ],
+        gap=4,
         align="center",
     )
 
@@ -3387,7 +3737,7 @@ def build_footer() -> dmc.AppShellFooter:
     footer_header = html.Div(
         [
             dmc.Group(
-                [stop_column, auto_control_column],
+                [stop_column, auto_control_column, program_control_column],
                 gap="lg",
                 align="center",
                 wrap="wrap",
@@ -3735,6 +4085,114 @@ def build_robot_calibration_modal() -> dmc.Modal:
                         dmc.Button(
                             "Close",
                             id="robot-calibration-modal-close",
+                            variant="outline",
+                        ),
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
+def build_emergency_stop_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="emergency-stop-modal",
+        opened=False,
+        centered=True,
+        size="xl",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        overlayProps={"opacity": 0.65, "color": "#000"},
+        children=dmc.Stack(
+            [
+                dmc.Text(
+                    "Emergency stop triggered",
+                    fw=700,
+                    size="xl",
+                    c="red",
+                ),
+                dmc.Text(
+                    "The current program has been paused. Clear the physical E-stop "
+                    "and acknowledge to continue.",
+                    size="sm",
+                    c="dimmed",
+                ),
+                dmc.Alert(
+                    id="emergency-stop-modal-text",
+                    title="Emergency stop status",
+                    color="red",
+                    variant="light",
+                    children="Emergency stop detected.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Acknowledge",
+                            id="emergency-ack",
+                            color="red",
+                            size="md",
+                            disabled=True,
+                        )
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
+def build_overspeed_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="overspeed-modal",
+        opened=False,
+        centered=True,
+        size="xl",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        overlayProps={"opacity": 0.65, "color": "#000"},
+        children=dmc.Stack(
+            [
+                dmc.Text(
+                    "Overspeed detected",
+                    fw=700,
+                    size="xl",
+                    c="orange",
+                ),
+                dmc.Text(
+                    "The program has been paused. Choose how to proceed.",
+                    size="sm",
+                    c="dimmed",
+                ),
+                dmc.Alert(
+                    id="overspeed-modal-text",
+                    title="Overspeed status",
+                    color="orange",
+                    variant="light",
+                    children="Overspeed alarm detected.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Continue",
+                            id="overspeed-continue",
+                            color="teal",
+                            size="md",
+                        ),
+                        dmc.Button(
+                            "Stay paused",
+                            id="overspeed-stay-paused",
+                            color="yellow",
+                            size="md",
+                            variant="outline",
+                        ),
+                        dmc.Button(
+                            "Cancel & reset",
+                            id="overspeed-reset",
+                            color="red",
+                            size="md",
                             variant="outline",
                         ),
                     ],
@@ -4694,6 +5152,14 @@ def build_layout() -> dmc.MantineProvider:
                     data={"running": False, "message": ""},
                 ),
                 dcc.Store(
+                    id="robot-operation-state",
+                    data=_operation_snapshot(),
+                ),
+                dcc.Store(
+                    id="robot-error-state",
+                    data=_error_snapshot(),
+                ),
+                dcc.Store(
                     id="prerequisites-state",
                     data={
                         "camera_calibrated": False,
@@ -4736,6 +5202,8 @@ def build_layout() -> dmc.MantineProvider:
                          style={"display": "none"}),
                 build_setup_drawer(),
                 build_robot_calibration_modal(),
+                build_emergency_stop_modal(),
+                build_overspeed_modal(),
                 dmc.AppShell(
                     padding="md",
                     className="app-shell",
@@ -5562,25 +6030,37 @@ def register_callbacks(app: Dash) -> None:
         Output("app-main", "className"),
         Output("footer-body", "style"),
         Input("footer-toggle", "n_clicks"),
+        Input("robot-operation-state", "data"),
         State("footer-visibility", "data"),
     )
     def _toggle_footer_visibility(
         n_clicks: Optional[int],
+        operation_state: Optional[dict],
         state: Optional[dict],
     ) -> Tuple[dict, str, str, str, dict]:
+        def _main_class(collapsed: bool) -> str:
+            base = "app-main footer-collapsed" if collapsed else "app-main footer-expanded"
+            status = (operation_state or {}).get("status", "idle")
+            if status == "running":
+                return f"{base} operation-running"
+            if status in {"paused", "stopping"}:
+                return f"{base} operation-paused"
+            return base
+
         collapsed = bool((state or {}).get("collapsed", False))
-        if not n_clicks:
-            # honor current state without toggling on first render
+        trigger = callback_context.triggered_id
+        if not n_clicks or trigger != "footer-toggle":
+            # honor current state without toggling on first render or non-toggle updates
             class_name = "app-footer is-collapsed" if collapsed else "app-footer"
             label = "Show footer" if collapsed else "Hide footer"
-            main_class = "app-main footer-collapsed" if collapsed else "app-main footer-expanded"
+            main_class = _main_class(collapsed)
             style = {"display": "none"} if collapsed else {}
             return state or {"collapsed": False}, class_name, label, main_class, style
 
         new_collapsed = not collapsed
         class_name = "app-footer is-collapsed" if new_collapsed else "app-footer"
         label = "Show footer" if new_collapsed else "Hide footer"
-        main_class = "app-main footer-collapsed" if new_collapsed else "app-main footer-expanded"
+        main_class = _main_class(new_collapsed)
         style = {"display": "none"} if new_collapsed else {}
         return {"collapsed": new_collapsed}, class_name, label, main_class, style
 
@@ -6284,8 +6764,12 @@ def register_callbacks(app: Dash) -> None:
         robot_state: Optional[dict],
         gripper_state: Optional[dict],
     ) -> Tuple[str, str]:
+        run_id: Optional[int] = None
+
         def _plate_test_abort(message: str) -> Tuple[str, str]:
             _set_plate_test_state(message, running=False)
+            if run_id is not None:
+                _finish_operation(run_id, status="stopped", message=message)
             return message, ""
 
         if (robot_state or {}).get("status") != "online":
@@ -6316,6 +6800,11 @@ def register_callbacks(app: Dash) -> None:
         frame, _depth = get_latest_frame()
         if frame is None:
             return _plate_test_abort("Camera stream is not running.")
+
+        try:
+            run_id = _begin_operation("plate_test", "Plate test")
+        except RuntimeError as exc:
+            return _plate_test_abort(str(exc))
 
         # Negative = UP from table in coord5
         approach_mm = _safe_float(approach_height, -30.0)
@@ -6365,6 +6854,7 @@ def register_callbacks(app: Dash) -> None:
             }
 
         _set_plate_test_state("Plate test starting...", running=True)
+        _update_operation_message("Plate test starting...")
         try:
             (
                 targets,
@@ -6599,6 +7089,7 @@ def register_callbacks(app: Dash) -> None:
             )
 
         async def _run_sequence(robot_api: CodroidAPI) -> None:
+            await _wait_for_operation_resume(run_id)
             await robot_api.power_on()
             await robot_api.set_current_coordinate_id(plate_test_coord_id)
             speed_rate = max(float(SESSION.robot_speed_rate), 0.1)
@@ -6609,6 +7100,7 @@ def register_callbacks(app: Dash) -> None:
             def _update_step(label: str) -> None:
                 message = f"Plate test: {label.replace('_', ' ')} (speed {speed_percent}%)"
                 _set_plate_test_state(message, running=True, label=label)
+                _update_operation_message(message, label=label)
 
             def _pose_xyz(
                 posture: RobotPosture,
@@ -6662,6 +7154,7 @@ def register_callbacks(app: Dash) -> None:
                 moved = False
                 settle_deadline: Optional[float] = None
                 while time.monotonic() < deadline:
+                    _ensure_operation_active(run_id)
                     await robot_api.send_command_heartbeat()
                     await asyncio.sleep(0.2)
                     curr = session.position_snapshot()
@@ -6696,35 +7189,45 @@ def register_callbacks(app: Dash) -> None:
                 heartbeat_interval: float = 0.2,
                 label: str = "move",
             ) -> None:
-                _update_step(label)
-                _log_move_target(
-                    label, command_pose, coordinate_id=plate_test_coord_id
-                )
-                await robot_api.set_target_pos_type(
-                    robot_api.config.target_pos_types.cpos
-                )
-                await robot_api.set_target_cpos(
-                    robot_api.attach_coordinate_to_cpos(
-                        robot_api.build_target_cpos(**command_pose),
-                        coordinate_id=plate_test_coord_id,
+                while True:
+                    await _wait_for_operation_resume(run_id)
+                    _update_step(label)
+                    _log_move_target(
+                        label, command_pose, coordinate_id=plate_test_coord_id
                     )
-                )
-                await robot_api.set_robot_command(
-                    robot_api.config.commands.move_target_linear
-                )
-                await _await_motion_settle(
-                    command_pose,
-                    label=label,
-                    command_coord_id=plate_test_coord_id,
-                )
-                if hold_seconds > 0:
-                    deadline = time.monotonic() + hold_seconds
-                    while time.monotonic() < deadline:
-                        await robot_api.send_command_heartbeat()
-                        await asyncio.sleep(heartbeat_interval)
-                await robot_api.clear_target_position()
-                await robot_api.stop_command()
-                _record_move(label, command_pose, plate_test_coord_id)
+                    await robot_api.set_target_pos_type(
+                        robot_api.config.target_pos_types.cpos
+                    )
+                    await robot_api.set_target_cpos(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**command_pose),
+                            coordinate_id=plate_test_coord_id,
+                        )
+                    )
+                    await robot_api.set_robot_command(
+                        robot_api.config.commands.move_target_linear
+                    )
+                    try:
+                        await _await_motion_settle(
+                            command_pose,
+                            label=label,
+                            command_coord_id=plate_test_coord_id,
+                        )
+                    except OperationPaused:
+                        continue
+                    try:
+                        if hold_seconds > 0:
+                            deadline = time.monotonic() + hold_seconds
+                            while time.monotonic() < deadline:
+                                _ensure_operation_active(run_id)
+                                await robot_api.send_command_heartbeat()
+                                await asyncio.sleep(heartbeat_interval)
+                    except OperationPaused:
+                        continue
+                    await robot_api.clear_target_position()
+                    await robot_api.stop_command()
+                    _record_move(label, command_pose, plate_test_coord_id)
+                    return
 
             await _move_linear_with_hold(
                 drop_approach,
@@ -6733,6 +7236,7 @@ def register_callbacks(app: Dash) -> None:
             )
 
             for target in targets:
+                await _wait_for_operation_resume(run_id)
                 sequence = target["sequence"]
                 # Use adjusted coordinates for coord5: accounts for current plate position as tracked by camera
                 # Use reference coordinates for base system: static layout positions
@@ -6823,12 +7327,14 @@ def register_callbacks(app: Dash) -> None:
                     hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                     label=f"target_{sequence}_pick",
                 )
+                await _wait_for_operation_resume(run_id)
                 _command_gripper(
                     gripper_min_width,
                     "closed",
                     force=GRIPPER_FORCE_MIN,
                     speed=GRIPPER_SPEED_MIN,
                 )
+                await _wait_for_operation_resume(run_id)
                 gripped = await _await_grip_status(grip_timeout)
                 capture["grip_events"].append(
                     {
@@ -6868,6 +7374,7 @@ def register_callbacks(app: Dash) -> None:
                         hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                         label=f"target_{sequence}_drop_pose",
                     )
+                    await _wait_for_operation_resume(run_id)
                     _command_gripper(gripper_max_width, "opened")
                     SESSION.robot_has_object = False
                     await _move_linear_with_hold(
@@ -6878,6 +7385,7 @@ def register_callbacks(app: Dash) -> None:
                     summary["details"].append(f"{sequence}: dropped")
                     _record_pick_cycle(True, cycle_started_at)
                 else:
+                    await _wait_for_operation_resume(run_id)
                     _command_gripper(gripper_max_width, "opened")
                     lift_pose = pick_pose.copy()
                     lift_pose["z"] = travel_z
@@ -6901,6 +7409,7 @@ def register_callbacks(app: Dash) -> None:
                     summary["details"].append(f"{sequence}: empty")
                     _record_pick_cycle(False, cycle_started_at)
 
+            await _wait_for_operation_resume(run_id)
             _command_gripper(gripper_max_width, "opened")
             await robot_api.power_off()
 
@@ -6908,10 +7417,16 @@ def register_callbacks(app: Dash) -> None:
             await _with_robot_api(
                 robot_uri or DEFAULT_ROBOT_URI, _run_sequence
             )
+        except OperationAbort as exc:
+            message = f"Plate test stopped: {exc}"
+            _set_plate_test_state(message, running=False)
+            _finish_operation(run_id, status="stopped", message=message)
+            return message, ""
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Plate pick & place test failed")
             message = f"Plate test failed: {exc}"
             _set_plate_test_state(message, running=False)
+            _finish_operation(run_id, status="idle", message=message)
             return message, ""
 
         attempts = summary["attempts"]
@@ -6935,6 +7450,7 @@ def register_callbacks(app: Dash) -> None:
         if detail:
             message = f"{message} ({detail})"
         _set_plate_test_state(message, running=False)
+        _finish_operation(run_id, status="idle", message=message)
         return message, analysis
 
     @app.callback(
@@ -7055,6 +7571,7 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),
+        Output("robot-error-state", "data", allow_duplicate=True),
         Input("safety-stop", "n_clicks"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
@@ -7062,7 +7579,7 @@ def register_callbacks(app: Dash) -> None:
     async def _handle_safety_stop(
         _clicks: int,
         robot_uri: Optional[str],
-    ) -> dmc.Notification:
+    ) -> Tuple[dmc.Notification, dict]:
         try:
             async def _power_off(api: CodroidAPI) -> None:
                 await api.stop_command()
@@ -7070,22 +7587,32 @@ def register_callbacks(app: Dash) -> None:
 
             await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _power_off)
             SESSION.last_action = "Emergency stop: power off command sent."
+            error_state = _activate_robot_error(
+                "emergency_stop",
+                message="Emergency stop triggered from UI.",
+                physical_pressed=False,
+            )
             return dmc.Notification(
                 action="show",
                 title="Emergency stop",
                 message="Stop command + power off sent to robot controller.",
                 color="red",
                 autoClose=5000,
-            )
+            ), error_state
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Emergency stop failed")
+            error_state = _activate_robot_error(
+                "emergency_stop",
+                message="Emergency stop triggered from UI.",
+                physical_pressed=False,
+            )
             return dmc.Notification(
                 action="show",
                 title="Emergency stop failed",
                 message=str(exc),
                 color="red",
                 autoClose=7000,
-            )
+            ), error_state
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),
@@ -8230,6 +8757,214 @@ def register_callbacks(app: Dash) -> None:
         return no_update
 
     @app.callback(
+        Output("robot-error-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+        State("robot-error-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _sync_robot_error_state(
+        _intervals: int,
+        current_state: Optional[dict],
+    ) -> dict:
+        session = _get_robot_session()
+        status = session.robot_status_snapshot()
+        status_age = session.robot_status_age_seconds()
+        if not status or status_age is None or status_age > 2.0:
+            return no_update
+
+        emergency_active = _detect_emergency_stop_status(status)
+        overspeed_active = _detect_overspeed_status(status)
+
+        if emergency_active:
+            snapshot = _activate_robot_error(
+                "emergency_stop",
+                message="Emergency stop reported by robot controller.",
+                physical_pressed=True,
+            )
+        elif overspeed_active:
+            snapshot = _activate_robot_error(
+                "overspeed",
+                message="Overspeed alarm reported by robot controller.",
+                physical_pressed=False,
+            )
+        else:
+            if (current_state or {}).get("error_type") == "emergency_stop":
+                snapshot = _update_robot_error_state(physical_pressed=False)
+            else:
+                snapshot = _error_snapshot()
+
+        if current_state == snapshot:
+            return no_update
+        return snapshot
+
+    @app.callback(
+        Output("emergency-stop-modal", "opened"),
+        Output("emergency-stop-modal-text", "children"),
+        Output("emergency-ack", "disabled"),
+        Input("robot-error-state", "data"),
+    )
+    def _update_emergency_modal(
+        error_state: Optional[dict],
+    ) -> Tuple[bool, str, bool]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == "emergency_stop"
+        message = state.get("message") or "Emergency stop detected."
+        physical_pressed = bool(state.get("physical_pressed"))
+        return active, message, physical_pressed
+
+    @app.callback(
+        Output("overspeed-modal", "opened"),
+        Output("overspeed-modal-text", "children"),
+        Input("robot-error-state", "data"),
+    )
+    def _update_overspeed_modal(
+        error_state: Optional[dict],
+    ) -> Tuple[bool, str]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == "overspeed"
+        message = state.get("message") or "Overspeed alarm detected."
+        return active, message
+
+    @app.callback(
+        Output("robot-error-state", "data", allow_duplicate=True),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("emergency-ack", "n_clicks"),
+        State("robot-error-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _ack_emergency_stop(
+        _clicks: int,
+        error_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[dict, dmc.Notification]:
+        state = error_state or {}
+        if state.get("error_type") != "emergency_stop":
+            return no_update, no_update
+        if state.get("physical_pressed"):
+            return no_update, no_update
+
+        async def _clear(api: CodroidAPI) -> None:
+            await api.clear_emergency_stop()
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+            snapshot = _acknowledge_robot_error()
+            return (
+                snapshot,
+                dmc.Notification(
+                    action="show",
+                    title="Emergency stop acknowledged",
+                    message="Recovery sequence sent. Program remains paused.",
+                    color="red",
+                    autoClose=5000,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to clear emergency stop")
+            return (
+                no_update,
+                dmc.Notification(
+                    action="show",
+                    title="Emergency stop clear failed",
+                    message=str(exc),
+                    color="red",
+                    autoClose=7000,
+                ),
+            )
+
+    @app.callback(
+        Output("robot-error-state", "data", allow_duplicate=True),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("overspeed-continue", "n_clicks"),
+        Input("overspeed-stay-paused", "n_clicks"),
+        Input("overspeed-reset", "n_clicks"),
+        State("robot-error-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_overspeed_response(
+        _continue_clicks: int,
+        _stay_clicks: int,
+        _reset_clicks: int,
+        error_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[dict, dmc.Notification]:
+        state = error_state or {}
+        if state.get("error_type") != "overspeed":
+            return no_update, no_update
+
+        trigger = callback_context.triggered_id
+
+        async def _clear(api: CodroidAPI) -> None:
+            await api.clear_overspeed()
+
+        if trigger == "overspeed-continue":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+                _resume_operation("Resuming after overspeed.")
+                snapshot = _acknowledge_robot_error()
+                return (
+                    snapshot,
+                    dmc.Notification(
+                        action="show",
+                        title="Overspeed cleared",
+                        message="Recovery sequence sent. Program resumed.",
+                        color="teal",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to clear overspeed")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Overspeed clear failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
+        if trigger == "overspeed-stay-paused":
+            snapshot = _acknowledge_robot_error()
+            _pause_operation("overspeed", "Paused after overspeed acknowledgment.")
+            return (
+                snapshot,
+                dmc.Notification(
+                    action="show",
+                    title="Overspeed acknowledged",
+                    message="Program remains paused.",
+                    color="yellow",
+                    autoClose=4500,
+                ),
+            )
+        if trigger == "overspeed-reset":
+            _request_stop_operation("Program canceled after overspeed.")
+
+            async def _stop_motion(api: CodroidAPI) -> None:
+                await api.stop_command()
+
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _stop_motion)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Stop command failed: %s", exc)
+            _reset_operation_state("Program reset after overspeed.")
+            snapshot = _acknowledge_robot_error()
+            return (
+                snapshot,
+                dmc.Notification(
+                    action="show",
+                    title="Program reset",
+                    message="Overspeed acknowledged and program reset.",
+                    color="red",
+                    autoClose=5000,
+                ),
+            )
+
+        return no_update, no_update
+
+    @app.callback(
         Output("robot-calibration-status", "children"),
         Input("robot-status-interval", "n_intervals"),
     )
@@ -8594,6 +9329,7 @@ def register_callbacks(app: Dash) -> None:
         _clicks: int,
         robot_uri: Optional[str],
     ) -> dict:
+        run_id: Optional[int] = None
         if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
             message = "Verification requires three calibration points."
             _set_robot_guidance(message, status="error",
@@ -8616,6 +9352,17 @@ def register_callbacks(app: Dash) -> None:
                 verification_ready=False,
             )
             return {"status": "error", "message": posture_message, "step": 5}
+        try:
+            run_id = _begin_operation("verification", "Verification move")
+        except RuntimeError as exc:
+            message = f"Verification blocked: {exc}"
+            _set_robot_guidance(
+                message,
+                status="error",
+                step=5,
+                verification_ready=False,
+            )
+            return {"status": "error", "message": message, "step": 5}
         _set_robot_guidance(
             "Verification move running. Keep clear of the robot.",
             status="verifying",
@@ -8625,6 +9372,8 @@ def register_callbacks(app: Dash) -> None:
         )
 
         async def _verification_motion(api: CodroidAPI) -> None:
+            await _wait_for_operation_resume(run_id)
+            _update_operation_message("Verification move: powering on robot.")
             await api.power_on()
             await api.set_current_coordinate_id(ROBOT_COORDINATE_ID)
 
@@ -8667,6 +9416,7 @@ def register_callbacks(app: Dash) -> None:
                 moved = False
                 settle_deadline: Optional[float] = None
                 while time.monotonic() < deadline:
+                    _ensure_operation_active(run_id)
                     await api.send_command_heartbeat()
                     await asyncio.sleep(0.2)
                     curr = session.position_snapshot()
@@ -8709,24 +9459,38 @@ def register_callbacks(app: Dash) -> None:
                 hold_seconds: float = VERIFICATION_HOLD_SECONDS,
                 coord_id: int,
             ) -> None:
-                _log_move_target(label, target, coordinate_id=coord_id)
-                await api.set_target_pos_type(api.config.target_pos_types.cpos)
-                if coord_id == ROBOT_COORDINATE_ID:
-                    await api.set_target_cpos(
-                        api.attach_coordinate_to_cpos(
-                            target, coordinate_id=ROBOT_COORDINATE_ID)
+                while True:
+                    await _wait_for_operation_resume(run_id)
+                    _update_operation_message(
+                        f"Verification move: {label.replace('_', ' ')}",
+                        label=label,
                     )
-                else:
-                    await api.set_target_cpos(target)
-                await api.set_robot_command(api.config.commands.move_target_linear)
-                await _await_motion_then_settle(label=label)
-                if hold_seconds > 0:
-                    deadline = time.monotonic() + hold_seconds
-                    while time.monotonic() < deadline:
-                        await api.send_command_heartbeat()
-                        await asyncio.sleep(0.2)
-                await api.clear_target_position()
-                await api.stop_command()
+                    _log_move_target(label, target, coordinate_id=coord_id)
+                    await api.set_target_pos_type(api.config.target_pos_types.cpos)
+                    if coord_id == ROBOT_COORDINATE_ID:
+                        await api.set_target_cpos(
+                            api.attach_coordinate_to_cpos(
+                                target, coordinate_id=ROBOT_COORDINATE_ID)
+                        )
+                    else:
+                        await api.set_target_cpos(target)
+                    await api.set_robot_command(api.config.commands.move_target_linear)
+                    try:
+                        await _await_motion_then_settle(label=label)
+                    except OperationPaused:
+                        continue
+                    try:
+                        if hold_seconds > 0:
+                            deadline = time.monotonic() + hold_seconds
+                            while time.monotonic() < deadline:
+                                _ensure_operation_active(run_id)
+                                await api.send_command_heartbeat()
+                                await asyncio.sleep(0.2)
+                    except OperationPaused:
+                        continue
+                    await api.clear_target_position()
+                    await api.stop_command()
+                    return
 
             def _safe_z(value: float) -> float:
                 return max(float(value), float(min_z))
@@ -8790,6 +9554,18 @@ def register_callbacks(app: Dash) -> None:
 
         try:
             await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _verification_motion)
+        except OperationAbort as exc:
+            message = f"Verification move stopped: {exc}"
+            _set_robot_guidance(
+                message,
+                status="canceled",
+                step=5,
+                verification_ready=False,
+            )
+            _restore_calibration_gripper_width()
+            if run_id is not None:
+                _finish_operation(run_id, status="stopped", message=message)
+            return {"status": "canceled", "message": message, "step": 5}
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Verification move failed")
             message = f"Verification move failed: {exc}"
@@ -8800,6 +9576,8 @@ def register_callbacks(app: Dash) -> None:
                 verification_ready=False,
             )
             _restore_calibration_gripper_width()
+            if run_id is not None:
+                _finish_operation(run_id, status="idle", message=message)
             return {"status": "error", "message": message, "step": 5}
 
         _restore_calibration_gripper_width()
@@ -8809,6 +9587,8 @@ def register_callbacks(app: Dash) -> None:
             step=5,
             verification_ready=False,
         )
+        if run_id is not None:
+            _finish_operation(run_id, status="idle", message="Verification complete.")
         return {"status": "complete", "message": "Calibration verified.", "step": 5}
 
 
@@ -8914,6 +9694,142 @@ def create_app() -> Dash:
             )
 
         return no_update, no_update
+
+    @app.callback(
+        Output("robot-operation-state", "data"),
+        Input("monitor-interval", "n_intervals"),
+        State("robot-operation-state", "data"),
+    )
+    def _sync_operation_state(
+        _ticks: int,
+        current_state: Optional[dict],
+    ) -> dict:
+        snapshot = _operation_snapshot()
+        if current_state == snapshot:
+            return no_update
+        return snapshot
+
+    @app.callback(
+        Output("program-pause", "children"),
+        Output("program-pause", "disabled"),
+        Output("program-stop", "disabled"),
+        Output("program-reset", "disabled"),
+        Output("program-status-text", "children"),
+        Input("robot-operation-state", "data"),
+    )
+    def _update_program_controls(
+        operation_state: Optional[dict],
+    ) -> Tuple[str, bool, bool, bool, str]:
+        state = operation_state or {}
+        status = state.get("status", "idle")
+        pause_reason = state.get("pause_reason")
+        label = state.get("label") or "Program"
+        message = state.get("message") or ""
+
+        if status == "running":
+            pause_label = "Pause"
+            pause_disabled = False
+            stop_disabled = False
+            reset_disabled = True
+            status_text = message or f"{label} running."
+        elif status == "paused":
+            pause_label = "Resume"
+            pause_disabled = False
+            stop_disabled = False
+            reset_disabled = False
+            if pause_reason:
+                status_text = f"Paused ({pause_reason.replace('_', ' ')})."
+            else:
+                status_text = message or f"{label} paused."
+        elif status in {"stopping", "stopped"}:
+            pause_label = "Pause"
+            pause_disabled = True
+            stop_disabled = True
+            reset_disabled = False
+            status_text = message or "Program stopped."
+        else:
+            pause_label = "Pause"
+            pause_disabled = True
+            stop_disabled = True
+            reset_disabled = True
+            status_text = message or "Program idle."
+
+        return pause_label, pause_disabled, stop_disabled, reset_disabled, status_text
+
+    @app.callback(
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("program-pause", "n_clicks"),
+        Input("program-stop", "n_clicks"),
+        Input("program-reset", "n_clicks"),
+        State("robot-operation-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_program_controls(
+        _pause_clicks: int,
+        _stop_clicks: int,
+        _reset_clicks: int,
+        operation_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> dmc.Notification:
+        trigger = callback_context.triggered_id
+        status = (operation_state or {}).get("status", "idle")
+
+        if trigger == "program-pause":
+            if status == "running":
+                _pause_operation("operator", "Program paused by operator.")
+
+                async def _stop_motion(api: CodroidAPI) -> None:
+                    await api.stop_command()
+
+                try:
+                    await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _stop_motion)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Pause stop command failed: %s", exc)
+                return dmc.Notification(
+                    action="show",
+                    title="Program paused",
+                    message="Robot program paused.",
+                    color="yellow",
+                    autoClose=4000,
+                )
+            if status == "paused":
+                _resume_operation("Program resumed.")
+                return dmc.Notification(
+                    action="show",
+                    title="Program resumed",
+                    message="Robot program resumed.",
+                    color="teal",
+                    autoClose=4000,
+                )
+        elif trigger == "program-stop":
+            _request_stop_operation("Program stop requested.")
+
+            async def _stop_motion(api: CodroidAPI) -> None:
+                await api.stop_command()
+
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _stop_motion)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Stop command failed: %s", exc)
+            return dmc.Notification(
+                action="show",
+                title="Program stopping",
+                message="Stop command sent. Reset when safe.",
+                color="red",
+                autoClose=4500,
+            )
+        elif trigger == "program-reset":
+            _reset_operation_state("Program reset.")
+            return dmc.Notification(
+                action="show",
+                title="Program reset",
+                message="Program state cleared.",
+                color="gray",
+                autoClose=3500,
+            )
+
+        return no_update
 
     @app.server.route("/video_feed")
     def video_feed():

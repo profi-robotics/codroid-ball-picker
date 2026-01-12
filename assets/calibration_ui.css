@@ -95,6 +95,39 @@ body {
   overflow: hidden;
 }
 
+.app-main.operation-running {
+  box-shadow:
+    0 0 0 6px rgba(255, 179, 0, 0.95),
+    0 0 0 12px rgba(255, 71, 71, 0.45);
+  border-radius: 14px;
+}
+
+.app-main.operation-paused {
+  box-shadow:
+    0 0 0 6px rgba(255, 71, 71, 0.95),
+    0 0 0 12px rgba(255, 179, 0, 0.35);
+  border-radius: 14px;
+  animation: safety-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes safety-pulse {
+  0% {
+    box-shadow:
+      0 0 0 6px rgba(255, 71, 71, 0.95),
+      0 0 0 12px rgba(255, 179, 0, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 0 0 8px rgba(255, 71, 71, 0.85),
+      0 0 0 16px rgba(255, 179, 0, 0.3);
+  }
+  100% {
+    box-shadow:
+      0 0 0 6px rgba(255, 71, 71, 0.95),
+      0 0 0 12px rgba(255, 179, 0, 0.35);
+  }
+}
+
 .main-tabs {
   background: transparent;
   padding: 4px 0 0;

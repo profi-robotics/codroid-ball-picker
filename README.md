@@ -80,6 +80,9 @@ camera, detection, and robot flows together. It provides:
 - A guided robot calibration modal with a verification move; the calibration
   points and safe Z floor are persisted in `data/robot_calibration.json` and
   loaded on startup when available.
+- A program safety banner (warning border) that highlights when robot motion
+  sequences are running, plus pause/stop/reset controls and emergency stop /
+  overspeed acknowledgment modals that pause active programs.
 - If `data/calibration_bundle.npz` or `data/workspace_definition.npz` already
   exist, the Calibration and Application workspace steps surface “Use saved …”
   buttons to load them without recomputing.
