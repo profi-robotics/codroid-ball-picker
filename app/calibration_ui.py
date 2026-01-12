@@ -25,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict
-from typing import Awaitable, Callable, Deque, Optional, Tuple
+from typing import Any, Awaitable, Callable, Deque, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -268,6 +268,7 @@ class UISession:
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None
     robot_calibration_gripper_width: Optional[float] = None
+    robot_calibration_accuracy: Optional[dict[str, float]] = None
     robot_has_object: bool = False
     pick_attempts: int = 0
     pick_successes: int = 0
@@ -333,7 +334,37 @@ def _set_robot_guidance(
         ROBOT_CALIBRATION_GUIDANCE["verification_ready"] = verification_ready
     if modal_suppressed is not None:
         ROBOT_CALIBRATION_GUIDANCE["modal_suppressed"] = modal_suppressed
+    if status is not None and status not in {
+        "accuracy_ready",
+        "awaiting_verification",
+        "verifying",
+        "complete",
+    }:
+        _clear_robot_accuracy_guidance()
     ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
+
+
+def _clear_robot_accuracy_guidance() -> None:
+    """Reset the cached accuracy summary so the UI hides the panel."""
+    SESSION.robot_calibration_accuracy = None
+    ROBOT_CALIBRATION_GUIDANCE["accuracy"] = None
+    ROBOT_CALIBRATION_GUIDANCE["accuracy_ready"] = False
+    ROBOT_CALIBRATION_GUIDANCE["accuracy_passed"] = False
+
+
+def _record_robot_accuracy(mean_xy_error: float, max_xy_error: float) -> dict[str, float]:
+    """Store accuracy metrics computed after robot calibration."""
+    accuracy = {
+        "mean_xy_error": float(mean_xy_error),
+        "max_xy_error": float(max_xy_error),
+    }
+    SESSION.robot_calibration_accuracy = accuracy
+    ROBOT_CALIBRATION_GUIDANCE["accuracy"] = accuracy
+    ROBOT_CALIBRATION_GUIDANCE["accuracy_ready"] = True
+    ROBOT_CALIBRATION_GUIDANCE["accuracy_passed"] = (
+        float(max_xy_error) <= VERIFICATION_TOLERANCE_MM
+    )
+    return accuracy
 
 
 def _load_robot_calibration(path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None:
@@ -687,6 +718,9 @@ ROBOT_CALIBRATION_GUIDANCE = {
     "message": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
     "verification_ready": False,
     "modal_suppressed": False,
+    "accuracy": None,
+    "accuracy_ready": False,
+    "accuracy_passed": False,
     "timestamp": time.time(),
 }
 
@@ -2077,6 +2111,7 @@ async def _run_robot_plate_calibration(
                 continue
 
     async def _runner(robot_api: CodroidAPI) -> Tuple[list[dict], dict]:
+        _clear_robot_accuracy_guidance()
         _set_robot_guidance(
             "Powering on robot and selecting CoordinateId=0 (base) for calibration...",
             status="running",
@@ -2306,7 +2341,7 @@ async def _run_robot_plate_calibration(
 def _apply_robot_calibration_results(
     robot_points: list[dict],
     plate_layout: plate.CalibrationPlate,
-) -> workspace.RigidTransform:
+) -> Tuple[workspace.RigidTransform, dict[str, float]]:
     plate_pts = []
     for calib_point in plate_layout.robot_calibration_points()[:3]:
         plate_pts.append([float(calib_point.center_mm[0]),
@@ -2381,7 +2416,8 @@ def _apply_robot_calibration_results(
 
     SESSION.workspace_definition = updated_ws
     save_workspace_definition(updated_ws, DEFAULT_WORKSPACE_PATH)
-    return transform
+    accuracy = _record_robot_accuracy(mean_xy_error, max_xy_error)
+    return transform, accuracy
 
 
 def _draw_label(frame: np.ndarray, text: str, origin: Tuple[int, int], color: Tuple[int, int, int]) -> None:
@@ -3643,6 +3679,44 @@ def build_robot_calibration_modal() -> dmc.Modal:
                         ),
                     ],
                 ),
+                dmc.Card(
+                    id="robot-calibration-accuracy-panel",
+                    style={"display": "none"},
+                    withBorder=True,
+                    radius="md",
+                    padding="sm",
+                    children=dmc.Stack(
+                        [
+                            dmc.Text(
+                                "",
+                                id="robot-calibration-accuracy-text",
+                                size="sm",
+                                c="dimmed",
+                            ),
+                            dmc.Group(
+                                [
+                                    dmc.Button(
+                                        "Repeat calibration",
+                                        id="robot-calibration-retry",
+                                        variant="outline",
+                                        color="red",
+                                        size="xs",
+                                        disabled=True,
+                                    ),
+                                    dmc.Button(
+                                        "Proceed to verification",
+                                        id="robot-calibration-continue",
+                                        color="teal",
+                                        size="xs",
+                                        disabled=True,
+                                    ),
+                                ],
+                                justify="space-between",
+                            ),
+                        ],
+                        gap="sm",
+                    ),
+                ),
                 dmc.Alert(
                     id="robot-calibration-modal-alert",
                     title="Calibration status",
@@ -3804,14 +3878,6 @@ def build_stepper_card() -> dmc.Card:
                                     fullWidth=True,
                                     variant="outline",
                                     color="brand",
-                                    disabled=True,
-                                ),
-                                dmc.Button(
-                                    "Check calibration accuracy",
-                                    id="run-plate-test-calibration",
-                                    fullWidth=True,
-                                    variant="outline",
-                                    color="orange",
                                     disabled=True,
                                 ),
                                 dmc.Button(
@@ -4618,6 +4684,9 @@ def build_layout() -> dmc.MantineProvider:
                         "message": "",
                         "step": 0,
                         "verification_ready": False,
+                        "accuracy": None,
+                        "accuracy_ready": False,
+                        "accuracy_passed": False,
                     },
                 ),
                 dcc.Store(
@@ -7679,13 +7748,13 @@ def register_callbacks(app: Dash) -> None:
                 guidance,
                 status="awaiting_verification",
                 verification_ready=True,
-                step=4,
+                step=5,
                 modal_suppressed=True,
             )
             return {
                 "status": "awaiting_verification",
                 "message": guidance,
-                "step": 4,
+                "step": 5,
                 "verification_ready": True,
             }
         except Exception as exc:
@@ -7838,7 +7907,7 @@ def register_callbacks(app: Dash) -> None:
             SESSION.last_frame_id = current_frame_id
 
         # Frame received, dispatch to background processor for heavy overlays.
-        tab = active_tab or "calibration"
+        tab = active_tab or "applications"
         calibration_step = calibration_step or 0
         application_tab = application_tab or "workspace"
         board_path = DEFAULT_BOARD_PATH
@@ -8167,6 +8236,21 @@ def register_callbacks(app: Dash) -> None:
     def _update_robot_calibration_guidance(_intervals: int) -> str:
         return ROBOT_CALIBRATION_GUIDANCE.get("message", "")
 
+    def _build_robot_calibration_state_payload() -> dict[str, Any]:
+        return {
+            "status": ROBOT_CALIBRATION_GUIDANCE.get("status", "idle"),
+            "message": ROBOT_CALIBRATION_GUIDANCE.get("message", ""),
+            "step": ROBOT_CALIBRATION_GUIDANCE.get("step", 0),
+            "verification_ready": ROBOT_CALIBRATION_GUIDANCE.get(
+                "verification_ready", False
+            ),
+            "accuracy": ROBOT_CALIBRATION_GUIDANCE.get("accuracy"),
+            "accuracy_ready": ROBOT_CALIBRATION_GUIDANCE.get("accuracy_ready", False),
+            "accuracy_passed": ROBOT_CALIBRATION_GUIDANCE.get(
+                "accuracy_passed", False
+            ),
+        }
+
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("robot-status-interval", "n_intervals"),
@@ -8174,14 +8258,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _sync_robot_calibration_state(_intervals: int, current: Optional[dict]) -> dict:
-        desired = {
-            "status": ROBOT_CALIBRATION_GUIDANCE.get("status", "idle"),
-            "message": ROBOT_CALIBRATION_GUIDANCE.get("message", ""),
-            "step": ROBOT_CALIBRATION_GUIDANCE.get("step", 0),
-            "verification_ready": ROBOT_CALIBRATION_GUIDANCE.get(
-                "verification_ready", False
-            ),
-        }
+        desired = _build_robot_calibration_state_payload()
         if current == desired:
             return no_update
         return desired
@@ -8199,7 +8276,7 @@ def register_callbacks(app: Dash) -> None:
         trigger = callback_context.triggered_id
         should_show_modal = not ROBOT_CALIBRATION_GUIDANCE.get(
             "modal_suppressed", False)
-        if status in {"running", "awaiting_verification", "verifying"} and should_show_modal:
+        if status in {"running", "accuracy_ready", "awaiting_verification", "verifying"} and should_show_modal:
             return True
         if status in {"complete", "error", "canceled"}:
             return trigger != "robot-calibration-modal-close"
@@ -8222,10 +8299,11 @@ def register_callbacks(app: Dash) -> None:
         status = state.get("status", "idle")
         step = int(state.get("step", 0) or 0)
         message = state.get("message", "")
-        active = max(0, min(3, step - 1)) if step else 0
+        active = max(0, min(4, step - 1)) if step else 0
         color_map = {
             "running": "blue",
             "awaiting_verification": "yellow",
+            "accuracy_ready": "orange",
             "verifying": "blue",
             "complete": "green",
             "error": "red",
@@ -8258,6 +8336,11 @@ def register_callbacks(app: Dash) -> None:
                 state=_step_state(step > 3),
             ),
             dmc.StepperStep(
+                label="Accuracy",
+                description="Calibration accuracy check",
+                state=_step_state(step > 4 or bool(state.get("accuracy_ready"))),
+            ),
+            dmc.StepperStep(
                 label="Verification",
                 description="Safe motion check",
                 state=_step_state(verification_completed),
@@ -8270,6 +8353,95 @@ def register_callbacks(app: Dash) -> None:
             not verify_enabled,
             stepper_children,
         )
+
+    @app.callback(
+        Output("robot-calibration-accuracy-panel", "style"),
+        Output("robot-calibration-accuracy-text", "children"),
+        Output("robot-calibration-accuracy-text", "c"),
+        Output("robot-calibration-retry", "disabled"),
+        Output("robot-calibration-continue", "disabled"),
+        Output("robot-calibration-continue", "children"),
+        Input("robot-calibration-state", "data"),
+    )
+    def _sync_robot_calibration_accuracy_panel(
+        calibration_state: Optional[dict],
+    ) -> Tuple[dict[str, Any], str, str, bool, bool, str]:
+        state = calibration_state or {}
+        accuracy_ready = bool(state.get("accuracy_ready"))
+        accuracy = state.get("accuracy") or {}
+        if not accuracy_ready or not accuracy:
+            return (
+                {"display": "none"},
+                "",
+                "dimmed",
+                True,
+                True,
+                "Proceed to verification",
+            )
+        max_err = float(accuracy.get("max_xy_error", 0.0))
+        mean_err = float(accuracy.get("mean_xy_error", 0.0))
+        passed = bool(state.get("accuracy_passed"))
+        text = (
+            f"Calibration accuracy: max XY error {max_err:.2f} mm · "
+            f"mean XY error {mean_err:.2f} mm."
+        )
+        if passed:
+            text += f" Within {VERIFICATION_TOLERANCE_MM:.2f} mm threshold."
+            continue_label = "Proceed to verification"
+            text_color = "green"
+        else:
+            text += (
+                f" Above {VERIFICATION_TOLERANCE_MM:.2f} mm threshold; "
+                "consider repeating calibration or proceed with caution."
+            )
+            continue_label = "Proceed with warning"
+            text_color = "red"
+        return (
+            {"display": "flex", "flexDirection": "column", "gap": "0.6rem"},
+            text,
+            text_color,
+            False,
+            False,
+            continue_label,
+        )
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-calibration-continue", "n_clicks"),
+        State("robot-calibration-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _advance_to_verification_after_accuracy(
+        _clicks: int,
+        calibration_state: Optional[dict],
+    ) -> dict:
+        guidance = calibration_state or {}
+        if not guidance.get("accuracy_ready"):
+            return no_update
+        _set_robot_guidance(
+            "Verification ready. Run the verification move when ready.",
+            status="awaiting_verification",
+            step=5,
+            verification_ready=True,
+            modal_suppressed=False,
+        )
+        return _build_robot_calibration_state_payload()
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-calibration-retry", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _reset_calibration_after_accuracy(_clicks: int) -> dict:
+        _clear_robot_accuracy_guidance()
+        _set_robot_guidance(
+            "Calibration reset. Close this dialog and restart from the main panel.",
+            status="idle",
+            step=0,
+            verification_ready=False,
+            modal_suppressed=True,
+        )
+        return _build_robot_calibration_state_payload()
 
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
@@ -8350,7 +8522,7 @@ def register_callbacks(app: Dash) -> None:
                 f"Robot plate calibration completed. Captured {len(robot_points)} points.")
 
             LOGGER.info("Applying robot calibration results...")
-            _apply_robot_calibration_results(
+            _, accuracy = _apply_robot_calibration_results(
                 robot_points,
                 plate_layout,
             )
@@ -8367,17 +8539,38 @@ def register_callbacks(app: Dash) -> None:
             _update_robot_calibration_meta(robot_points)
             SESSION.robot_calibration_baseline_px = None
             LOGGER.info("Calibration results applied successfully")
+            mean_err = accuracy.get("mean_xy_error", 0.0)
+            max_err = accuracy.get("max_xy_error", 0.0)
+            passes_threshold = max_err <= VERIFICATION_TOLERANCE_MM
+            message = (
+                f"Calibration accuracy: max XY error {max_err:.2f} mm · "
+                f"mean XY error {mean_err:.2f} mm."
+            )
+            if passes_threshold:
+                message = (
+                    f"{message} Within {VERIFICATION_TOLERANCE_MM:.2f} mm "
+                    "threshold. Proceed to verification."
+                )
+            else:
+                message = (
+                    f"{message} Above {VERIFICATION_TOLERANCE_MM:.2f} mm "
+                    "threshold; consider repeating calibration or proceed with caution."
+                )
             _set_robot_guidance(
-                "Calibration complete. Move away from the robot and run the verification move.",
-                status="awaiting_verification",
+                message,
+                status="accuracy_ready",
                 step=4,
-                verification_ready=True,
+                verification_ready=False,
+                modal_suppressed=False,
             )
             return {
-                "status": "awaiting_verification",
-                "message": "Awaiting verification move.",
+                "status": "accuracy_ready",
+                "message": message,
                 "step": 4,
-                "verification_ready": True,
+                "verification_ready": False,
+                "accuracy": accuracy,
+                "accuracy_ready": True,
+                "accuracy_passed": passes_threshold,
             }
         except Exception as exc:
             SESSION.robot_calibration_baseline_px = None
@@ -8404,8 +8597,8 @@ def register_callbacks(app: Dash) -> None:
         if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
             message = "Verification requires three calibration points."
             _set_robot_guidance(message, status="error",
-                                step=4, verification_ready=False)
-            return {"status": "error", "message": message, "step": 4}
+                                step=5, verification_ready=False)
+            return {"status": "error", "message": message, "step": 5}
 
         points = SESSION.robot_calibration_points[:3]
         min_z = SESSION.robot_calibration_min_z
@@ -8419,14 +8612,14 @@ def register_callbacks(app: Dash) -> None:
             _set_robot_guidance(
                 posture_message,
                 status="error",
-                step=4,
+                step=5,
                 verification_ready=False,
             )
-            return {"status": "error", "message": posture_message, "step": 4}
+            return {"status": "error", "message": posture_message, "step": 5}
         _set_robot_guidance(
             "Verification move running. Keep clear of the robot.",
             status="verifying",
-            step=4,
+            step=5,
             verification_ready=False,
             modal_suppressed=False,
         )
@@ -8603,20 +8796,20 @@ def register_callbacks(app: Dash) -> None:
             _set_robot_guidance(
                 message,
                 status="error",
-                step=4,
+                step=5,
                 verification_ready=False,
             )
             _restore_calibration_gripper_width()
-            return {"status": "error", "message": message, "step": 4}
+            return {"status": "error", "message": message, "step": 5}
 
         _restore_calibration_gripper_width()
         _set_robot_guidance(
             "Calibration verified. Coordinate ID 5 is active.",
             status="complete",
-            step=4,
+            step=5,
             verification_ready=False,
         )
-        return {"status": "complete", "message": "Calibration verified.", "step": 4}
+        return {"status": "complete", "message": "Calibration verified.", "step": 5}
 
 
 def create_app() -> Dash:
