@@ -6465,9 +6465,9 @@ def register_callbacks(app: Dash) -> None:
 
             for target in targets:
                 sequence = target["sequence"]
-                # Use reference coordinates for coord system 5 (static frame)
-                # Use adjusted coordinates for base system (accounts for plate movement)
-                coord_xy = target["reference_xy"] if not use_base_coordinates else target["adjusted_xy"]
+                # Use adjusted coordinates for coord5: accounts for current plate position as tracked by camera
+                # Use reference coordinates for base system: static layout positions
+                coord_xy = target["adjusted_xy"] if not use_base_coordinates else target["reference_xy"]
                 plate_mm = target.get("plate_mm")
 
                 # Debug logging to diagnose coordinate issues
