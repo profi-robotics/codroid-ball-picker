@@ -3806,6 +3806,14 @@ def build_stepper_card() -> dmc.Card:
                                     color="brand",
                                     disabled=True,
                                 ),
+                                dmc.Button(
+                                    "Run verification move",
+                                    id="run-verification-inline",
+                                    fullWidth=True,
+                                    variant="outline",
+                                    color="teal",
+                                    disabled=True,
+                                ),
                                 dmc.Text(id="current-robot-position",
                                          size="xs", c="dimmed"),
                                 dmc.Text(id="plate-action-status",
@@ -6304,7 +6312,8 @@ def register_callbacks(app: Dash) -> None:
         # The baseline_transform.rotation is the rotation from plate frame to robot base frame
         # We extract the yaw angle (rotation around Z axis) for the 6th axis alignment
         plate_rotation_rad = np.arctan2(
-            baseline_transform.rotation[1, 0], baseline_transform.rotation[0, 0]
+            baseline_transform.rotation[1,
+                                        0], baseline_transform.rotation[0, 0]
         )
         plate_rotation_deg = np.degrees(plate_rotation_rad)
         offset_rotation_deg = float(plate_meta.get("offset_rotation_deg", 0.0))
@@ -6711,6 +6720,7 @@ def register_callbacks(app: Dash) -> None:
                 pick_pose = (
                     pick_pose_base if use_base_coordinates else pick_pose_coord5
                 )
+
                 def _travel_z(
                     z_a: float, z_b: float, *, use_base: bool
                 ) -> float:
@@ -7445,7 +7455,8 @@ def register_callbacks(app: Dash) -> None:
         workspace_style = {} if DEFAULT_WORKSPACE_PATH.exists() else {
             "display": "none"}
         bundle_disabled = not bundle_path.exists()
-        robot_path = _safe_path(robot_calib_path_value, DEFAULT_ROBOT_CALIBRATION_PATH)
+        robot_path = _safe_path(robot_calib_path_value,
+                                DEFAULT_ROBOT_CALIBRATION_PATH)
         robot_disabled = not robot_path.exists()
 
         return system_items, detection_items, pick_items, bundle_style, workspace_style, bundle_disabled, robot_disabled
@@ -7644,15 +7655,17 @@ def register_callbacks(app: Dash) -> None:
         robot_calib_path_value: Optional[str],
     ) -> dict:
         """Load persisted robot calibration data instead of running the guided flow."""
-        path = _safe_path(robot_calib_path_value, DEFAULT_ROBOT_CALIBRATION_PATH)
+        path = _safe_path(robot_calib_path_value,
+                          DEFAULT_ROBOT_CALIBRATION_PATH)
         if not path.exists():
             message = f"Saved robot calibration not found: {path}"
-            _set_robot_guidance(message, status="error", verification_ready=False)
+            _set_robot_guidance(message, status="error",
+                                verification_ready=False)
             return {"status": "error", "message": message}
         try:
             _load_robot_calibration(path)
             guidance = (
-                "Saved robot calibration loaded. Run the verification move to confirm."
+                "Saved robot calibration loaded. Place a calibration plate on the workspace and run the verification move to confirm."
             )
             _set_robot_guidance(
                 guidance,
@@ -8024,6 +8037,34 @@ def register_callbacks(app: Dash) -> None:
         return message, color, disabled, variant
 
     @app.callback(
+        Output("run-verification-inline", "disabled"),
+        Input("plate-detection-state", "data"),
+        Input("robot-calibration-state", "data"),
+        Input("robot-connection-state", "data"),
+    )
+    def _sync_verification_inline_button(
+        plate_state: Optional[dict],
+        calibration_state: Optional[dict],
+        robot_state: Optional[dict],
+    ) -> bool:
+        plate_ok = bool((plate_state or {}).get("ok"))
+        plate_stable = bool((plate_state or {}).get(
+            "stable", plate_ok))
+        guidance = calibration_state or {}
+        status = guidance.get("status")
+        in_progress = status in {"running",
+                                 "awaiting_verification", "verifying"}
+        robot_online = (robot_state or {}).get("status") == "online"
+        has_calibration_points = len(SESSION.robot_calibration_points) >= 3
+        return not (
+            plate_ok
+            and plate_stable
+            and robot_online
+            and has_calibration_points
+            and not in_progress
+        )
+
+    @app.callback(
         Output("current-robot-position", "children"),
         Input("robot-connection-state", "data"),
         Input("robot-status-interval", "n_intervals"),
@@ -8344,6 +8385,7 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("robot-calibration-verify", "n_clicks"),
+        Input("run-verification-inline", "n_clicks"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
