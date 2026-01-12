@@ -92,7 +92,39 @@ PLATE_TEST_TOLERANCE_MM = 2.0
 PLATE_TEST_Z_TOLERANCE_MM = 2.0
 PLATE_TEST_SETTLE_S = 0.4
 PLATE_TEST_MOTION_EPS_MM = 0.5
-PLATE_TEST_USE_BASE_COORDINATES = True
+# Use coordinate system 5 (robot calibration frame) instead of base coordinates.
+# Coordinate system 5 is aligned with the plate reference frame at calibration time.
+# Setting to True would use base coordinates with dynamic plate tracking adjustments.
+PLATE_TEST_USE_BASE_COORDINATES = False
+
+# Maximum Z height (mm) allowed in coordinate system 5.
+# CRITICAL: Z-axis is INVERTED in coord5:
+#   - Negative Z = UP (away from table) - SAFE
+#   - Positive Z = DOWN (toward table) - DANGEROUS
+# Z=0 is the working plane; positive values would collide with the table.
+COORD5_MAX_Z_MM = 0.0
+
+
+def _clamp_z_for_coord5(z: float, *, use_base_coords: bool) -> float:
+    """Clamp Z to safe maximum when using coordinate system 5.
+    
+    CRITICAL: Coord5 Z-axis is INVERTED:
+    - Negative Z = UP (safe, away from table)
+    - Positive Z = DOWN (dangerous, toward table)
+    
+    This prevents the robot from diving into the table by clamping
+    Z values that are TOO POSITIVE (too far down).
+    """
+    if use_base_coords:
+        # Base coordinates use robot's own Z limits; no clamping here.
+        return z
+    if z > COORD5_MAX_Z_MM:
+        LOGGER.warning(
+            "Z value %.3f mm EXCEEDS safe maximum %.3f mm in coord5 (would collide with table); clamping to %.3f",
+            z, COORD5_MAX_Z_MM, COORD5_MAX_Z_MM,
+        )
+        return COORD5_MAX_Z_MM
+    return z
 
 
 class AppSettings(BaseModel):
@@ -1339,6 +1371,15 @@ def _resolve_plate_test_coord5_targets(
         ),
         robot_pts,
     )
+    
+    # Debug logging for coordinate transformation
+    LOGGER.info("Baseline transform rotation:\n%s", baseline_transform.rotation)
+    LOGGER.info("Baseline transform translation: %s", baseline_transform.translation)
+    LOGGER.info("Plate points (relative to P1): %s",
+                [(pt.center_mm[0] - origin_mm[0], pt.center_mm[1] - origin_mm[1])
+                 for pt in plate_points[:3]])
+    LOGGER.info("Robot calibration points: %s",
+                [(pt["x"], pt["y"], pt["z"]) for pt in SESSION.robot_calibration_points[:3]])
 
     targets = []
     for point in plate_points:
@@ -3999,9 +4040,10 @@ def build_pick_place_tab() -> dmc.Stack:
                     dmc.NumberInput(
                         id="pick-approach-height",
                         label="Approach height (mm)",
-                        value=30.0,
-                        min=0,
-                        max=200,
+                        description="Negative = UP from table (safe in coord5)",
+                        value=-30.0,
+                        min=-200,
+                        max=0,
                     ),
                     dmc.NumberInput(
                         id="pick-height",
@@ -4104,9 +4146,10 @@ def build_pick_place_tab() -> dmc.Stack:
                     dmc.NumberInput(
                         id="plate-test-approach-height",
                         label="Approach height (mm)",
-                        value=30.0,
-                        min=0,
-                        max=200,
+                        description="Negative = UP from table (safe in coord5)",
+                        value=-30.0,
+                        min=-200,
+                        max=0,
                     ),
                     dmc.NumberInput(
                         id="plate-test-pick-height",
@@ -5658,7 +5701,7 @@ def register_callbacks(app: Dash) -> None:
             return "Camera stream is not running.", drop_text
 
         workspace_def = SESSION.workspace_definition
-        approach_mm = _safe_float(approach_height, 30.0)
+        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
 
@@ -5711,7 +5754,7 @@ def register_callbacks(app: Dash) -> None:
                 update={"drop_target": drop_mm_xy}))
             SESSION.last_action = "Drop position taught."
             drop_text = (
-                f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm · "
+                f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm (z={pos.z:.1f}) · "
                 f"a={pos.a:.1f}, b={pos.b:.1f}, c={pos.c:.1f}"
             )
             return "Drop position recorded from robot pose.", drop_text
@@ -5784,7 +5827,7 @@ def register_callbacks(app: Dash) -> None:
 
         if workspace_def is None:
             return "Workspace is not defined; run workspace calibration first.", drop_text
-        approach_mm = _safe_float(approach_height, 30.0)
+        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
         gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
@@ -6030,7 +6073,7 @@ def register_callbacks(app: Dash) -> None:
         if frame is None:
             return _plate_test_abort("Camera stream is not running.")
 
-        approach_mm = _safe_float(approach_height, 30.0)
+        approach_mm = _safe_float(approach_height, -30.0)  # Negative = UP from table in coord5
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
         grip_timeout = _safe_float(grip_timeout_s, PLATE_TEST_GRIP_TIMEOUT_S)
@@ -6147,17 +6190,26 @@ def register_callbacks(app: Dash) -> None:
             SESSION.drop_target_robot is not None
             and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
         ):
+            # Clamp Z to safe minimum when using coordinate system 5
+            drop_z = _clamp_z_for_coord5(
+                float(SESSION.drop_target_robot[2]) + drop_mm,
+                use_base_coords=use_base_coordinates,
+            )
+            approach_z = _clamp_z_for_coord5(
+                float(SESSION.drop_target_robot[2]) + approach_mm,
+                use_base_coords=use_base_coordinates,
+            )
             drop_pose_coord5 = {
                 "x": float(SESSION.drop_target_robot[0]),
                 "y": float(SESSION.drop_target_robot[1]),
-                "z": float(SESSION.drop_target_robot[2]) + drop_mm,
+                "z": drop_z,
                 "poscfg": poscfg,
             }
             drop_pose_coord5.update(orientation)
             drop_approach_coord5 = {
                 "x": float(SESSION.drop_target_robot[0]),
                 "y": float(SESSION.drop_target_robot[1]),
-                "z": float(SESSION.drop_target_robot[2]) + approach_mm,
+                "z": approach_z,
                 "poscfg": poscfg,
             }
             drop_approach_coord5.update(orientation)
@@ -6198,6 +6250,13 @@ def register_callbacks(app: Dash) -> None:
                 drop_approach_base.update(orientation)
             drop_pose_coord5 = _coord5_pose_from_base(drop_pose_base)
             drop_approach_coord5 = _coord5_pose_from_base(drop_approach_base)
+            # Clamp Z to safe minimum after conversion to coord5
+            drop_pose_coord5["z"] = _clamp_z_for_coord5(
+                drop_pose_coord5["z"], use_base_coords=use_base_coordinates
+            )
+            drop_approach_coord5["z"] = _clamp_z_for_coord5(
+                drop_approach_coord5["z"], use_base_coords=use_base_coordinates
+            )
         drop_pose = drop_pose_base if use_base_coordinates else drop_pose_coord5
         drop_approach = (
             drop_approach_base if use_base_coordinates else drop_approach_coord5
@@ -6405,22 +6464,37 @@ def register_callbacks(app: Dash) -> None:
                 # Use adjusted coordinates for base system (accounts for plate movement)
                 coord_xy = target["reference_xy"] if not use_base_coordinates else target["adjusted_xy"]
                 plate_mm = target.get("plate_mm")
+                
+                # Debug logging to diagnose coordinate issues
+                LOGGER.info(
+                    "Target %d: plate_mm=(%.1f, %.1f), reference_xy=(%.1f, %.1f), adjusted_xy=(%.1f, %.1f), using %s",
+                    sequence,
+                    plate_mm[0] if plate_mm else 0,
+                    plate_mm[1] if plate_mm else 0,
+                    target["reference_xy"][0],
+                    target["reference_xy"][1],
+                    target["adjusted_xy"][0],
+                    target["adjusted_xy"][1],
+                    "coord5" if not use_base_coordinates else "base",
+                )
+                
                 approach_coord = np.array(
                     [coord_xy[0], coord_xy[1], approach_mm], dtype=np.float64
                 )
                 pick_coord = np.array(
                     [coord_xy[0], coord_xy[1], pick_mm], dtype=np.float64
                 )
+                # Clamp Z to safe minimum when using coordinate system 5
                 approach_pose_coord5 = {
                     "x": float(approach_coord[0]),
                     "y": float(approach_coord[1]),
-                    "z": float(approach_coord[2]),
+                    "z": _clamp_z_for_coord5(float(approach_coord[2]), use_base_coords=use_base_coordinates),
                     "poscfg": poscfg,
                 }
                 pick_pose_coord5 = {
                     "x": float(pick_coord[0]),
                     "y": float(pick_coord[1]),
-                    "z": float(pick_coord[2]),
+                    "z": _clamp_z_for_coord5(float(pick_coord[2]), use_base_coords=use_base_coordinates),
                     "poscfg": poscfg,
                 }
                 approach_pose_coord5.update(orientation)
