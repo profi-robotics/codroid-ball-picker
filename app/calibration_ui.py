@@ -2305,6 +2305,45 @@ def _apply_robot_calibration_results(
     robot_pts_np = np.asarray(robot_pts, dtype=np.float64)
     transform = _rigid_transform(plate_pts_np, robot_pts_np)
 
+    # Compute calibration error diagnostics
+    # Transform plate points to robot coordinates using the computed transform
+    transformed_plate_pts = (
+        transform.rotation @ plate_pts_np.T).T + transform.translation
+
+    # Compute position errors for each calibration point
+    errors = robot_pts_np - transformed_plate_pts
+    LOGGER.info("=== Calibration Error Diagnostics ===")
+    LOGGER.info(
+        "This shows how far the gripper was positioned from the ideal location:")
+    for i, (error, plate_pt, robot_pt) in enumerate(zip(errors, plate_pts_np, robot_pts_np)):
+        error_xy = np.linalg.norm(error[:2])
+        error_z = abs(error[2])
+        LOGGER.info(
+            "Point %d: XY error=%.2f mm (X=%+.2f, Y=%+.2f), Z error=%.2f mm | "
+            "Ideal=(%.1f, %.1f, %.1f) Captured=(%.1f, %.1f, %.1f)",
+            i + 1,
+            error_xy,
+            error[0],
+            error[1],
+            error_z,
+            transformed_plate_pts[i][0],
+            transformed_plate_pts[i][1],
+            transformed_plate_pts[i][2],
+            robot_pt[0],
+            robot_pt[1],
+            robot_pt[2],
+        )
+    mean_xy_error = np.mean([np.linalg.norm(e[:2]) for e in errors])
+    max_xy_error = np.max([np.linalg.norm(e[:2]) for e in errors])
+    LOGGER.info(
+        "Mean XY error: %.2f mm | Max XY error: %.2f mm | "
+        "Recommendation: %s",
+        mean_xy_error,
+        max_xy_error,
+        "Good calibration!" if max_xy_error < 2.0 else "Consider recalibrating with more careful positioning."
+    )
+    LOGGER.info("="*50)
+
     if SESSION.workspace_definition is not None:
         ws = SESSION.workspace_definition
         updated_ws = workspace.WorkspaceDefinition(
@@ -2677,7 +2716,103 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
         cv2.putText(vis, f"ID {det.marker_id}", center,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 204, 0), 2)
 
+    # Compute coord5 positions for calibration points if robot calibration is available
+    point_coords_text = ""
+    plate_points = plate_layout.robot_calibration_points()
+    if (
+        len(plate_points) >= 3
+        and SESSION.robot_calibration_points
+        and len(SESSION.robot_calibration_points) >= 3
+        and len(calibration_result.detections) >= 2
+    ):
+        try:
+            origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
+            # Build 2D rigid transform from reference layout to current camera detection
+            reference_h = SESSION.plate_reference_homography
+            if reference_h is None:
+                reference_h = calibration_result.homography
+            marker_base: list[np.ndarray] = []
+            marker_curr: list[np.ndarray] = []
+            for marker_id, detection in calibration_result.detections.items():
+                marker = plate_layout.markers.get(marker_id)
+                if marker is None:
+                    continue
+                base_pt = marker.center_mm - origin_mm
+                curr_pt = plate.image_points_to_plate_mm(
+                    reference_h, np.asarray(
+                        [detection.center], dtype=np.float64)
+                )[0]
+                marker_base.append(np.asarray(base_pt, dtype=np.float64))
+                marker_curr.append(np.asarray(
+                    curr_pt - origin_mm, dtype=np.float64))
+            if len(marker_base) >= 2:
+                r2, t2 = _rigid_transform_2d(
+                    np.vstack(marker_base), np.vstack(marker_curr)
+                )
+                # Compute adjusted coord5 for each calibration point and draw them on the frame
+                point_labels = ["P1", "P2", "P3"]
+                # Cyan, Magenta, Light Green
+                point_colors = [
+                    (0, 255, 255), (255, 100, 255), (100, 255, 100)]
+                point_coords_parts = []
+
+                # Convert calibration point positions from plate mm to pixel coordinates
+                homography = calibration_result.homography
+                if homography is not None:
+                    for i, point in enumerate(plate_points[:3]):
+                        # Get plate mm coordinates
+                        plate_mm_xy = np.array([[
+                            float(point.center_mm[0]),
+                            float(point.center_mm[1])
+                        ]], dtype=np.float32).reshape(-1, 1, 2)
+
+                        # Transform to pixel coordinates using homography inverse
+                        inv_h = np.linalg.inv(homography)
+                        pixel_xy = cv2.perspectiveTransform(
+                            plate_mm_xy, inv_h).reshape(-1, 2)
+                        pixel_x, pixel_y = int(round(pixel_xy[0][0])), int(
+                            round(pixel_xy[0][1]))
+
+                        # Compute coord5 position for text display
+                        base_xy = np.array([
+                            float(point.center_mm[0] - origin_mm[0]),
+                            float(point.center_mm[1] - origin_mm[1]),
+                        ], dtype=np.float64)
+                        adj_xy = (r2 @ base_xy) + t2
+                        label = point_labels[i] if i < len(
+                            point_labels) else f"P{i+1}"
+                        color = point_colors[i] if i < len(
+                            point_colors) else (255, 255, 255)
+
+                        # Draw circle at calibration point location
+                        cv2.circle(vis, (pixel_x, pixel_y), 8, color, 2)
+                        cv2.circle(vis, (pixel_x, pixel_y), 2, color, -1)
+
+                        # Draw label with coord5 position
+                        text = f"{label}"
+                        text_size = cv2.getTextSize(
+                            text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        text_x = pixel_x - text_size[0] // 2
+                        text_y = pixel_y - 12
+                        # Draw text background
+                        cv2.rectangle(vis,
+                                      (text_x - 2, text_y - text_size[1] - 2),
+                                      (text_x + text_size[0] + 2, text_y + 2),
+                                      (0, 0, 0), -1)
+                        cv2.putText(vis, text, (text_x, text_y),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                        point_coords_parts.append(
+                            f"{label}:({adj_xy[0]:.1f},{adj_xy[1]:.1f})"
+                        )
+                    point_coords_text = " · ".join(point_coords_parts)
+        except Exception:
+            # Silently ignore errors in coord5 computation for overlay
+            pass
+
     metric = f"Reprojection error: {calibration_result.reprojection_error_mm:.2f} mm"
+    if point_coords_text:
+        metric = f"{metric} · {point_coords_text}"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
     status = f"Plate markers detected: {len(calibration_result.detections)}"
     center_px = _plate_center_px(calibration_result.detections)
@@ -8126,7 +8261,7 @@ def register_callbacks(app: Dash) -> None:
 
             # Compute coordinate system 5 positions from plate layout
             try:
-                plate_layout = plate.CalibrationPlate.load(
+                plate_layout = plate.load_plate_layout(
                     DEFAULT_PLATE_LAYOUT_PATH)
                 plate_points = plate_layout.robot_calibration_points()
                 if len(plate_points) < 3:
