@@ -12,7 +12,10 @@ __pycache__/
 
 # Calibration files
 data/calibration/*
+data/plate_test_runs/*
 data/app_settings.json
+data/drop_target.json
+data/robot_calibration.json
 
 # Model files
 data/models/*

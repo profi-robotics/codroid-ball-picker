@@ -1346,10 +1346,13 @@ def _resolve_plate_test_coord5_targets(
         np.vstack(marker_curr),
     )
 
+    offset_rotation_rad = float(np.arctan2(r2[1, 0], r2[0, 0]))
+    offset_rotation_deg = float(np.degrees(offset_rotation_rad))
     # Debug: log plate offset tracking transformation
     LOGGER.info("Plate offset tracking: detected %d markers", len(marker_base))
     LOGGER.info("Plate offset r2 (rotation):\n%s", r2)
     LOGGER.info("Plate offset t2 (translation): %s", t2)
+    LOGGER.info("Plate offset rotation: %.2f degrees", offset_rotation_deg)
 
     robot_pts = np.asarray(
         [
@@ -1432,6 +1435,7 @@ def _resolve_plate_test_coord5_targets(
         "reprojection_error_mm": calibration_result.reprojection_error_mm,
         "reference_initialized": reference_initialized,
         "markers_coord5": marker_info,
+        "offset_rotation_deg": offset_rotation_deg,
     }, baseline_transform, reference_initialized
 
 
@@ -6228,6 +6232,22 @@ def register_callbacks(app: Dash) -> None:
         if not session.posture_seen():
             return _plate_test_abort("Robot posture stream not available yet.")
         use_base_coordinates = PLATE_TEST_USE_BASE_COORDINATES
+        if use_base_coordinates:
+            if approach_mm < drop_mm:
+                LOGGER.info(
+                    "Clamping plate-test approach height from %.3f to %.3f (base coords).",
+                    approach_mm,
+                    drop_mm,
+                )
+                approach_mm = drop_mm
+        else:
+            if approach_mm > drop_mm:
+                LOGGER.info(
+                    "Clamping plate-test approach height from %.3f to %.3f (coord5).",
+                    approach_mm,
+                    drop_mm,
+                )
+                approach_mm = drop_mm
         if (
             SESSION.drop_target_orientation is not None
             and (
@@ -6268,6 +6288,23 @@ def register_callbacks(app: Dash) -> None:
         )
         baseline_inv_rot = baseline_transform.rotation.T
         baseline_inv_trans = -baseline_inv_rot @ baseline_transform.translation
+
+        # Extract plate rotation angle (Z-axis rotation) from baseline transform
+        # The baseline_transform.rotation is the rotation from plate frame to robot base frame
+        # We extract the yaw angle (rotation around Z axis) for the 6th axis alignment
+        plate_rotation_rad = np.arctan2(
+            baseline_transform.rotation[1, 0], baseline_transform.rotation[0, 0]
+        )
+        plate_rotation_deg = np.degrees(plate_rotation_rad)
+        offset_rotation_deg = float(plate_meta.get("offset_rotation_deg", 0.0))
+        plate_rotation_total = float(plate_rotation_deg + offset_rotation_deg)
+        LOGGER.info("Plate rotation angle: %.2f degrees", plate_rotation_deg)
+        LOGGER.info("Plate rotation total: %.2f degrees", plate_rotation_total)
+
+        # Create two orientations: one aligned with plate (for picking), one for drop (original)
+        drop_orientation = orientation.copy()
+        plate_orientation = orientation.copy()
+        plate_orientation["c"] = float(orientation["c"] + plate_rotation_total)
 
         def _base_to_coord(base_xyz: np.ndarray) -> np.ndarray:
             return baseline_inv_rot @ base_xyz + baseline_inv_trans
@@ -6350,14 +6387,14 @@ def register_callbacks(app: Dash) -> None:
                 "z": drop_z,
                 "poscfg": poscfg,
             }
-            drop_pose_coord5.update(orientation)
+            drop_pose_coord5.update(drop_orientation)
             drop_approach_coord5 = {
                 "x": float(SESSION.drop_target_robot[0]),
                 "y": float(SESSION.drop_target_robot[1]),
                 "z": approach_z,
                 "poscfg": poscfg,
             }
-            drop_approach_coord5.update(orientation)
+            drop_approach_coord5.update(drop_orientation)
             drop_pose_base = _base_pose_from_coord5(drop_pose_coord5)
             drop_approach_base = _base_pose_from_coord5(drop_approach_coord5)
         else:
@@ -6368,14 +6405,14 @@ def register_callbacks(app: Dash) -> None:
                     "z": float(SESSION.drop_target_robot[2]) + drop_mm,
                     "poscfg": poscfg,
                 }
-                drop_pose_base.update(orientation)
+                drop_pose_base.update(drop_orientation)
                 drop_approach_base = {
                     "x": float(SESSION.drop_target_robot[0]),
                     "y": float(SESSION.drop_target_robot[1]),
                     "z": float(SESSION.drop_target_robot[2]) + approach_mm,
                     "poscfg": poscfg,
                 }
-                drop_approach_base.update(orientation)
+                drop_approach_base.update(drop_orientation)
             else:
                 drop_pose_base = _pose_from_workspace_mm(
                     workspace_def,
@@ -6384,7 +6421,7 @@ def register_callbacks(app: Dash) -> None:
                     drop_mm,
                 )
                 drop_pose_base["poscfg"] = poscfg
-                drop_pose_base.update(orientation)
+                drop_pose_base.update(drop_orientation)
                 drop_approach_base = _pose_from_workspace_mm(
                     workspace_def,
                     drop_target_mm[0],
@@ -6392,7 +6429,7 @@ def register_callbacks(app: Dash) -> None:
                     approach_mm,
                 )
                 drop_approach_base["poscfg"] = poscfg
-                drop_approach_base.update(orientation)
+                drop_approach_base.update(drop_orientation)
             drop_pose_coord5 = _coord5_pose_from_base(drop_pose_base)
             drop_approach_coord5 = _coord5_pose_from_base(drop_approach_base)
             # Clamp Z to safe minimum after conversion to coord5
@@ -6597,11 +6634,6 @@ def register_callbacks(app: Dash) -> None:
                 hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                 label="drop_approach_start",
             )
-            await _move_linear_with_hold(
-                drop_pose,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                label="drop_pose_start",
-            )
 
             for target in targets:
                 sequence = target["sequence"]
@@ -6642,8 +6674,8 @@ def register_callbacks(app: Dash) -> None:
                     "z": _clamp_z_for_coord5(float(pick_coord[2]), use_base_coords=use_base_coordinates),
                     "poscfg": poscfg,
                 }
-                approach_pose_coord5.update(orientation)
-                pick_pose_coord5.update(orientation)
+                approach_pose_coord5.update(plate_orientation)
+                pick_pose_coord5.update(plate_orientation)
                 approach_base = _coord_to_base(approach_coord)
                 pick_base = _coord_to_base(pick_coord)
                 approach_pose_base = {
@@ -6658,8 +6690,8 @@ def register_callbacks(app: Dash) -> None:
                     "z": float(pick_base[2]),
                     "poscfg": poscfg,
                 }
-                approach_pose_base.update(orientation)
-                pick_pose_base.update(orientation)
+                approach_pose_base.update(plate_orientation)
+                pick_pose_base.update(plate_orientation)
                 approach_pose = (
                     approach_pose_base
                     if use_base_coordinates
@@ -6668,11 +6700,25 @@ def register_callbacks(app: Dash) -> None:
                 pick_pose = (
                     pick_pose_base if use_base_coordinates else pick_pose_coord5
                 )
+                def _travel_z(
+                    z_a: float, z_b: float, *, use_base: bool
+                ) -> float:
+                    if use_base:
+                        return float(max(z_a, z_b))
+                    return float(min(z_a, z_b))
+
+                travel_z = _travel_z(
+                    float(drop_approach["z"]),
+                    float(approach_pose["z"]),
+                    use_base=use_base_coordinates,
+                )
+                transit_to_pick_pose = approach_pose.copy()
+                transit_to_pick_pose["z"] = travel_z
                 cycle_started_at = time.monotonic()
                 await _move_linear_with_hold(
-                    approach_pose,
+                    transit_to_pick_pose,
                     hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                    label=f"target_{sequence}_approach",
+                    label=f"target_{sequence}_transit_to_pick",
                 )
                 await _move_linear_with_hold(
                     pick_pose,
@@ -6700,10 +6746,19 @@ def register_callbacks(app: Dash) -> None:
                 if gripped:
                     summary["successes"] += 1
                     SESSION.robot_has_object = True
+                    lift_pose = pick_pose.copy()
+                    lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
-                        approach_pose,
+                        lift_pose,
                         hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                         label=f"target_{sequence}_lift",
+                    )
+                    drop_travel_pose = drop_approach.copy()
+                    drop_travel_pose["z"] = travel_z
+                    await _move_linear_with_hold(
+                        drop_travel_pose,
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        label=f"target_{sequence}_transit_to_drop",
                     )
                     await _move_linear_with_hold(
                         drop_approach,
@@ -6726,24 +6781,28 @@ def register_callbacks(app: Dash) -> None:
                     _record_pick_cycle(True, cycle_started_at)
                 else:
                     _command_gripper(gripper_max_width, "opened")
+                    lift_pose = pick_pose.copy()
+                    lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
-                        approach_pose,
+                        lift_pose,
                         hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                         label=f"target_{sequence}_empty_lift",
+                    )
+                    drop_travel_pose = drop_approach.copy()
+                    drop_travel_pose["z"] = travel_z
+                    await _move_linear_with_hold(
+                        drop_travel_pose,
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        label=f"target_{sequence}_empty_transit_to_drop",
+                    )
+                    await _move_linear_with_hold(
+                        drop_approach,
+                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        label=f"target_{sequence}_return_to_drop",
                     )
                     summary["details"].append(f"{sequence}: empty")
                     _record_pick_cycle(False, cycle_started_at)
 
-            await _move_linear_with_hold(
-                drop_approach,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                label="drop_approach_end",
-            )
-            await _move_linear_with_hold(
-                drop_pose,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                label="drop_pose_end",
-            )
             _command_gripper(gripper_max_width, "opened")
             await robot_api.power_off()
 
