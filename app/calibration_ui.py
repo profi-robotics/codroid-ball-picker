@@ -3807,6 +3807,14 @@ def build_stepper_card() -> dmc.Card:
                                     disabled=True,
                                 ),
                                 dmc.Button(
+                                    "Check calibration accuracy",
+                                    id="run-plate-test-calibration",
+                                    fullWidth=True,
+                                    variant="outline",
+                                    color="orange",
+                                    disabled=True,
+                                ),
+                                dmc.Button(
                                     "Run verification move",
                                     id="run-verification-inline",
                                     fullWidth=True,
