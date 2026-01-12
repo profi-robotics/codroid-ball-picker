@@ -12,8 +12,14 @@
   --brand-soft: rgba(241, 91, 95, 0.16);
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
   color: var(--app-ink);
   background: #f7f9fc;
   font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
@@ -54,6 +60,9 @@ body {
 
 .app-shell {
   background: transparent;
+  min-height: 100vh;
+  --app-header-height: 90px;
+  --app-footer-height: 340px;
 }
 
 .app-header {
@@ -80,7 +89,10 @@ body {
 }
 
 .app-main {
-  overflow-y: auto;
+  min-height: calc(
+    100vh - var(--app-header-height, 90px) - var(--app-footer-height, 340px) - 48px
+  );
+  overflow: hidden;
 }
 
 .main-tabs {
@@ -90,17 +102,53 @@ body {
   box-shadow: none;
 }
 
-.app-main.footer-expanded {
-  padding-bottom: 400px !important;
-}
-
+.app-main.footer-expanded,
 .app-main.footer-collapsed {
-  padding-bottom: 220px !important;
+  padding-bottom: 0 !important;
 }
 
 .main-panel {
   animation: rise-in 0.45s ease;
   color: var(--app-ink);
+  min-height: 0;
+}
+
+.layout-grid {
+  height: 100%;
+  min-height: 0;
+  align-items: start;
+}
+
+.tabs-column {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs-scroll-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: calc(
+    100vh - var(--app-header-height, 90px) - var(--app-footer-height, 340px) - 48px
+  );
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.camera-column {
+  min-height: 0;
+  align-self: flex-start;
+  position: sticky;
+  top: 0;
+  padding-top: 12px;
+  max-height: calc(
+    100vh - var(--app-header-height, 90px) - var(--app-footer-height, 340px) - 16px
+  );
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-card {

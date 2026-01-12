@@ -322,6 +322,7 @@ def _set_robot_guidance(
     step: Optional[int] = None,
     status: Optional[str] = None,
     verification_ready: Optional[bool] = None,
+    modal_suppressed: Optional[bool] = None,
 ) -> None:
     ROBOT_CALIBRATION_GUIDANCE["message"] = message
     if step is not None:
@@ -330,6 +331,8 @@ def _set_robot_guidance(
         ROBOT_CALIBRATION_GUIDANCE["status"] = status
     if verification_ready is not None:
         ROBOT_CALIBRATION_GUIDANCE["verification_ready"] = verification_ready
+    if modal_suppressed is not None:
+        ROBOT_CALIBRATION_GUIDANCE["modal_suppressed"] = modal_suppressed
     ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
 
 
@@ -683,6 +686,7 @@ ROBOT_CALIBRATION_GUIDANCE = {
     "step": 0,
     "message": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
     "verification_ready": False,
+    "modal_suppressed": False,
     "timestamp": time.time(),
 }
 
@@ -2078,6 +2082,7 @@ async def _run_robot_plate_calibration(
             status="running",
             step=1,
             verification_ready=False,
+            modal_suppressed=False,
         )
         await robot_api.power_on()
         await _ensure_coordinate_id(robot_api, 0)
@@ -3742,7 +3747,7 @@ def build_stepper_card() -> dmc.Card:
                                     id="use-existing-calibration",
                                     fullWidth=True,
                                     variant="outline",
-                                    style={"display": "none"},
+                                    disabled=True,
                                 ),
                                 dmc.Box(
                                     id="camera-calibration-action",
@@ -3793,22 +3798,19 @@ def build_stepper_card() -> dmc.Card:
                                     color="teal",
                                     disabled=True,
                                 ),
+                                dmc.Button(
+                                    "Use saved calibration",
+                                    id="use-existing-robot-calibration",
+                                    fullWidth=True,
+                                    variant="outline",
+                                    color="brand",
+                                    disabled=True,
+                                ),
                                 dmc.Text(id="current-robot-position",
                                          size="xs", c="dimmed"),
                                 dmc.Text(id="plate-action-status",
                                          size="sm", c="dimmed"),
                                 dmc.Text(id="plate-metrics", size="sm"),
-                                dmc.Text(
-                                    "Step-by-step calibration guide:\n"
-                                    "1. Start the camera stream and confirm the plate markers are visible (>= 2)\n"
-                                    "2. Keep the plate steady and click 'Begin calibrating robot'\n"
-                                    "3. Follow the modal instructions for points 1, 2, and 3\n"
-                                    "4. Press flange button 1 at each indentation\n"
-                                    "5. Run the verification move once prompted",
-                                    size="xs",
-                                    c="dimmed",
-                                    style={"whiteSpace": "pre-line"},
-                                ),
                                 dmc.Text(
                                     id="robot-calibration-status",
                                     size="sm",
@@ -4661,48 +4663,56 @@ def build_layout() -> dmc.MantineProvider:
                                 dmc.Grid(
                                     [
                                         dmc.GridCol(
-                                            dmc.Tabs(
-                                                [
-                                                    dmc.TabsList(
-                                                        [
-                                                            dmc.TabsTab(
-                                                                "Calibration", value="calibration"),
-                                                            dmc.TabsTab(
-                                                                "Applications", value="applications"),
-                                                            dmc.TabsTab(
-                                                                "Monitoring", value="monitoring"),
-                                                        ],
-                                                        style={
-                                                            "width": "100%",
-                                                            "justifyContent": "flex-start",
-                                                            "marginTop": "0px",
-                                                            "marginBottom": "12px",
-                                                        },
-                                                    ),
-                                                    dmc.TabsPanel(
-                                                        build_calibration_tab(), value="calibration"),
-                                                    dmc.TabsPanel(
-                                                        build_application_tab(), value="applications"),
-                                                    dmc.TabsPanel(
-                                                        build_monitoring_tab(), value="monitoring"),
-                                                ],
-                                                id="main-tabs",
-                                                value="calibration",
-                                                variant="pills",
-                                                color="brand",
-                                                className="main-tabs",
-                                                style={"width": "100%",
-                                                       "marginBottom": "6px"},
+                                            html.Div(
+                                                dmc.Tabs(
+                                                    [
+                                                        dmc.TabsList(
+                                                            [
+                                                                dmc.TabsTab(
+                                                                    "Applications", value="applications"),
+                                                                dmc.TabsTab(
+                                                                    "Monitoring", value="monitoring"),
+                                                                dmc.TabsTab(
+                                                                    "Calibration", value="calibration"),
+                                                            ],
+                                                            style={
+                                                                "width": "100%",
+                                                                "justifyContent": "flex-start",
+                                                                "marginTop": "0px",
+                                                                "marginBottom": "12px",
+                                                            },
+                                                        ),
+                                                        dmc.TabsPanel(
+                                                            build_application_tab(), value="applications"),
+                                                        dmc.TabsPanel(
+                                                            build_monitoring_tab(), value="monitoring"),
+                                                        dmc.TabsPanel(
+                                                            build_calibration_tab(), value="calibration"),
+                                                    ],
+                                                    id="main-tabs",
+                                                    value="applications",
+                                                    variant="pills",
+                                                    color="brand",
+                                                    className="main-tabs",
+                                                    style={
+                                                        "width": "100%",
+                                                        "marginBottom": "6px",
+                                                    },
+                                                ),
+                                                className="tabs-scroll-area",
                                             ),
                                             span={"base": 12, "md": 4},
+                                            className="tabs-column",
                                         ),
                                         dmc.GridCol(
                                             dmc.Stack(
                                                 [build_camera_panel()], gap="md"),
                                             span={"base": 12, "md": 8},
+                                            className="camera-column",
                                         ),
                                     ],
                                     gutter="md",
+                                    className="layout-grid",
                                 ),
                                 fluid=True,
                                 px=0,
@@ -4712,6 +4722,7 @@ def build_layout() -> dmc.MantineProvider:
                             ),
                             id="app-main",
                             className="app-main footer-expanded",
+                            style={"overflow": "hidden"},
                         ),
                         build_footer(),
                     ],
@@ -7282,6 +7293,8 @@ def register_callbacks(app: Dash) -> None:
         Output("monitor-pick-summary", "children"),
         Output("use-existing-calibration", "style"),
         Output("use-existing-workspace", "style"),
+        Output("use-existing-calibration", "disabled"),
+        Output("use-existing-robot-calibration", "disabled"),
         Input("monitor-interval", "n_intervals"),
         Input("camera-interval", "n_intervals"),
         State("camera-connection-state", "data"),
@@ -7290,6 +7303,7 @@ def register_callbacks(app: Dash) -> None:
         State("robot-power-state", "data"),
         State("robot-speed-state", "data"),
         State("settings-calib-path", "value"),
+        State("settings-robot-calib-path", "value"),
     )
     def _update_monitoring_summary(
         _monitor_ticks: int,
@@ -7300,7 +7314,8 @@ def register_callbacks(app: Dash) -> None:
         robot_power: Optional[dict],
         robot_speed: Optional[dict],
         bundle_path_value: Optional[str],
-    ) -> Tuple[list, list, list, dict, dict]:
+        robot_calib_path_value: Optional[str],
+    ) -> Tuple[list, list, list, dict, dict, bool, bool]:
         camera_status = (camera_state or {}).get("status", "off")
         robot_status = (robot_state or {}).get("status", "offline")
         gripper_status = (gripper_state or {}).get("status", "offline")
@@ -7426,11 +7441,14 @@ def register_callbacks(app: Dash) -> None:
                 )
             )
         bundle_path = _safe_path(bundle_path_value, DEFAULT_BUNDLE_PATH)
-        bundle_style = {} if bundle_path.exists() else {"display": "none"}
+        bundle_style = {}
         workspace_style = {} if DEFAULT_WORKSPACE_PATH.exists() else {
             "display": "none"}
+        bundle_disabled = not bundle_path.exists()
+        robot_path = _safe_path(robot_calib_path_value, DEFAULT_ROBOT_CALIBRATION_PATH)
+        robot_disabled = not robot_path.exists()
 
-        return system_items, detection_items, pick_items, bundle_style, workspace_style
+        return system_items, detection_items, pick_items, bundle_style, workspace_style, bundle_disabled, robot_disabled
 
     @app.callback(
         Output("app-notifications", "sendNotifications"),
@@ -7614,6 +7632,47 @@ def register_callbacks(app: Dash) -> None:
                 return alert, {"progress": 0}
 
         return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("use-existing-robot-calibration", "n_clicks"),
+        State("settings-robot-calib-path", "value"),
+        prevent_initial_call=True,
+    )
+    def _load_saved_robot_calibration(
+        _clicks: int,
+        robot_calib_path_value: Optional[str],
+    ) -> dict:
+        """Load persisted robot calibration data instead of running the guided flow."""
+        path = _safe_path(robot_calib_path_value, DEFAULT_ROBOT_CALIBRATION_PATH)
+        if not path.exists():
+            message = f"Saved robot calibration not found: {path}"
+            _set_robot_guidance(message, status="error", verification_ready=False)
+            return {"status": "error", "message": message}
+        try:
+            _load_robot_calibration(path)
+            guidance = (
+                "Saved robot calibration loaded. Run the verification move to confirm."
+            )
+            _set_robot_guidance(
+                guidance,
+                status="awaiting_verification",
+                verification_ready=True,
+                step=4,
+                modal_suppressed=True,
+            )
+            return {
+                "status": "awaiting_verification",
+                "message": guidance,
+                "step": 4,
+                "verification_ready": True,
+            }
+        except Exception as exc:
+            message = f"Failed to load saved robot calibration: {exc}"
+            _set_robot_guidance(
+                message, status="error", verification_ready=False, modal_suppressed=True
+            )
+            return {"status": "error", "message": message}
 
     @app.callback(
         Output("workspace-action-status", "children"),
@@ -8089,7 +8148,9 @@ def register_callbacks(app: Dash) -> None:
     ) -> bool:
         status = (calibration_state or {}).get("status", "idle")
         trigger = callback_context.triggered_id
-        if status in {"running", "awaiting_verification", "verifying"}:
+        should_show_modal = not ROBOT_CALIBRATION_GUIDANCE.get(
+            "modal_suppressed", False)
+        if status in {"running", "awaiting_verification", "verifying"} and should_show_modal:
             return True
         if status in {"complete", "error", "canceled"}:
             return trigger != "robot-calibration-modal-close"
@@ -8317,6 +8378,7 @@ def register_callbacks(app: Dash) -> None:
             status="verifying",
             step=4,
             verification_ready=False,
+            modal_suppressed=False,
         )
 
         async def _verification_motion(api: CodroidAPI) -> None:
