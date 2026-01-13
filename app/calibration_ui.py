@@ -6862,6 +6862,10 @@ def register_callbacks(app: Dash) -> None:
                 baseline_transform,
                 reference_initialized,
             ) = _resolve_plate_test_coord5_targets(DEFAULT_PLATE_PATH)
+            target_sequence_order = [int(target["sequence"]) for target in targets]
+            targets_by_sequence: dict[int, dict] = {
+                int(target["sequence"]): dict(target) for target in targets
+            }
         except Exception as exc:  # noqa: BLE001
             return _plate_test_abort(f"Plate detection failed: {exc}")
 
@@ -6872,29 +6876,33 @@ def register_callbacks(app: Dash) -> None:
         poscfg = CodroidAPI.build_poscfg(
             mode=int(SESSION.robot_calibration_points[0].get("mode", 0))
         )
-        baseline_inv_rot = baseline_transform.rotation.T
-        baseline_inv_trans = -baseline_inv_rot @ baseline_transform.translation
-
-        # Extract plate rotation angle (Z-axis rotation) from baseline transform
-        # The baseline_transform.rotation is the rotation from plate frame to robot base frame
-        # We extract the yaw angle (rotation around Z axis) for the 6th axis alignment
-        plate_rotation_rad = np.arctan2(
-            baseline_transform.rotation[1,
-                                        0], baseline_transform.rotation[0, 0]
-        )
-        plate_rotation_deg = np.degrees(plate_rotation_rad)
-        offset_rotation_deg = float(plate_meta.get("offset_rotation_deg", 0.0))
-        plate_rotation_total = float(plate_rotation_deg + offset_rotation_deg)
-        LOGGER.info("Plate rotation angle: %.2f degrees", plate_rotation_deg)
-        LOGGER.info("Plate rotation total: %.2f degrees", plate_rotation_total)
-
         # Create two orientations: one aligned with plate (for picking), one for drop (original)
         drop_orientation = orientation.copy()
         plate_orientation = orientation.copy()
-        plate_orientation["c"] = float(orientation["c"] + plate_rotation_total)
+        plate_rotation_total = 0.0
+
+        def _update_plate_alignment() -> None:
+            nonlocal plate_rotation_total
+            # Extract plate rotation angle (Z-axis rotation) from baseline transform
+            # The baseline_transform.rotation is the rotation from plate frame to robot base frame
+            # We extract the yaw angle (rotation around Z axis) for the 6th axis alignment
+            plate_rotation_rad = np.arctan2(
+                baseline_transform.rotation[1, 0],
+                baseline_transform.rotation[0, 0],
+            )
+            plate_rotation_deg = np.degrees(plate_rotation_rad)
+            offset_rotation_deg = float(plate_meta.get("offset_rotation_deg", 0.0))
+            plate_rotation_total = float(plate_rotation_deg + offset_rotation_deg)
+            plate_orientation["c"] = float(orientation["c"] + plate_rotation_total)
+            LOGGER.info("Plate rotation angle: %.2f degrees", plate_rotation_deg)
+            LOGGER.info("Plate rotation total: %.2f degrees", plate_rotation_total)
+
+        _update_plate_alignment()
 
         def _base_to_coord(base_xyz: np.ndarray) -> np.ndarray:
-            return baseline_inv_rot @ base_xyz + baseline_inv_trans
+            inv_rot = baseline_transform.rotation.T
+            inv_trans = -inv_rot @ baseline_transform.translation
+            return inv_rot @ base_xyz + inv_trans
 
         def _coord_to_base(coord_xyz: np.ndarray) -> np.ndarray:
             return (
@@ -7040,7 +7048,7 @@ def register_callbacks(app: Dash) -> None:
             "pick_height_mm": float(pick_mm),
             "drop_height_mm": float(drop_mm),
             "grip_timeout_s": float(grip_timeout),
-            "targets": targets,
+            "targets": [dict(target) for target in targets],
             "plate_meta": plate_meta,
             "drop_target": {
                 "workspace_mm": drop_target_mm,
@@ -7050,6 +7058,39 @@ def register_callbacks(app: Dash) -> None:
             "moves": [],
             "grip_events": [],
         }
+
+        async def _refresh_plate_targets() -> bool:
+            nonlocal baseline_transform, plate_meta, reference_initialized, targets, targets_by_sequence
+
+            try:
+                (
+                    new_targets,
+                    new_plate_meta,
+                    new_baseline,
+                    new_reference_initialized,
+                ) = await asyncio.to_thread(
+                    _resolve_plate_test_coord5_targets, DEFAULT_PLATE_PATH
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Plate test dynamic update skipped: %s", exc)
+                return False
+
+            reference_initialized = reference_initialized or bool(
+                new_reference_initialized
+            )
+            plate_meta = new_plate_meta
+            capture["plate_meta"] = plate_meta
+            plate_meta["reference_initialized"] = reference_initialized
+            baseline_transform = new_baseline
+            targets = new_targets
+            updated_targets = {
+                int(target["sequence"]): dict(target)
+                for target in new_targets
+            }
+            targets_by_sequence.update(updated_targets)
+            capture["targets"] = [dict(target) for target in new_targets]
+            _update_plate_alignment()
+            return True
 
         def _record_move(
             label: str, command_pose: dict, command_coord_id: int
@@ -7234,13 +7275,33 @@ def register_callbacks(app: Dash) -> None:
                 hold_seconds=PLATE_TEST_MOVE_HOLD_S,
                 label="drop_approach_start",
             )
+            await _move_linear_with_hold(
+                drop_pose,
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                label="return_to_drop_pose",
+            )
+            _command_gripper(gripper_max_width, "opened")
+            await _move_linear_with_hold(
+                drop_approach,
+                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                label="drop_approach_ready",
+            )
 
-            for target in targets:
+            for sequence in target_sequence_order:
                 await _wait_for_operation_resume(run_id)
-                sequence = target["sequence"]
-                # Use adjusted coordinates for coord5: accounts for current plate position as tracked by camera
-                # Use reference coordinates for base system: static layout positions
-                coord_xy = target["adjusted_xy"] if not use_base_coordinates else target["reference_xy"]
+                refreshed = await _refresh_plate_targets()
+                if not refreshed:
+                    LOGGER.warning(
+                        "Plate test target %s: unable to refresh plate pose, using last known position.",
+                        sequence,
+                    )
+                target = targets_by_sequence.get(sequence)
+                if target is None:
+                    raise RuntimeError(
+                        f"Plate test target {sequence} missing from latest pose data."
+                    )
+                # Use adjusted coordinates: accounts for current plate position as tracked by camera
+                coord_xy = target.get("adjusted_xy", target["reference_xy"])
                 plate_mm = target.get("plate_mm")
 
                 # Debug logging to diagnose coordinate issues
