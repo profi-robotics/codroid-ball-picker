@@ -92,6 +92,7 @@ PLATE_TEST_TOLERANCE_MM = 2.0
 PLATE_TEST_Z_TOLERANCE_MM = 2.0
 PLATE_TEST_SETTLE_S = 0.4
 PLATE_TEST_MOTION_EPS_MM = 0.5
+RESCUE_JOG_HOLD_S = 0.35
 # Use coordinate system 5 (robot calibration frame) instead of base coordinates.
 # Coordinate system 5 is aligned with the plate reference frame at calibration time.
 # Setting to True would use base coordinates with dynamic plate tracking adjustments.
@@ -1015,6 +1016,59 @@ def _detect_overspeed_status(status: dict) -> bool:
     if isinstance(nested, dict) and _status_flag(nested, overspeed_keys):
         return True
     return _alarm_contains(status, ("overspeed", "over speed"))
+
+
+def _detect_joint_protection_status(status: dict) -> bool:
+    joint_keys = (
+        "joint_protection",
+        "jointProtection",
+        "joint_collision",
+        "jointCollision",
+        "collision",
+    )
+    if _status_flag(status, joint_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, joint_keys):
+        return True
+    return _alarm_contains(status, ("joint", "collision"))
+
+
+def _detect_wrong_tool_status(status: dict) -> bool:
+    tool_keys = (
+        "wrong_tool",
+        "wrongTool",
+        "tool_error",
+        "payload_error",
+        "payloadError",
+    )
+    if _status_flag(status, tool_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, tool_keys):
+        return True
+    return _alarm_contains(status, ("tool", "payload"))
+
+
+def _detect_rescue_mode_status(status: dict) -> bool:
+    state = status.get("state")
+    if isinstance(state, (int, float)) and int(state) == 3:
+        return True
+    return False
+
+
+def _detect_drag_not_allowed_status(status: dict) -> bool:
+    drag_keys = (
+        "drag_not_allowed",
+        "dragNotAllowed",
+        "drag_not_allowed_warning",
+    )
+    if _status_flag(status, drag_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, drag_keys):
+        return True
+    return _alarm_contains(status, ("drag not allowed",))
 
 
 def _restore_persisted_state() -> None:
@@ -3395,6 +3449,28 @@ def build_footer() -> dmc.AppShellFooter:
         color="red",
         size="md",
     )
+    rescue_button = dmc.Button(
+        "Enable rescue mode",
+        id="rescue-mode-enable",
+        color="orange",
+        variant="outline",
+        size="sm",
+        radius="md",
+    )
+    rescue_exit_button = dmc.Button(
+        "Exit rescue mode",
+        id="rescue-mode-exit",
+        color="orange",
+        variant="light",
+        size="sm",
+        radius="md",
+        style={"display": "none"},
+    )
+    rescue_status = dmc.Text(
+        id="rescue-mode-status",
+        size="xs",
+        c="dimmed",
+    )
 
     robot_speed_slider = dmc.Slider(
         id="robot-speed-slider",
@@ -3526,6 +3602,9 @@ def build_footer() -> dmc.AppShellFooter:
             dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
             stop_button,
             power_toggle,
+            rescue_button,
+            rescue_exit_button,
+            rescue_status,
         ],
         gap=6,
         align="center",
@@ -3734,10 +3813,56 @@ def build_footer() -> dmc.AppShellFooter:
         wrap="wrap",
     )
 
+    rescue_joint_rows = []
+    for joint_idx in range(1, 7):
+        rescue_joint_rows.append(
+            dmc.Group(
+                [
+                    dmc.Text(f"J{joint_idx}", size="xs", fw=600),
+                    dmc.Button(
+                        "-",
+                        id=f"rescue-joint-{joint_idx}-minus",
+                        variant="outline",
+                        color="gray",
+                        size="xs",
+                    ),
+                    dmc.Button(
+                        "+",
+                        id=f"rescue-joint-{joint_idx}-plus",
+                        variant="outline",
+                        color="gray",
+                        size="xs",
+                    ),
+                ],
+                gap="xs",
+                align="center",
+            )
+        )
+
+    rescue_controls = dmc.Stack(
+        [
+            dmc.Text("Rescue joint control", fw=700, size="sm", c="orange"),
+            dmc.Stack(rescue_joint_rows, gap=4),
+            dmc.Text(id="rescue-jog-status", size="xs", c="dimmed"),
+        ],
+        id="robot-controls-rescue",
+        gap=6,
+        align="flex-start",
+        style={"display": "none"},
+    )
+
+    standard_controls = dmc.Group(
+        [auto_control_column, program_control_column],
+        id="robot-controls-standard",
+        gap="lg",
+        align="center",
+        wrap="wrap",
+    )
+
     footer_header = html.Div(
         [
             dmc.Group(
-                [stop_column, auto_control_column, program_control_column],
+                [stop_column, standard_controls, rescue_controls],
                 gap="lg",
                 align="center",
                 wrap="wrap",
@@ -4129,7 +4254,7 @@ def build_emergency_stop_modal() -> dmc.Modal:
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Acknowledge",
+                            "Clear",
                             id="emergency-ack",
                             color="red",
                             size="md",
@@ -4176,9 +4301,9 @@ def build_overspeed_modal() -> dmc.Modal:
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Continue",
-                            id="overspeed-continue",
-                            color="teal",
+                            "Clear",
+                            id="overspeed-clear",
+                            color="orange",
                             size="md",
                         ),
                         dmc.Button(
@@ -4189,9 +4314,175 @@ def build_overspeed_modal() -> dmc.Modal:
                             variant="outline",
                         ),
                         dmc.Button(
+                            "Clear & resume",
+                            id="overspeed-continue",
+                            color="teal",
+                            size="md",
+                            variant="outline",
+                        ),
+                        dmc.Button(
                             "Cancel & reset",
                             id="overspeed-reset",
                             color="red",
+                            size="md",
+                            variant="outline",
+                        ),
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
+def build_joint_protection_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="joint-protection-modal",
+        opened=False,
+        centered=True,
+        size="xl",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        overlayProps={"opacity": 0.65, "color": "#000"},
+        children=dmc.Stack(
+            [
+                dmc.Text(
+                    "Joint protection detected",
+                    fw=700,
+                    size="xl",
+                    c="orange",
+                ),
+                dmc.Text(
+                    "The program has been paused. Clear the protection alarm to continue.",
+                    size="sm",
+                    c="dimmed",
+                ),
+                dmc.Alert(
+                    id="joint-protection-modal-text",
+                    title="Joint protection status",
+                    color="orange",
+                    variant="light",
+                    children="Joint protection warning detected.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Clear",
+                            id="joint-protection-clear",
+                            color="orange",
+                            size="md",
+                        ),
+                        dmc.Button(
+                            "Stay paused",
+                            id="joint-protection-stay-paused",
+                            color="gray",
+                            size="md",
+                            variant="outline",
+                        ),
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
+def build_wrong_tool_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="wrong-tool-modal",
+        opened=False,
+        centered=True,
+        size="xl",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        overlayProps={"opacity": 0.65, "color": "#000"},
+        children=dmc.Stack(
+            [
+                dmc.Text(
+                    "Tool/payload mismatch",
+                    fw=700,
+                    size="xl",
+                    c="red",
+                ),
+                dmc.Text(
+                    "The program has been paused. Clear the tool error or enter rescue mode.",
+                    size="sm",
+                    c="dimmed",
+                ),
+                dmc.Alert(
+                    id="wrong-tool-modal-text",
+                    title="Tool error status",
+                    color="red",
+                    variant="light",
+                    children="Tool/payload mismatch detected.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Enter rescue mode",
+                            id="wrong-tool-rescue",
+                            color="orange",
+                            size="md",
+                            variant="outline",
+                        ),
+                        dmc.Button(
+                            "Clear",
+                            id="wrong-tool-clear",
+                            color="red",
+                            size="md",
+                        ),
+                    ],
+                    justify="flex-end",
+                ),
+            ],
+            gap="md",
+        ),
+    )
+
+
+def build_drag_not_allowed_modal() -> dmc.Modal:
+    return dmc.Modal(
+        id="drag-not-allowed-modal",
+        opened=False,
+        centered=True,
+        size="xl",
+        withCloseButton=False,
+        closeOnClickOutside=False,
+        overlayProps={"opacity": 0.65, "color": "#000"},
+        children=dmc.Stack(
+            [
+                dmc.Text(
+                    "Drag not allowed",
+                    fw=700,
+                    size="xl",
+                    c="orange",
+                ),
+                dmc.Text(
+                    "Manual dragging is blocked. Clear the warning to continue.",
+                    size="sm",
+                    c="dimmed",
+                ),
+                dmc.Alert(
+                    id="drag-not-allowed-modal-text",
+                    title="Drag warning status",
+                    color="orange",
+                    variant="light",
+                    children="Drag not allowed warning detected.",
+                ),
+                dmc.Group(
+                    [
+                        dmc.Button(
+                            "Clear",
+                            id="drag-not-allowed-clear",
+                            color="orange",
+                            size="md",
+                        ),
+                        dmc.Button(
+                            "Stay paused",
+                            id="drag-not-allowed-stay-paused",
+                            color="gray",
                             size="md",
                             variant="outline",
                         ),
@@ -5160,6 +5451,10 @@ def build_layout() -> dmc.MantineProvider:
                     data=_error_snapshot(),
                 ),
                 dcc.Store(
+                    id="robot-rescue-state",
+                    data={"active": False, "timestamp": 0.0},
+                ),
+                dcc.Store(
                     id="prerequisites-state",
                     data={
                         "camera_calibrated": False,
@@ -5204,6 +5499,9 @@ def build_layout() -> dmc.MantineProvider:
                 build_robot_calibration_modal(),
                 build_emergency_stop_modal(),
                 build_overspeed_modal(),
+                build_joint_protection_modal(),
+                build_wrong_tool_modal(),
+                build_drag_not_allowed_modal(),
                 dmc.AppShell(
                     padding="md",
                     className="app-shell",
@@ -8833,14 +9131,43 @@ def register_callbacks(app: Dash) -> None:
         if not status or status_age is None or status_age > 2.0:
             return no_update
 
+        warning = session.robot_warning_snapshot()
+        warning_age = session.robot_warning_age_seconds()
+        error_msg = session.robot_error_snapshot()
+        error_age = session.robot_error_age_seconds()
+
         emergency_active = _detect_emergency_stop_status(status)
         overspeed_active = _detect_overspeed_status(status)
+        joint_active = _detect_joint_protection_status(status)
+        wrong_tool_active = _detect_wrong_tool_status(status)
+        drag_active = _detect_drag_not_allowed_status(status)
+
+        if warning and warning_age is not None and warning_age <= 2.0:
+            emergency_active = emergency_active or CodroidAPI.is_emergency_button_warning(
+                warning
+            )
+            overspeed_active = overspeed_active or CodroidAPI.is_overspeed_warning(
+                warning
+            )
+            joint_active = joint_active or CodroidAPI.is_joint_protection_warning(
+                warning
+            )
+            drag_active = drag_active or CodroidAPI.is_drag_not_allowed_warning(
+                warning
+            )
+
+        if error_msg and error_age is not None and error_age <= 5.0:
+            wrong_tool_active = wrong_tool_active or CodroidAPI.is_wrong_tool_error(
+                error_msg
+            )
+
+        physical_pressed = session.emergency_button_active()
 
         if emergency_active:
             snapshot = _activate_robot_error(
                 "emergency_stop",
                 message="Emergency stop reported by robot controller.",
-                physical_pressed=True,
+                physical_pressed=physical_pressed,
             )
         elif overspeed_active:
             snapshot = _activate_robot_error(
@@ -8848,15 +9175,83 @@ def register_callbacks(app: Dash) -> None:
                 message="Overspeed alarm reported by robot controller.",
                 physical_pressed=False,
             )
+        elif joint_active:
+            snapshot = _activate_robot_error(
+                "joint_protection",
+                message="Joint protection alarm reported by robot controller.",
+                physical_pressed=False,
+            )
+        elif wrong_tool_active:
+            snapshot = _activate_robot_error(
+                "wrong_tool",
+                message="Tool/payload mismatch reported by robot controller.",
+                physical_pressed=False,
+            )
+        elif drag_active:
+            snapshot = _activate_robot_error(
+                "drag_not_allowed",
+                message="Drag not allowed warning reported by robot controller.",
+                physical_pressed=False,
+            )
         else:
             if (current_state or {}).get("error_type") == "emergency_stop":
-                snapshot = _update_robot_error_state(physical_pressed=False)
+                snapshot = _update_robot_error_state(
+                    physical_pressed=physical_pressed
+                )
             else:
                 snapshot = _error_snapshot()
 
         if current_state == snapshot:
             return no_update
         return snapshot
+
+    @app.callback(
+        Output("robot-rescue-state", "data"),
+        Input("robot-status-interval", "n_intervals"),
+        State("robot-rescue-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _sync_robot_rescue_state(
+        _intervals: int,
+        current_state: Optional[dict],
+    ) -> dict:
+        session = _get_robot_session()
+        status = session.robot_status_snapshot()
+        status_age = session.robot_status_age_seconds()
+        if not status or status_age is None or status_age > 2.0:
+            return no_update
+        active = _detect_rescue_mode_status(status)
+        if current_state and current_state.get("active") == active:
+            return no_update
+        return {"active": active, "timestamp": time.time()}
+
+    @app.callback(
+        Output("robot-controls-standard", "style"),
+        Output("robot-controls-rescue", "style"),
+        Output("rescue-mode-status", "children"),
+        Output("rescue-mode-enable", "disabled"),
+        Output("rescue-mode-exit", "style"),
+        Input("robot-rescue-state", "data"),
+    )
+    def _toggle_rescue_controls(
+        rescue_state: Optional[dict],
+    ) -> Tuple[dict, dict, str, bool, dict]:
+        active = bool((rescue_state or {}).get("active"))
+        if active:
+            return (
+                {"display": "none"},
+                {"display": "block"},
+                "Rescue mode active.",
+                True,
+                {"display": "inline-flex"},
+            )
+        return (
+            {"display": "flex"},
+            {"display": "none"},
+            "Rescue mode idle.",
+            False,
+            {"display": "none"},
+        )
 
     @app.callback(
         Output("emergency-stop-modal", "opened"),
@@ -8884,6 +9279,45 @@ def register_callbacks(app: Dash) -> None:
         state = error_state or {}
         active = bool(state.get("active")) and state.get("error_type") == "overspeed"
         message = state.get("message") or "Overspeed alarm detected."
+        return active, message
+
+    @app.callback(
+        Output("joint-protection-modal", "opened"),
+        Output("joint-protection-modal-text", "children"),
+        Input("robot-error-state", "data"),
+    )
+    def _update_joint_protection_modal(
+        error_state: Optional[dict],
+    ) -> Tuple[bool, str]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == "joint_protection"
+        message = state.get("message") or "Joint protection warning detected."
+        return active, message
+
+    @app.callback(
+        Output("wrong-tool-modal", "opened"),
+        Output("wrong-tool-modal-text", "children"),
+        Input("robot-error-state", "data"),
+    )
+    def _update_wrong_tool_modal(
+        error_state: Optional[dict],
+    ) -> Tuple[bool, str]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == "wrong_tool"
+        message = state.get("message") or "Tool/payload mismatch detected."
+        return active, message
+
+    @app.callback(
+        Output("drag-not-allowed-modal", "opened"),
+        Output("drag-not-allowed-modal-text", "children"),
+        Input("robot-error-state", "data"),
+    )
+    def _update_drag_not_allowed_modal(
+        error_state: Optional[dict],
+    ) -> Tuple[bool, str]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == "drag_not_allowed"
+        message = state.get("message") or "Drag not allowed warning detected."
         return active, message
 
     @app.callback(
@@ -8937,6 +9371,7 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("robot-error-state", "data", allow_duplicate=True),
         Output("app-notifications", "children", allow_duplicate=True),
+        Input("overspeed-clear", "n_clicks"),
         Input("overspeed-continue", "n_clicks"),
         Input("overspeed-stay-paused", "n_clicks"),
         Input("overspeed-reset", "n_clicks"),
@@ -8945,6 +9380,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     async def _handle_overspeed_response(
+        _clear_clicks: int,
         _continue_clicks: int,
         _stay_clicks: int,
         _reset_clicks: int,
@@ -8960,6 +9396,33 @@ def register_callbacks(app: Dash) -> None:
         async def _clear(api: CodroidAPI) -> None:
             await api.clear_overspeed()
 
+        if trigger == "overspeed-clear":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+                snapshot = _acknowledge_robot_error()
+                _pause_operation("overspeed", "Paused after overspeed clear.")
+                return (
+                    snapshot,
+                    dmc.Notification(
+                        action="show",
+                        title="Overspeed cleared",
+                        message="Recovery sequence sent. Program remains paused.",
+                        color="orange",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to clear overspeed")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Overspeed clear failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
         if trigger == "overspeed-continue":
             try:
                 await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
@@ -9024,6 +9487,405 @@ def register_callbacks(app: Dash) -> None:
             )
 
         return no_update, no_update
+
+    @app.callback(
+        Output("robot-error-state", "data", allow_duplicate=True),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("joint-protection-clear", "n_clicks"),
+        Input("joint-protection-stay-paused", "n_clicks"),
+        State("robot-error-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_joint_protection_response(
+        _clear_clicks: int,
+        _stay_clicks: int,
+        error_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[dict, dmc.Notification]:
+        state = error_state or {}
+        if state.get("error_type") != "joint_protection":
+            return no_update, no_update
+
+        trigger = callback_context.triggered_id
+
+        async def _clear(api: CodroidAPI) -> None:
+            await api.clear_joint_protection()
+
+        if trigger == "joint-protection-clear":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+                snapshot = _acknowledge_robot_error()
+                _pause_operation(
+                    "joint_protection", "Paused after joint protection clear."
+                )
+                return (
+                    snapshot,
+                    dmc.Notification(
+                        action="show",
+                        title="Joint protection cleared",
+                        message="Recovery sequence sent. Program remains paused.",
+                        color="orange",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to clear joint protection")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Joint protection clear failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
+        if trigger == "joint-protection-stay-paused":
+            snapshot = _acknowledge_robot_error()
+            _pause_operation(
+                "joint_protection",
+                "Paused after joint protection acknowledgment.",
+            )
+            return (
+                snapshot,
+                dmc.Notification(
+                    action="show",
+                    title="Joint protection acknowledged",
+                    message="Program remains paused.",
+                    color="yellow",
+                    autoClose=4500,
+                ),
+            )
+
+        return no_update, no_update
+
+    @app.callback(
+        Output("robot-error-state", "data", allow_duplicate=True),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("wrong-tool-clear", "n_clicks"),
+        Input("wrong-tool-rescue", "n_clicks"),
+        State("robot-error-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_wrong_tool_response(
+        _clear_clicks: int,
+        _rescue_clicks: int,
+        error_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[dict, dmc.Notification]:
+        state = error_state or {}
+        if state.get("error_type") != "wrong_tool":
+            return no_update, no_update
+
+        trigger = callback_context.triggered_id
+
+        async def _clear(api: CodroidAPI) -> None:
+            await api.clear_tool_error()
+
+        async def _enter_rescue(api: CodroidAPI) -> None:
+            await api.enter_rescue_mode()
+
+        if trigger == "wrong-tool-clear":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+                snapshot = _acknowledge_robot_error()
+                _pause_operation("wrong_tool", "Paused after tool error clear.")
+                return (
+                    snapshot,
+                    dmc.Notification(
+                        action="show",
+                        title="Tool error cleared",
+                        message="Recovery sequence sent. Program remains paused.",
+                        color="red",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to clear tool error")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Tool error clear failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
+        if trigger == "wrong-tool-rescue":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _enter_rescue)
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Rescue mode requested",
+                        message="Rescue mode command sent.",
+                        color="orange",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to enter rescue mode")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Rescue mode failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
+
+        return no_update, no_update
+
+    @app.callback(
+        Output("robot-error-state", "data", allow_duplicate=True),
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("drag-not-allowed-clear", "n_clicks"),
+        Input("drag-not-allowed-stay-paused", "n_clicks"),
+        State("robot-error-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _handle_drag_not_allowed_response(
+        _clear_clicks: int,
+        _stay_clicks: int,
+        error_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> Tuple[dict, dmc.Notification]:
+        state = error_state or {}
+        if state.get("error_type") != "drag_not_allowed":
+            return no_update, no_update
+
+        trigger = callback_context.triggered_id
+
+        async def _clear(api: CodroidAPI) -> None:
+            await api.clear_drag_not_allowed()
+
+        if trigger == "drag-not-allowed-clear":
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
+                snapshot = _acknowledge_robot_error()
+                _pause_operation(
+                    "drag_not_allowed", "Paused after drag warning clear."
+                )
+                return (
+                    snapshot,
+                    dmc.Notification(
+                        action="show",
+                        title="Drag warning cleared",
+                        message="Recovery sequence sent. Program remains paused.",
+                        color="orange",
+                        autoClose=5000,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to clear drag warning")
+                return (
+                    no_update,
+                    dmc.Notification(
+                        action="show",
+                        title="Drag warning clear failed",
+                        message=str(exc),
+                        color="red",
+                        autoClose=7000,
+                    ),
+                )
+        if trigger == "drag-not-allowed-stay-paused":
+            snapshot = _acknowledge_robot_error()
+            _pause_operation(
+                "drag_not_allowed",
+                "Paused after drag warning acknowledgment.",
+            )
+            return (
+                snapshot,
+                dmc.Notification(
+                    action="show",
+                    title="Drag warning acknowledged",
+                    message="Program remains paused.",
+                    color="yellow",
+                    autoClose=4500,
+                ),
+            )
+
+        return no_update, no_update
+
+    @app.callback(
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("rescue-mode-enable", "n_clicks"),
+        State("robot-uri", "value"),
+        State("robot-connection-state", "data"),
+        State("robot-rescue-state", "data"),
+        prevent_initial_call=True,
+    )
+    async def _enable_rescue_mode(
+        _clicks: int,
+        robot_uri: Optional[str],
+        robot_state: Optional[dict],
+        rescue_state: Optional[dict],
+    ) -> dmc.Notification:
+        if (robot_state or {}).get("status") != "online":
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode unavailable",
+                message="Robot is not connected.",
+                color="red",
+                autoClose=5000,
+            )
+        if (rescue_state or {}).get("active"):
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode",
+                message="Rescue mode is already active.",
+                color="orange",
+                autoClose=4000,
+            )
+
+        async def _enter(api: CodroidAPI) -> None:
+            await api.enter_rescue_mode()
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _enter)
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode requested",
+                message="Rescue mode command sent.",
+                color="orange",
+                autoClose=5000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to enter rescue mode")
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode failed",
+                message=str(exc),
+                color="red",
+                autoClose=7000,
+            )
+
+    @app.callback(
+        Output("app-notifications", "children", allow_duplicate=True),
+        Input("rescue-mode-exit", "n_clicks"),
+        State("robot-uri", "value"),
+        State("robot-rescue-state", "data"),
+        prevent_initial_call=True,
+    )
+    async def _exit_rescue_mode(
+        _clicks: int,
+        robot_uri: Optional[str],
+        rescue_state: Optional[dict],
+    ) -> dmc.Notification:
+        if not (rescue_state or {}).get("active"):
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode",
+                message="Rescue mode is not active.",
+                color="gray",
+                autoClose=4000,
+            )
+
+        async def _exit(api: CodroidAPI) -> None:
+            await api.exit_rescue_mode()
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _exit)
+            return dmc.Notification(
+                action="show",
+                title="Rescue mode exit requested",
+                message="Exit command sent.",
+                color="orange",
+                autoClose=5000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to exit rescue mode")
+            return dmc.Notification(
+                action="show",
+                title="Exit rescue mode failed",
+                message=str(exc),
+                color="red",
+                autoClose=7000,
+            )
+
+    @app.callback(
+        Output("rescue-jog-status", "children"),
+        Input("rescue-joint-1-minus", "n_clicks"),
+        Input("rescue-joint-1-plus", "n_clicks"),
+        Input("rescue-joint-2-minus", "n_clicks"),
+        Input("rescue-joint-2-plus", "n_clicks"),
+        Input("rescue-joint-3-minus", "n_clicks"),
+        Input("rescue-joint-3-plus", "n_clicks"),
+        Input("rescue-joint-4-minus", "n_clicks"),
+        Input("rescue-joint-4-plus", "n_clicks"),
+        Input("rescue-joint-5-minus", "n_clicks"),
+        Input("rescue-joint-5-plus", "n_clicks"),
+        Input("rescue-joint-6-minus", "n_clicks"),
+        Input("rescue-joint-6-plus", "n_clicks"),
+        State("robot-uri", "value"),
+        State("robot-rescue-state", "data"),
+        prevent_initial_call=True,
+    )
+    async def _handle_rescue_joint_jog(
+        _j1_minus: int,
+        _j1_plus: int,
+        _j2_minus: int,
+        _j2_plus: int,
+        _j3_minus: int,
+        _j3_plus: int,
+        _j4_minus: int,
+        _j4_plus: int,
+        _j5_minus: int,
+        _j5_plus: int,
+        _j6_minus: int,
+        _j6_plus: int,
+        robot_uri: Optional[str],
+        rescue_state: Optional[dict],
+    ) -> str:
+        if not (rescue_state or {}).get("active"):
+            return "Rescue mode is not active."
+
+        trigger = callback_context.triggered_id
+        if not trigger:
+            return no_update
+
+        mapping = {
+            "rescue-joint-1-minus": (1, -1),
+            "rescue-joint-1-plus": (1, 1),
+            "rescue-joint-2-minus": (2, -1),
+            "rescue-joint-2-plus": (2, 1),
+            "rescue-joint-3-minus": (3, -1),
+            "rescue-joint-3-plus": (3, 1),
+            "rescue-joint-4-minus": (4, -1),
+            "rescue-joint-4-plus": (4, 1),
+            "rescue-joint-5-minus": (5, -1),
+            "rescue-joint-5-plus": (5, 1),
+            "rescue-joint-6-minus": (6, -1),
+            "rescue-joint-6-plus": (6, 1),
+        }
+        if trigger not in mapping:
+            return no_update
+        axis, direction = mapping[trigger]
+
+        async def _jog(api: CodroidAPI) -> None:
+            await api.set_robot_command(api.config.commands.manual_mode)
+            await api.hold_jog(
+                api.config.jog_modes.joint,
+                axis=axis,
+                direction=direction,
+                hold_seconds=RESCUE_JOG_HOLD_S,
+                heartbeat_interval=0.25,
+            )
+
+        try:
+            await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _jog)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Rescue joint jog failed")
+            return f"Rescue jog failed: {exc}"
+        sign = "+" if direction > 0 else "-"
+        return f"Jogged J{axis}{sign} for {RESCUE_JOG_HOLD_S:.2f}s."
 
     @app.callback(
         Output("robot-calibration-status", "children"),
