@@ -2945,23 +2945,6 @@ async def _auto_pick_place_loop(
                 )
 
         def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
-            nonlocal tracker_detection, tracker_workspace, tracker_coord5
-            detections = _refresh_follow_detections()
-            candidate = _select_follow_detection(
-                detections, tracker_workspace, tracker_detection
-            )
-            if candidate is not None:
-                tracker_detection = candidate
-                workspace_xy = _detection_workspace_mm(
-                    candidate, workspace_def
-                )
-                if workspace_xy is not None:
-                    tracker_workspace = workspace_xy
-                coord5_xy = _detection_coord5_mm(
-                    candidate, workspace_def
-                )
-                if coord5_xy is not None:
-                    tracker_coord5 = coord5_xy
             if tracker_coord5 is None:
                 return None
             return _pose_from_coord5_mm(
@@ -8165,23 +8148,6 @@ def register_callbacks(app: Dash) -> None:
             nonlocal tracker_detection, tracker_workspace
 
             def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
-                nonlocal tracker_detection, tracker_workspace, tracker_coord5
-                detections = _refresh_follow_detections()
-                candidate = _select_follow_detection(
-                    detections, tracker_workspace, tracker_detection
-                )
-                if candidate is not None:
-                    tracker_detection = candidate
-                    workspace_xy = _detection_workspace_mm(
-                        candidate, workspace_def
-                    )
-                    if workspace_xy is not None:
-                        tracker_workspace = workspace_xy
-                    coord5_xy = _detection_coord5_mm(
-                        candidate, workspace_def
-                    )
-                    if coord5_xy is not None:
-                        tracker_coord5 = coord5_xy
                 if tracker_coord5 is None:
                     return None
                 return _pose_from_coord5_mm(
