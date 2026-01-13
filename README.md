@@ -197,3 +197,13 @@ The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Comp
 
 For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_integration.md) and
 [`docs/pick_place_test_procedure.md`](docs/pick_place_test_procedure.md).
+
+## Auto Pick & Place (YOLO)
+
+Auto mode uses YOLO detections to continuously pick the nearest target:
+
+- Start/stop from the **Auto pick & place** controls in the footer.
+- Set the **Target class** (default `orange`) and **Drop ignore radius** in the Pick & Place tab.
+- Teach a drop position first; auto waits at the drop when no targets are visible.
+- The robot pauses if any other detection enters the workspace and resumes once clear.
+- Coordinate mapping uses the saved plate homography from robot calibration; re-run plate calibration if coord5 overlays drift.

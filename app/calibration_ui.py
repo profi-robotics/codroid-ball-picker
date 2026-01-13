@@ -102,6 +102,11 @@ PICK_FOLLOW_SEGMENT_S = 0.1
 PICK_FOLLOW_TIMEOUT_S = 15.0
 PICK_FOLLOW_TOLERANCE_MM = 3.0
 PICK_FOLLOW_SETTLE_S = 0.6
+AUTO_TARGET_LABEL_DEFAULT = "orange"
+AUTO_DROP_IGNORE_RADIUS_MM = 60.0
+AUTO_INTRUSION_MATCH_MM = 40.0
+AUTO_DETECTION_STALE_S = 0.3
+AUTO_IDLE_SLEEP_S = 0.25
 RESCUE_JOG_HOLD_S = 0.35
 # Use coordinate system 5 (robot calibration frame) instead of base coordinates.
 # Coordinate system 5 is aligned with the plate reference frame at calibration time.
@@ -245,6 +250,22 @@ class UISession:
     model_loaded: bool = False
     detections: list[dict] = field(default_factory=list)
     last_detection_error: Optional[str] = None
+    auto_task: Optional[asyncio.Task] = None
+    auto_running: bool = False
+    auto_message: str = ""
+    auto_stop_requested: bool = False
+    auto_waiting_at_drop: bool = False
+    auto_config: dict = field(
+        default_factory=lambda: {
+            "target_label": AUTO_TARGET_LABEL_DEFAULT,
+            "drop_ignore_radius_mm": AUTO_DROP_IGNORE_RADIUS_MM,
+            "approach_mm": -30.0,
+            "pick_mm": 0.0,
+            "drop_mm": 0.0,
+            "estimate_width": False,
+        }
+    )
+    auto_detection_updated_at: float = 0.0
     drop_marker_id: int = DEFAULT_DROP_MARKER_ID
     drop_target_mm: Optional[Tuple[float, float]] = None
     drop_target_orientation: Optional[Tuple[float, float, float]] = None
@@ -280,6 +301,9 @@ class UISession:
     robot_calibration_baseline_px: Optional[np.ndarray] = None
     robot_calibration_gripper_width: Optional[float] = None
     robot_calibration_accuracy: Optional[dict[str, float]] = None
+    plate_to_robot_transform: Optional[workspace.RigidTransform] = None
+    plate_origin_mm: Optional[np.ndarray] = None
+    coord5_transform: Optional[workspace.RigidTransform] = None
     robot_has_object: bool = False
     pick_attempts: int = 0
     pick_successes: int = 0
@@ -405,6 +429,8 @@ def _load_robot_calibration(path: Path = DEFAULT_ROBOT_CALIBRATION_PATH) -> None
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to load plate reference homography: %s", exc)
+    SESSION.plate_to_robot_transform = None
+    SESSION.plate_origin_mm = None
     LOGGER.info("Loaded robot calibration data from %s", path)
     _commit_settings(robot_calibration_path=str(path))
 
@@ -573,6 +599,8 @@ def _update_robot_calibration_meta(robot_points: list[dict]) -> None:
         )
     else:
         SESSION.robot_calibration_min_z = None
+    SESSION.plate_to_robot_transform = None
+    SESSION.plate_origin_mm = None
     _save_robot_calibration(robot_points)
 
 
@@ -1868,6 +1896,287 @@ def _pose_from_workspace_mm(
     }
 
 
+def _coord5_transform() -> Optional[workspace.RigidTransform]:
+    session = _get_robot_session()
+    frame = session.coordinate_frame_snapshot()
+    if isinstance(frame, dict) and frame:
+        try:
+            transform = _coord_frame_to_transform(frame)
+            SESSION.coord5_transform = transform
+            return transform
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to parse RobotCoordinate frame: %s", exc)
+    if SESSION.coord5_transform is not None:
+        return SESSION.coord5_transform
+    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+        return None
+    try:
+        plate_layout = plate.load_plate_layout(DEFAULT_PLATE_PATH)
+        plate_points = plate_layout.robot_calibration_points()
+        if len(plate_points) < 3:
+            raise RuntimeError("Calibration plate layout missing points.")
+        origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
+        plate_pts = np.asarray(
+            [
+                [
+                    float(pt.center_mm[0] - origin_mm[0]),
+                    float(pt.center_mm[1] - origin_mm[1]),
+                    0.0,
+                ]
+                for pt in plate_points[:3]
+            ],
+            dtype=np.float64,
+        )
+        robot_pts = np.asarray(
+            [
+                [
+                    float(pt["x"]),
+                    float(pt["y"]),
+                    float(pt["z"]),
+                ]
+                for pt in SESSION.robot_calibration_points[:3]
+            ],
+            dtype=np.float64,
+        )
+        transform = _rigid_transform(plate_pts, robot_pts)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to build coord5 transform: %s", exc)
+        return None
+    SESSION.coord5_transform = transform
+    return transform
+
+
+def _coord_frame_to_transform(frame: dict) -> workspace.RigidTransform:
+    x = _safe_float(frame.get("x"), 0.0)
+    y = _safe_float(frame.get("y"), 0.0)
+    z = _safe_float(frame.get("z"), 0.0)
+    raw_a = frame.get("a", frame.get("rx"))
+    raw_b = frame.get("b", frame.get("ry"))
+    raw_c = frame.get("c", frame.get("rz"))
+    a = _safe_float(raw_a, 0.0)
+    b = _safe_float(raw_b, 0.0)
+    c = _safe_float(raw_c, 0.0)
+    max_abs = max(abs(a), abs(b), abs(c))
+    use_degrees = max_abs > (2.0 * np.pi)
+    rotation = _rotation_from_abc(a, b, c, degrees=use_degrees)
+    translation = np.array([x, y, z], dtype=np.float64)
+    return workspace.RigidTransform(rotation=rotation, translation=translation)
+
+
+def _rotation_from_abc(
+    a: float,
+    b: float,
+    c: float,
+    *,
+    degrees: bool = True,
+) -> np.ndarray:
+    if degrees:
+        a = np.deg2rad(a)
+        b = np.deg2rad(b)
+        c = np.deg2rad(c)
+    ca, sa = float(np.cos(a)), float(np.sin(a))
+    cb, sb = float(np.cos(b)), float(np.sin(b))
+    cc, sc = float(np.cos(c)), float(np.sin(c))
+    rot_x = np.array(
+        [[1.0, 0.0, 0.0], [0.0, ca, -sa], [0.0, sa, ca]],
+        dtype=np.float64,
+    )
+    rot_y = np.array(
+        [[cb, 0.0, sb], [0.0, 1.0, 0.0], [-sb, 0.0, cb]],
+        dtype=np.float64,
+    )
+    rot_z = np.array(
+        [[cc, -sc, 0.0], [sc, cc, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    return rot_z @ rot_y @ rot_x
+
+
+def _invert_rigid_transform(
+    transform: workspace.RigidTransform,
+) -> workspace.RigidTransform:
+    inv_rot = transform.rotation.T
+    inv_trans = -inv_rot @ transform.translation
+    return workspace.RigidTransform(rotation=inv_rot, translation=inv_trans)
+
+
+def _base_to_coord5(base_xyz: np.ndarray) -> Optional[np.ndarray]:
+    transform = _coord5_transform()
+    if transform is None:
+        return None
+    inv = _invert_rigid_transform(transform)
+    return inv.rotation @ base_xyz + inv.translation
+
+
+def _coord5_to_base(coord5_xyz: np.ndarray) -> Optional[np.ndarray]:
+    transform = _coord5_transform()
+    if transform is None:
+        return None
+    return transform.rotation @ coord5_xyz + transform.translation
+
+
+def _workspace_to_coord5_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    workspace_xy: Tuple[float, float],
+    z_offset_mm: float = 0.0,
+) -> Optional[Tuple[float, float]]:
+    robot_xyz = workspace_def.workspace_to_robot(
+        workspace_xy[0], workspace_xy[1], z_offset_mm
+    )
+    coord5_xyz = _base_to_coord5(robot_xyz)
+    if coord5_xyz is None:
+        return None
+    return float(coord5_xyz[0]), float(coord5_xyz[1])
+
+
+def _coord5_to_workspace_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    coord5_xy: Tuple[float, float],
+) -> Optional[Tuple[float, float]]:
+    coord5_xyz = np.array(
+        [coord5_xy[0], coord5_xy[1], 0.0], dtype=np.float64
+    )
+    base_xyz = _coord5_to_base(coord5_xyz)
+    if base_xyz is None:
+        return None
+    return _robot_to_workspace_mm(workspace_def, base_xyz)
+
+
+def _pose_from_workspace_coord5_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    x_mm: float,
+    y_mm: float,
+    z_offset_mm: float,
+) -> dict:
+    robot_xyz = workspace_def.workspace_to_robot(x_mm, y_mm, z_offset_mm)
+    coord5_xyz = _base_to_coord5(robot_xyz)
+    if coord5_xyz is None:
+        raise RuntimeError("Coord5 transform unavailable.")
+    z_val = _clamp_z_for_coord5(float(coord5_xyz[2]), use_base_coords=False)
+    return {
+        "x": float(coord5_xyz[0]),
+        "y": float(coord5_xyz[1]),
+        "z": float(z_val),
+        "a": 0.0,
+        "b": 0.0,
+        "c": 0.0,
+    }
+
+
+def _pose_from_coord5_mm(
+    x_mm: float,
+    y_mm: float,
+    z_offset_mm: float,
+) -> dict:
+    z_val = _clamp_z_for_coord5(float(z_offset_mm), use_base_coords=False)
+    return {
+        "x": float(x_mm),
+        "y": float(y_mm),
+        "z": float(z_val),
+        "a": 0.0,
+        "b": 0.0,
+        "c": 0.0,
+    }
+
+
+def _plate_reference_homography() -> Optional[np.ndarray]:
+    if SESSION.plate_reference_homography is not None:
+        return SESSION.plate_reference_homography
+    bundle = SESSION.calibration_bundle
+    if bundle is not None and bundle.plate_homography is not None:
+        return bundle.plate_homography
+    return None
+
+
+def _pixel_to_plate_mm(
+    pixel: Tuple[float, float],
+) -> Optional[np.ndarray]:
+    homography = _plate_reference_homography()
+    if homography is None:
+        return None
+    pts = np.array([[pixel]], dtype=np.float64)
+    try:
+        mapped = cv2.perspectiveTransform(pts, homography)
+    except Exception:
+        return None
+    return mapped[0, 0]
+
+
+def _plate_to_robot_transform(
+) -> Optional[Tuple[workspace.RigidTransform, np.ndarray]]:
+    if (
+        SESSION.plate_to_robot_transform is not None
+        and SESSION.plate_origin_mm is not None
+    ):
+        return SESSION.plate_to_robot_transform, SESSION.plate_origin_mm
+    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+        return None
+    try:
+        plate_layout = plate.load_plate_layout(DEFAULT_PLATE_PATH)
+        plate_points = plate_layout.robot_calibration_points()
+        if len(plate_points) < 3:
+            return None
+        origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
+        plate_pts = np.asarray(
+            [
+                [
+                    float(pt.center_mm[0] - origin_mm[0]),
+                    float(pt.center_mm[1] - origin_mm[1]),
+                    0.0,
+                ]
+                for pt in plate_points[:3]
+            ],
+            dtype=np.float64,
+        )
+        robot_pts = np.asarray(
+            [
+                [
+                    float(pt["x"]),
+                    float(pt["y"]),
+                    float(pt["z"]),
+                ]
+                for pt in SESSION.robot_calibration_points[:3]
+            ],
+            dtype=np.float64,
+        )
+        transform = _rigid_transform(plate_pts, robot_pts)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to build plate-to-robot transform: %s", exc)
+        return None
+    SESSION.plate_to_robot_transform = transform
+    SESSION.plate_origin_mm = origin_mm
+    return transform, origin_mm
+
+
+def _pixel_to_robot_base_xyz(
+    pixel: Tuple[float, float],
+) -> Optional[np.ndarray]:
+    bundle = SESSION.calibration_bundle
+    workspace_def = SESSION.workspace_definition
+    if bundle is None or workspace_def is None:
+        return None
+    plane = bundle.workspace_plane
+    camera = bundle.camera
+    pts = np.array([[pixel]], dtype=np.float64)
+    try:
+        undist = cv2.undistortPoints(
+            pts, camera.camera_matrix, camera.distortion_coeffs
+        )
+    except Exception:
+        return None
+    ray = np.array([undist[0, 0, 0], undist[0, 0, 1], 1.0], dtype=np.float64)
+    denom = float(np.dot(plane.normal, ray))
+    if abs(denom) < 1e-6:
+        return None
+    t = -float(plane.offset) / denom
+    camera_point = ray * t
+    # DepthAI plane fit can be in meters or millimeters depending on stream config.
+    unit_scale = 1000.0 if abs(float(plane.offset)) < 10.0 else 1.0
+    camera_point_mm = camera_point * unit_scale
+    transform = workspace_def.camera_to_robot
+    return transform.rotation @ camera_point_mm + transform.translation
+
+
 def _robot_to_workspace_mm(
     workspace_def: workspace.WorkspaceDefinition,
     robot_xyz: np.ndarray,
@@ -1992,13 +2301,12 @@ def _format_detection_list(detections: list[dict]) -> list:
     for idx, det in enumerate(detections, start=1):
         label = det.get("label", "object")
         conf = det.get("confidence", 0.0)
-        workspace_mm = det.get("workspace_mm")
-        if workspace_mm:
-            coord = f"{workspace_mm[0]:.1f}, {workspace_mm[1]:.1f} mm"
-        else:
-            coord = "workspace: --"
+        coord_text = "c5: --"
+        coord5_mm = _detection_coord5_mm(det, SESSION.workspace_definition)
+        if coord5_mm is not None:
+            coord_text = f"c5 {coord5_mm[0]:.1f}, {coord5_mm[1]:.1f}"
         rows.append(
-            dmc.Text(f"{idx}. {label} ({conf:.2f}) @ {coord}", size="sm"))
+            dmc.Text(f"{idx}. {label} ({conf:.2f}) @ {coord_text}", size="sm"))
     return rows
 
 
@@ -2025,6 +2333,158 @@ def _refresh_follow_detections() -> list[dict]:
         return SESSION.detections or []
 
 
+def _set_auto_state(message: str, *, running: bool) -> None:
+    SESSION.auto_message = message
+    SESSION.auto_running = running
+
+
+def _auto_state_snapshot() -> dict:
+    return {"running": SESSION.auto_running, "message": SESSION.auto_message}
+
+
+def _workspace_contains(
+    workspace_def: workspace.WorkspaceDefinition,
+    workspace_xy: Tuple[float, float],
+) -> bool:
+    return (
+        0.0 <= workspace_xy[0] <= workspace_def.width_mm
+        and 0.0 <= workspace_xy[1] <= workspace_def.height_mm
+    )
+
+
+def _auto_refresh_detections(frame: np.ndarray) -> list[dict]:
+    detections = _run_detection(
+        frame,
+        SESSION.detection_confidence,
+        SESSION.detection_iou,
+        SESSION.detection_max,
+        SESSION.detection_classes,
+    )
+    SESSION.detections = detections
+    SESSION.last_detection_error = None
+    SESSION.auto_detection_updated_at = time.monotonic()
+    return detections
+
+
+def _auto_filter_targets(
+    detections: list[dict],
+    workspace_def: workspace.WorkspaceDefinition,
+    *,
+    target_label: str,
+    drop_target_mm: Optional[Tuple[float, float]],
+    drop_ignore_radius_mm: float,
+) -> list[dict]:
+    label_norm = target_label.strip().lower()
+    targets = []
+    for det in detections:
+        if label_norm:
+            det_label = str(det.get("label", "")).strip().lower()
+            if det_label != label_norm:
+                continue
+        workspace_mm = _detection_workspace_mm(det, workspace_def)
+        if workspace_mm is None:
+            continue
+        if not _workspace_contains(workspace_def, workspace_mm):
+            continue
+        if (
+            drop_target_mm is not None
+            and drop_ignore_radius_mm > 0.0
+            and float(
+                np.linalg.norm(
+                    np.array(workspace_mm) - np.array(drop_target_mm)
+                )
+            )
+            <= drop_ignore_radius_mm
+        ):
+            continue
+        targets.append(det)
+    return targets
+
+
+def _auto_select_nearest_target(
+    detections: list[dict],
+    workspace_def: workspace.WorkspaceDefinition,
+) -> Optional[dict]:
+    if not detections:
+        return None
+    session = _get_robot_session()
+    if session.posture_seen():
+        pos = session.position_snapshot()
+        coord_id = _current_coordinate_id(session)
+        robot_xy = None
+        if coord_id == ROBOT_COORDINATE_ID:
+            robot_xy = (float(pos.x), float(pos.y))
+        if robot_xy is None:
+            try:
+                robot_xy = _robot_to_workspace_mm(
+                    workspace_def,
+                    np.array([pos.x, pos.y, pos.z], dtype=float),
+                )
+            except Exception:
+                robot_xy = None
+        if robot_xy is not None:
+            best_det = None
+            best_dist = float("inf")
+            for det in detections:
+                if coord_id == ROBOT_COORDINATE_ID:
+                    det_xy = _detection_coord5_mm(det, workspace_def)
+                else:
+                    det_xy = _detection_workspace_mm(det, workspace_def)
+                if det_xy is None:
+                    continue
+                dist = float(
+                    np.linalg.norm(
+                        np.array(det_xy) - np.array(robot_xy)
+                    )
+                )
+                if dist < best_dist:
+                    best_dist = dist
+                    best_det = det
+            if best_det is not None:
+                return best_det
+    return detections[0]
+
+
+def _auto_intrusion_present(
+    detections: list[dict],
+    workspace_def: workspace.WorkspaceDefinition,
+    *,
+    target_xy: Optional[Tuple[float, float]],
+    drop_target_mm: Optional[Tuple[float, float]],
+    drop_ignore_radius_mm: float,
+    target_match_mm: float,
+) -> bool:
+    for det in detections:
+        workspace_xy = _detection_workspace_mm(det, workspace_def)
+        if workspace_xy is None:
+            continue
+        if not _workspace_contains(workspace_def, workspace_xy):
+            continue
+        if (
+            drop_target_mm is not None
+            and drop_ignore_radius_mm > 0.0
+            and float(
+                np.linalg.norm(
+                    np.array(workspace_xy) - np.array(drop_target_mm)
+                )
+            )
+            <= drop_ignore_radius_mm
+        ):
+            continue
+        if target_xy is not None:
+            if (
+                float(
+                    np.linalg.norm(
+                        np.array(workspace_xy) - np.array(target_xy)
+                    )
+                )
+                <= target_match_mm
+            ):
+                continue
+        return True
+    return False
+
+
 def _detection_workspace_mm(
     detection: dict,
     workspace_def: workspace.WorkspaceDefinition,
@@ -2040,6 +2500,63 @@ def _detection_workspace_mm(
     except Exception:  # noqa: BLE001
         return None
     return (float(workspace_mm[0]), float(workspace_mm[1]))
+
+
+def _detection_coord5_mm(
+    detection: dict,
+    workspace_def: Optional[workspace.WorkspaceDefinition],
+) -> Optional[Tuple[float, float]]:
+    coord5_mm = detection.get("coord5_mm")
+    if coord5_mm is not None:
+        return (float(coord5_mm[0]), float(coord5_mm[1]))
+    center = detection.get("center")
+    if center is None:
+        return None
+    plate_xy = _pixel_to_plate_mm((float(center[0]), float(center[1])))
+    plate_transform = _plate_to_robot_transform()
+    if plate_xy is not None and plate_transform is not None:
+        transform, origin_mm = plate_transform
+        plate_rel = np.array(
+            [
+                float(plate_xy[0] - origin_mm[0]),
+                float(plate_xy[1] - origin_mm[1]),
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+        base_xyz = transform.rotation @ plate_rel + transform.translation
+        coord5_xyz = _base_to_coord5(base_xyz)
+        if coord5_xyz is not None:
+            coord5_xy = (float(coord5_xyz[0]), float(coord5_xyz[1]))
+            detection["coord5_mm"] = coord5_xy
+            detection["robot_base_mm"] = (
+                float(base_xyz[0]),
+                float(base_xyz[1]),
+                float(base_xyz[2]),
+            )
+            return coord5_xy
+    base_xyz = _pixel_to_robot_base_xyz((float(center[0]), float(center[1])))
+    if base_xyz is not None:
+        coord5_xyz = _base_to_coord5(base_xyz)
+        if coord5_xyz is not None:
+            coord5_xy = (float(coord5_xyz[0]), float(coord5_xyz[1]))
+            detection["coord5_mm"] = coord5_xy
+            detection["robot_base_mm"] = (
+                float(base_xyz[0]),
+                float(base_xyz[1]),
+                float(base_xyz[2]),
+            )
+            return coord5_xy
+    if workspace_def is None:
+        return None
+    workspace_mm = _detection_workspace_mm(detection, workspace_def)
+    if workspace_mm is None:
+        return None
+    coord5_xy = _workspace_to_coord5_mm(workspace_def, workspace_mm)
+    if coord5_xy is None:
+        return None
+    detection["coord5_mm"] = coord5_xy
+    return coord5_xy
 
 
 def _select_follow_detection(
@@ -2075,7 +2592,8 @@ def _build_follow_pose_fetcher(
     z_offset_mm: float,
 ) -> Callable[[], Optional[dict]]:
     last_detection = initial_detection
-    last_workspace_mm = _detection_workspace_mm(initial_detection, workspace_def)
+    last_workspace_mm = _detection_workspace_mm(
+        initial_detection, workspace_def)
 
     def _fetch() -> Optional[dict]:
         nonlocal last_detection, last_workspace_mm
@@ -2111,10 +2629,18 @@ async def _move_linear_follow_target(
     settle_s: float = PICK_FOLLOW_SETTLE_S,
     tolerance_mm: float = PICK_FOLLOW_TOLERANCE_MM,
     require_posture: bool = True,
+    run_id: Optional[int] = None,
+    safety_check: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[dict]:
     session = _get_robot_session()
     last_target: Optional[dict] = None
+
+    def _check_operation() -> None:
+        if run_id is not None:
+            _ensure_operation_active(run_id)
+
     if require_posture and not session.posture_seen():
+        _check_operation()
         initial_target = await asyncio.to_thread(target_fetch)
         if initial_target is None:
             raise RuntimeError("No target available for follow move.")
@@ -2126,6 +2652,7 @@ async def _move_linear_follow_target(
     stable_since: Optional[float] = None
     deadline = time.monotonic() + timeout_s
     while True:
+        _check_operation()
         now = time.monotonic()
         if now >= deadline:
             LOGGER.warning(
@@ -2148,6 +2675,9 @@ async def _move_linear_follow_target(
         )
         segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
         while time.monotonic() < segment_deadline:
+            _check_operation()
+            if safety_check is not None:
+                await safety_check()
             await robot_api.send_command_heartbeat()
             await asyncio.sleep(min(update_interval, 0.05))
         if session.posture_seen():
@@ -2174,6 +2704,346 @@ async def _move_linear_follow_target(
     await robot_api.clear_target_position()
     await robot_api.stop_command()
     return last_target
+
+
+async def _auto_wait_for_clear(
+    run_id: int,
+    *,
+    workspace_def: workspace.WorkspaceDefinition,
+    target_xy: Optional[Tuple[float, float]],
+    drop_target_mm: Optional[Tuple[float, float]],
+    drop_ignore_radius_mm: float,
+) -> None:
+    while True:
+        status = _operation_status(run_id)
+        if status in {"stopping", "stopped", "idle", "superseded"}:
+            raise OperationAbort("Program stopped.")
+        snapshot = _operation_snapshot()
+        if snapshot.get("pause_reason") != "workspace_intrusion":
+            await _wait_for_operation_resume(run_id)
+            return
+        frame, _depth = get_latest_frame()
+        detections = SESSION.detections or []
+        if frame is not None and (
+            time.monotonic() - SESSION.auto_detection_updated_at
+            > AUTO_DETECTION_STALE_S
+        ):
+            try:
+                detections = await asyncio.to_thread(
+                    _auto_refresh_detections, frame
+                )
+            except Exception as exc:  # noqa: BLE001
+                SESSION.last_detection_error = str(exc)
+                LOGGER.warning("Auto detection refresh failed: %s", exc)
+        if not _auto_intrusion_present(
+            detections,
+            workspace_def,
+            target_xy=target_xy,
+            drop_target_mm=drop_target_mm,
+            drop_ignore_radius_mm=drop_ignore_radius_mm,
+            target_match_mm=AUTO_INTRUSION_MATCH_MM,
+        ):
+            _resume_operation("Workspace clear. Resuming.")
+            return
+        await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+
+
+async def _auto_pick_place_loop(
+    robot_api: CodroidAPI,
+    *,
+    run_id: int,
+) -> None:
+    workspace_def = SESSION.workspace_definition
+    if workspace_def is None:
+        raise RuntimeError("Workspace is not defined.")
+    if SESSION.drop_target_mm is None:
+        raise RuntimeError("Drop position is not defined.")
+    await robot_api.power_on()
+    await _ensure_coordinate5_active(robot_api)
+    SESSION.auto_waiting_at_drop = False
+
+    def _drop_poses(
+        approach_mm: float,
+        drop_mm: float,
+    ) -> Tuple[dict, dict]:
+        drop_target_mm = SESSION.drop_target_mm
+        if drop_target_mm is None:
+            raise RuntimeError("Drop position is not defined.")
+        if (
+            SESSION.drop_target_robot is not None
+            and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
+        ):
+            base = SESSION.drop_target_robot
+            drop_pose = _pose_from_coord5_mm(
+                float(base[0]), float(base[1]), float(base[2]) + drop_mm
+            )
+            drop_approach = _pose_from_coord5_mm(
+                float(base[0]),
+                float(base[1]),
+                float(base[2]) + approach_mm,
+            )
+        else:
+            drop_pose = _pose_from_workspace_coord5_mm(
+                workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
+            )
+            drop_approach = _pose_from_workspace_coord5_mm(
+                workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
+            )
+        if SESSION.drop_target_orientation is not None:
+            orient = SESSION.drop_target_orientation
+            drop_pose.update(
+                {"a": float(orient[0]), "b": float(
+                    orient[1]), "c": float(orient[2])}
+            )
+            drop_approach.update(
+                {"a": float(orient[0]), "b": float(
+                    orient[1]), "c": float(orient[2])}
+            )
+        return drop_pose, drop_approach
+
+    async def _auto_move_to_drop(
+        *,
+        approach_mm: float,
+        drop_mm: float,
+    ) -> None:
+        drop_pose, drop_approach = _drop_poses(approach_mm, drop_mm)
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: drop_approach,
+            label="auto_drop_approach",
+            run_id=run_id,
+        )
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: drop_pose,
+            label="auto_drop_pose",
+            run_id=run_id,
+        )
+
+    async def _auto_drop_only(
+        *,
+        approach_mm: float,
+        drop_mm: float,
+    ) -> None:
+        await _auto_move_to_drop(approach_mm=approach_mm, drop_mm=drop_mm)
+        _command_gripper(GRIPPER_OPEN_WIDTH_DEFAULT, "opened")
+        SESSION.robot_has_object = False
+        SESSION.auto_waiting_at_drop = True
+
+    while True:
+        try:
+            _ensure_operation_active(run_id)
+        except OperationPaused:
+            await _wait_for_operation_resume(run_id)
+            continue
+        config = SESSION.auto_config or {}
+        target_label = str(
+            config.get("target_label", AUTO_TARGET_LABEL_DEFAULT)
+        )
+        drop_ignore_radius_mm = float(
+            config.get("drop_ignore_radius_mm", AUTO_DROP_IGNORE_RADIUS_MM)
+        )
+        approach_mm = float(config.get("approach_mm", -30.0))
+        pick_mm = float(config.get("pick_mm", 0.0))
+        drop_mm = float(config.get("drop_mm", 0.0))
+        estimate_width = bool(config.get("estimate_width", False))
+
+        frame, _depth = get_latest_frame()
+        detections = SESSION.detections or []
+        if frame is not None and (
+            time.monotonic() - SESSION.auto_detection_updated_at
+            > AUTO_DETECTION_STALE_S
+        ):
+            try:
+                detections = await asyncio.to_thread(
+                    _auto_refresh_detections, frame
+                )
+            except Exception as exc:  # noqa: BLE001
+                SESSION.last_detection_error = str(exc)
+                LOGGER.warning("Auto detection refresh failed: %s", exc)
+
+        targets = _auto_filter_targets(
+            detections,
+            workspace_def,
+            target_label=target_label,
+            drop_target_mm=SESSION.drop_target_mm,
+            drop_ignore_radius_mm=drop_ignore_radius_mm,
+        )
+        if not targets:
+            if not SESSION.auto_waiting_at_drop:
+                await _auto_drop_only(
+                    approach_mm=approach_mm,
+                    drop_mm=drop_mm,
+                )
+            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            continue
+
+        target = _auto_select_nearest_target(targets, workspace_def)
+        if target is None:
+            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            continue
+        target_xy = _detection_workspace_mm(target, workspace_def)
+        if target_xy is None:
+            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            continue
+        target_coord5 = _detection_coord5_mm(target, workspace_def)
+        if target_coord5 is None:
+            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            continue
+
+        tracker_detection = target
+        tracker_workspace = target_xy
+        tracker_coord5 = target_coord5
+        SESSION.auto_waiting_at_drop = False
+
+        gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+        gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+        if estimate_width:
+            width_guess = _estimate_detection_width_mm(
+                target, workspace_def
+            )
+            if width_guess is not None:
+                gripper_close_val = max(
+                    gripper_close_val, width_guess * 0.9
+                )
+                gripper_open_val = max(
+                    gripper_open_val, width_guess + 5.0
+                )
+
+        async def _safety_check() -> None:
+            frame, _depth = get_latest_frame()
+            detections = SESSION.detections or []
+            if frame is not None and (
+                time.monotonic() - SESSION.auto_detection_updated_at
+                > AUTO_DETECTION_STALE_S
+            ):
+                try:
+                    detections = await asyncio.to_thread(
+                        _auto_refresh_detections, frame
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    SESSION.last_detection_error = str(exc)
+                    LOGGER.warning("Auto detection refresh failed: %s", exc)
+            if _auto_intrusion_present(
+                detections,
+                workspace_def,
+                target_xy=target_xy,
+                drop_target_mm=SESSION.drop_target_mm,
+                drop_ignore_radius_mm=drop_ignore_radius_mm,
+                target_match_mm=AUTO_INTRUSION_MATCH_MM,
+            ):
+                _pause_operation(
+                    "workspace_intrusion",
+                    "Workspace intrusion detected. Paused.",
+                )
+                await _auto_wait_for_clear(
+                    run_id,
+                    workspace_def=workspace_def,
+                    target_xy=target_xy,
+                    drop_target_mm=SESSION.drop_target_mm,
+                    drop_ignore_radius_mm=drop_ignore_radius_mm,
+                )
+
+        def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
+            nonlocal tracker_detection, tracker_workspace, tracker_coord5
+            detections = _refresh_follow_detections()
+            candidate = _select_follow_detection(
+                detections, tracker_workspace, tracker_detection
+            )
+            if candidate is not None:
+                tracker_detection = candidate
+                workspace_xy = _detection_workspace_mm(
+                    candidate, workspace_def
+                )
+                if workspace_xy is not None:
+                    tracker_workspace = workspace_xy
+                coord5_xy = _detection_coord5_mm(
+                    candidate, workspace_def
+                )
+                if coord5_xy is not None:
+                    tracker_coord5 = coord5_xy
+            if tracker_coord5 is None:
+                return None
+            return _pose_from_coord5_mm(
+                tracker_coord5[0],
+                tracker_coord5[1],
+                z_offset_mm,
+            )
+
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: _fetch_pose(approach_mm),
+            label="auto_pick_approach",
+            run_id=run_id,
+            safety_check=_safety_check,
+        )
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: _fetch_pose(pick_mm),
+            label="auto_pick_pose",
+            run_id=run_id,
+            safety_check=_safety_check,
+        )
+        _command_gripper(gripper_close_val, "closed")
+        SESSION.robot_has_object = True
+        retreat_pose = _fetch_pose(approach_mm)
+        if retreat_pose is not None:
+            await _move_linear_follow_target(
+                robot_api,
+                lambda: retreat_pose,
+                label="auto_pick_retreat",
+                run_id=run_id,
+                safety_check=_safety_check,
+            )
+        SESSION.last_pick_mm = tracker_workspace
+
+        drop_pose, drop_approach = _drop_poses(approach_mm, drop_mm)
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: drop_approach,
+            label="auto_drop_approach",
+            run_id=run_id,
+            safety_check=_safety_check,
+        )
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: drop_pose,
+            label="auto_drop_pose",
+            run_id=run_id,
+            safety_check=_safety_check,
+        )
+        _command_gripper(gripper_open_val, "opened")
+        SESSION.robot_has_object = False
+        await _move_linear_follow_target(
+            robot_api,
+            lambda: drop_approach,
+            label="auto_drop_retreat",
+            run_id=run_id,
+            safety_check=_safety_check,
+        )
+        SESSION.auto_waiting_at_drop = True
+
+
+async def _auto_operation_task(run_id: int, robot_uri: Optional[str]) -> None:
+    try:
+        await _with_robot_api(
+            robot_uri or DEFAULT_ROBOT_URI,
+            lambda api: _auto_pick_place_loop(api, run_id=run_id),
+        )
+        message = "Auto pick & place completed."
+        _set_auto_state(message, running=False)
+        _finish_operation(run_id, status="idle", message=message)
+    except OperationAbort as exc:
+        message = f"Auto pick & place stopped: {exc}"
+        _set_auto_state(message, running=False)
+        _finish_operation(run_id, status="stopped", message=message)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Auto pick & place failed")
+        message = f"Auto pick & place failed: {exc}"
+        _set_auto_state(message, running=False)
+        _finish_operation(run_id, status="idle", message=message)
+    finally:
+        SESSION.auto_task = None
 
 
 def _detect_drop_marker(
@@ -2945,6 +3815,9 @@ def _apply_robot_calibration_results(
         )
 
     SESSION.workspace_definition = updated_ws
+    SESSION.coord5_transform = None
+    SESSION.plate_to_robot_transform = None
+    SESSION.plate_origin_mm = None
     save_workspace_definition(updated_ws, DEFAULT_WORKSPACE_PATH)
     accuracy = _record_robot_accuracy(mean_xy_error, max_xy_error)
     return transform, accuracy
@@ -3482,6 +4355,9 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
 
 def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     vis = frame.copy()
+    workspace_def = SESSION.workspace_definition
+    coord5_frame = _get_robot_session().coordinate_frame_snapshot()
+    coord5_frame_ok = bool(coord5_frame)
 
     # Run detection continuously if enabled and model is loaded
     if SESSION.continuous_detection and SESSION.model_loaded and SESSION.yolo_model is not None:
@@ -3518,9 +4394,40 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
             (0, 180, 255),
             2,
         )
+        coord5_xy = _detection_coord5_mm(det, workspace_def)
+        base_xy = None
+        base_xyz = det.get("robot_base_mm")
+        if base_xyz is None:
+            base_xyz = _pixel_to_robot_base_xyz(
+                (float(det["center"][0]), float(det["center"][1]))
+            ) if "center" in det else None
+        if base_xyz is not None:
+            base_xy = (float(base_xyz[0]), float(base_xyz[1]))
+        if coord5_xy is not None:
+            cv2.putText(
+                vis,
+                f"c5 {coord5_xy[0]:.1f}, {coord5_xy[1]:.1f}",
+                (x1, min(vis.shape[0] - 5, y2 + 18)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 180, 255),
+                1,
+            )
+        if base_xy is not None:
+            cv2.putText(
+                vis,
+                f"base {base_xy[0]:.1f}, {base_xy[1]:.1f}",
+                (x1, min(vis.shape[0] - 5, y2 + 36)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 180, 255),
+                1,
+            )
     metric = f"Detections: {len(detections)}"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
+    coord_note = "coord5: live" if coord5_frame_ok else "coord5: missing"
     status = "Continuous detection active." if SESSION.continuous_detection else "Detection overlay ready."
+    status = f"{status} · {coord_note}"
     return vis, status, metric
 
 
@@ -3743,6 +4650,7 @@ def build_footer() -> dmc.AppShellFooter:
         size="sm",
         radius="md",
         variant="filled",
+        disabled=True,
         leftSection=dmc.ActionIcon(
             "⏸",
             size="sm",
@@ -3762,6 +4670,7 @@ def build_footer() -> dmc.AppShellFooter:
         size="sm",
         radius="md",
         variant="outline",
+        disabled=True,
         style={
             "fontWeight": 700,
             "minWidth": "90px",
@@ -3775,6 +4684,7 @@ def build_footer() -> dmc.AppShellFooter:
         size="sm",
         radius="md",
         variant="light",
+        disabled=True,
         style={
             "fontWeight": 700,
             "minWidth": "90px",
@@ -5443,6 +6353,40 @@ def build_pick_place_tab() -> dmc.Stack:
         className="panel-card",
     )
 
+    auto_card = dmc.Card(
+        [
+            dmc.Text("Auto pick & place", fw=600, size="lg"),
+            dmc.Text(
+                "Auto picks the nearest target and pauses if another object enters the workspace.",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Group(
+                [
+                    dmc.TextInput(
+                        id="auto-target-class",
+                        label="Target class",
+                        value=AUTO_TARGET_LABEL_DEFAULT,
+                        description="YOLO label to pick (case-insensitive).",
+                    ),
+                    dmc.NumberInput(
+                        id="auto-drop-ignore-radius",
+                        label="Drop ignore radius (mm)",
+                        value=AUTO_DROP_IGNORE_RADIUS_MM,
+                        min=0,
+                        max=200,
+                        step=5,
+                        description="Detections inside this radius around the drop zone are ignored.",
+                    ),
+                ],
+                grow=True,
+            ),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
     accordion_items = [
         dmc.AccordionItem(
             [
@@ -5488,6 +6432,13 @@ def build_pick_place_tab() -> dmc.Stack:
                 dmc.AccordionPanel(manual_card),
             ],
             value="manual",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Auto pick & place"),
+                dmc.AccordionPanel(auto_card),
+            ],
+            value="auto",
         ),
     ]
 
@@ -5669,6 +6620,13 @@ def build_layout() -> dmc.MantineProvider:
                     data={"running": False, "message": ""},
                 ),
                 dcc.Store(
+                    id="auto-config-state",
+                    data={
+                        "target_label": AUTO_TARGET_LABEL_DEFAULT,
+                        "drop_ignore_radius_mm": AUTO_DROP_IGNORE_RADIUS_MM,
+                    },
+                ),
+                dcc.Store(
                     id="robot-operation-state",
                     data=_operation_snapshot(),
                 ),
@@ -5688,6 +6646,7 @@ def build_layout() -> dmc.MantineProvider:
                         "robot_calibrated": False,
                         "model_loaded": False,
                         "gripper_ready": False,
+                        "drop_target_defined": False,
                     },
                 ),
                 dcc.Store(
@@ -6897,6 +7856,36 @@ def register_callbacks(app: Dash) -> None:
         return detection_list, options, metrics
 
     @app.callback(
+        Output("auto-config-state", "data"),
+        Input("auto-target-class", "value"),
+        Input("auto-drop-ignore-radius", "value"),
+        Input("pick-approach-height", "value"),
+        Input("pick-height", "value"),
+        Input("drop-height", "value"),
+        Input("estimate-object-width-toggle", "checked"),
+    )
+    def _update_auto_config(
+        target_label: Optional[str],
+        drop_ignore_radius: Optional[float],
+        approach_height: Optional[float],
+        pick_height: Optional[float],
+        drop_height: Optional[float],
+        estimate_width: Optional[bool],
+    ) -> dict:
+        config = {
+            "target_label": (target_label or AUTO_TARGET_LABEL_DEFAULT),
+            "drop_ignore_radius_mm": _safe_float(
+                drop_ignore_radius, AUTO_DROP_IGNORE_RADIUS_MM
+            ),
+            "approach_mm": _safe_float(approach_height, -30.0),
+            "pick_mm": _safe_float(pick_height, 0.0),
+            "drop_mm": _safe_float(drop_height, 0.0),
+            "estimate_width": bool(estimate_width),
+        }
+        SESSION.auto_config.update(config)
+        return config
+
+    @app.callback(
         Output("pick-place-status", "children"),
         Output("drop-position-metrics", "children", allow_duplicate=True),
         Input("teach-drop-position", "n_clicks"),
@@ -6982,9 +7971,19 @@ def register_callbacks(app: Dash) -> None:
                 return "Robot posture stream not available yet.", drop_text
             pos = session.position_snapshot()
             coord_id = _current_coordinate_id(session)
-            robot_xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
             try:
-                drop_mm_xy = _robot_to_workspace_mm(workspace_def, robot_xyz)
+                if coord_id == ROBOT_COORDINATE_ID:
+                    drop_mm_xy = _coord5_to_workspace_mm(
+                        workspace_def, (float(pos.x), float(pos.y))
+                    )
+                    if drop_mm_xy is None:
+                        raise RuntimeError(
+                            "Coord5 transform unavailable; check calibration.")
+                else:
+                    robot_xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
+                    drop_mm_xy = _robot_to_workspace_mm(
+                        workspace_def, robot_xyz
+                    )
             except Exception as exc:  # noqa: BLE001
                 return f"Failed to record drop position: {exc}", drop_text
             SESSION.drop_target_mm = drop_mm_xy
@@ -7090,22 +8089,28 @@ def register_callbacks(app: Dash) -> None:
             if trigger in {"manual-pick-closest", "manual-pick-place-target"}:
                 session = _get_robot_session()
                 pos = session.position_snapshot()
-                robot_xy = np.array([pos.x, pos.y], dtype=float)
+                coord_id = _current_coordinate_id(session)
                 try:
-                    workspace_xy = _robot_to_workspace_mm(
-                        workspace_def, np.array(
-                            [pos.x, pos.y, pos.z], dtype=float)
-                    )
+                    if coord_id == ROBOT_COORDINATE_ID:
+                        ref_xy = (float(pos.x), float(pos.y))
+                    else:
+                        ref_xy = _robot_to_workspace_mm(
+                            workspace_def,
+                            np.array([pos.x, pos.y, pos.z], dtype=float),
+                        )
                 except Exception:
-                    workspace_xy = None
+                    ref_xy = None
                 best_det = SESSION.detections[0]
                 best_dist = float("inf")
                 for det in SESSION.detections:
-                    wp = det.get("workspace_mm")
-                    if wp is None:
+                    if coord_id == ROBOT_COORDINATE_ID:
+                        det_xy = _detection_coord5_mm(det, workspace_def)
+                    else:
+                        det_xy = det.get("workspace_mm")
+                    if det_xy is None:
                         continue
                     dist = np.linalg.norm(
-                        np.array(wp[:2]) - np.array(workspace_xy or wp[:2]))
+                        np.array(det_xy[:2]) - np.array(ref_xy or det_xy[:2]))
                     if dist < best_dist:
                         best_dist = dist
                         best_det = det
@@ -7124,22 +8129,30 @@ def register_callbacks(app: Dash) -> None:
         workspace_mm = detection.get("workspace_mm")
         if workspace_mm is None:
             workspace_mm = _workspace_pixel_to_mm(workspace_def, center)
+        coord5_xy = _detection_coord5_mm(detection, workspace_def)
+        if coord5_xy is None:
+            return "Detection missing robot coordinates; check plate markers.", drop_text
 
         width_guess = _estimate_width_mm(detection)
         if width_guess is not None:
             gripper_close_val = max(gripper_close_val, width_guess * 0.9)
             gripper_open_val = max(gripper_open_val, width_guess + 5.0)
 
-        pick_pose = _pose_from_workspace_mm(
-            workspace_def, workspace_mm[0], workspace_mm[1], pick_mm)
-        approach_pose = _pose_from_workspace_mm(
-            workspace_def, workspace_mm[0], workspace_mm[1], approach_mm
-        )
+        try:
+            pick_pose = _pose_from_coord5_mm(
+                coord5_xy[0], coord5_xy[1], pick_mm
+            )
+            approach_pose = _pose_from_coord5_mm(
+                coord5_xy[0], coord5_xy[1], approach_mm
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"Failed to map pick target: {exc}", drop_text
         SESSION.last_pick_mm = workspace_mm
         tracker_detection = detection
         tracker_workspace = _detection_workspace_mm(
             detection, workspace_def
         ) or workspace_mm
+        tracker_coord5 = coord5_xy
 
         def _resolve_drop_target() -> Tuple[float, float]:
             if SESSION.drop_target_mm:
@@ -7152,7 +8165,7 @@ def register_callbacks(app: Dash) -> None:
             nonlocal tracker_detection, tracker_workspace
 
             def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
-                nonlocal tracker_detection, tracker_workspace
+                nonlocal tracker_detection, tracker_workspace, tracker_coord5
                 detections = _refresh_follow_detections()
                 candidate = _select_follow_detection(
                     detections, tracker_workspace, tracker_detection
@@ -7164,12 +8177,16 @@ def register_callbacks(app: Dash) -> None:
                     )
                     if workspace_xy is not None:
                         tracker_workspace = workspace_xy
-                if tracker_workspace is None:
+                    coord5_xy = _detection_coord5_mm(
+                        candidate, workspace_def
+                    )
+                    if coord5_xy is not None:
+                        tracker_coord5 = coord5_xy
+                if tracker_coord5 is None:
                     return None
-                return _pose_from_workspace_mm(
-                    workspace_def,
-                    tracker_workspace[0],
-                    tracker_workspace[1],
+                return _pose_from_coord5_mm(
+                    tracker_coord5[0],
+                    tracker_coord5[1],
                     z_offset_mm,
                 )
 
@@ -7204,12 +8221,28 @@ def register_callbacks(app: Dash) -> None:
         async def _drop_action(robot_api: CodroidAPI, drop_target_mm: Tuple[float, float]) -> None:
             await robot_api.power_on()
             await _ensure_coordinate5_active(robot_api)
-            drop_pose = _pose_from_workspace_mm(
-                workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
-            )
-            drop_approach = _pose_from_workspace_mm(
-                workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
-            )
+            drop_pose = None
+            drop_approach = None
+            if (
+                SESSION.drop_target_robot is not None
+                and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
+            ):
+                base = SESSION.drop_target_robot
+                drop_pose = _pose_from_coord5_mm(
+                    float(base[0]), float(base[1]), float(base[2]) + drop_mm
+                )
+                drop_approach = _pose_from_coord5_mm(
+                    float(base[0]),
+                    float(base[1]),
+                    float(base[2]) + approach_mm,
+                )
+            else:
+                drop_pose = _pose_from_workspace_coord5_mm(
+                    workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
+                )
+                drop_approach = _pose_from_workspace_coord5_mm(
+                    workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
+                )
             if SESSION.drop_target_orientation is not None:
                 drop_pose.update(
                     {
@@ -7387,7 +8420,8 @@ def register_callbacks(app: Dash) -> None:
         grip_timeout = max(grip_timeout, 0.5)
         segment_min = _safe_float(segment_min, SEGMENT_FOLLOW_MIN_MM)
         segment_max = _safe_float(segment_max, SEGMENT_FOLLOW_MAX_MM)
-        segment_fraction = _safe_float(segment_fraction, SEGMENT_FOLLOW_FRACTION)
+        segment_fraction = _safe_float(
+            segment_fraction, SEGMENT_FOLLOW_FRACTION)
         segment_min = float(np.clip(segment_min, 1.0, 200.0))
         segment_max = float(np.clip(segment_max, 5.0, 500.0))
         segment_fraction = float(np.clip(segment_fraction, 0.1, 1.0))
@@ -7445,7 +8479,8 @@ def register_callbacks(app: Dash) -> None:
                 baseline_transform,
                 reference_initialized,
             ) = _resolve_plate_test_coord5_targets(DEFAULT_PLATE_PATH)
-            target_sequence_order = [int(target["sequence"]) for target in targets]
+            target_sequence_order = [int(target["sequence"])
+                                     for target in targets]
             targets_by_sequence: dict[int, dict] = {
                 int(target["sequence"]): dict(target) for target in targets
             }
@@ -7474,11 +8509,16 @@ def register_callbacks(app: Dash) -> None:
                 baseline_transform.rotation[0, 0],
             )
             plate_rotation_deg = np.degrees(plate_rotation_rad)
-            offset_rotation_deg = float(plate_meta.get("offset_rotation_deg", 0.0))
-            plate_rotation_total = float(plate_rotation_deg + offset_rotation_deg)
-            plate_orientation["c"] = float(orientation["c"] + plate_rotation_total)
-            LOGGER.info("Plate rotation angle: %.2f degrees", plate_rotation_deg)
-            LOGGER.info("Plate rotation total: %.2f degrees", plate_rotation_total)
+            offset_rotation_deg = float(
+                plate_meta.get("offset_rotation_deg", 0.0))
+            plate_rotation_total = float(
+                plate_rotation_deg + offset_rotation_deg)
+            plate_orientation["c"] = float(
+                orientation["c"] + plate_rotation_total)
+            LOGGER.info("Plate rotation angle: %.2f degrees",
+                        plate_rotation_deg)
+            LOGGER.info("Plate rotation total: %.2f degrees",
+                        plate_rotation_total)
 
         _update_plate_alignment()
 
@@ -9823,7 +10863,8 @@ def register_callbacks(app: Dash) -> None:
         error_state: Optional[dict],
     ) -> Tuple[bool, str, bool]:
         state = error_state or {}
-        active = bool(state.get("active")) and state.get("error_type") == "emergency_stop"
+        active = bool(state.get("active")) and state.get(
+            "error_type") == "emergency_stop"
         message = state.get("message") or "Emergency stop detected."
         physical_pressed = bool(state.get("physical_pressed"))
         return active, message, physical_pressed
@@ -9837,7 +10878,8 @@ def register_callbacks(app: Dash) -> None:
         error_state: Optional[dict],
     ) -> Tuple[bool, str]:
         state = error_state or {}
-        active = bool(state.get("active")) and state.get("error_type") == "overspeed"
+        active = bool(state.get("active")) and state.get(
+            "error_type") == "overspeed"
         message = state.get("message") or "Overspeed alarm detected."
         return active, message
 
@@ -9850,7 +10892,8 @@ def register_callbacks(app: Dash) -> None:
         error_state: Optional[dict],
     ) -> Tuple[bool, str]:
         state = error_state or {}
-        active = bool(state.get("active")) and state.get("error_type") == "joint_protection"
+        active = bool(state.get("active")) and state.get(
+            "error_type") == "joint_protection"
         message = state.get("message") or "Joint protection warning detected."
         return active, message
 
@@ -9863,7 +10906,8 @@ def register_callbacks(app: Dash) -> None:
         error_state: Optional[dict],
     ) -> Tuple[bool, str]:
         state = error_state or {}
-        active = bool(state.get("active")) and state.get("error_type") == "wrong_tool"
+        active = bool(state.get("active")) and state.get(
+            "error_type") == "wrong_tool"
         message = state.get("message") or "Tool/payload mismatch detected."
         return active, message
 
@@ -9876,7 +10920,8 @@ def register_callbacks(app: Dash) -> None:
         error_state: Optional[dict],
     ) -> Tuple[bool, str]:
         state = error_state or {}
-        active = bool(state.get("active")) and state.get("error_type") == "drag_not_allowed"
+        active = bool(state.get("active")) and state.get(
+            "error_type") == "drag_not_allowed"
         message = state.get("message") or "Drag not allowed warning detected."
         return active, message
 
@@ -10012,7 +11057,8 @@ def register_callbacks(app: Dash) -> None:
                 )
         if trigger == "overspeed-stay-paused":
             snapshot = _acknowledge_robot_error()
-            _pause_operation("overspeed", "Paused after overspeed acknowledgment.")
+            _pause_operation(
+                "overspeed", "Paused after overspeed acknowledgment.")
             return (
                 snapshot,
                 dmc.Notification(
@@ -10151,7 +11197,8 @@ def register_callbacks(app: Dash) -> None:
             try:
                 await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _clear)
                 snapshot = _acknowledge_robot_error()
-                _pause_operation("wrong_tool", "Paused after tool error clear.")
+                _pause_operation(
+                    "wrong_tool", "Paused after tool error clear.")
                 return (
                     snapshot,
                     dmc.Notification(
@@ -10556,7 +11603,8 @@ def register_callbacks(app: Dash) -> None:
             dmc.StepperStep(
                 label="Accuracy",
                 description="Calibration accuracy check",
-                state=_step_state(step > 4 or bool(state.get("accuracy_ready"))),
+                state=_step_state(step > 4 or bool(
+                    state.get("accuracy_ready"))),
             ),
             dmc.StepperStep(
                 label="Verification",
@@ -11071,7 +12119,8 @@ def register_callbacks(app: Dash) -> None:
             verification_ready=False,
         )
         if run_id is not None:
-            _finish_operation(run_id, status="idle", message="Verification complete.")
+            _finish_operation(run_id, status="idle",
+                              message="Verification complete.")
         return {"status": "complete", "message": "Calibration verified.", "step": 5}
 
 
@@ -11090,9 +12139,14 @@ def create_app() -> Dash:
     @app.callback(
         Output("prerequisites-state", "data"),
         Input("camera-interval", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
         Input("gripper-connection-state", "data"),
     )
-    def _update_prerequisites(_n: int, gripper_state: Optional[dict]) -> dict:
+    def _update_prerequisites(
+        _n: int,
+        _monitor: int,
+        gripper_state: Optional[dict],
+    ) -> dict:
         """Update prerequisites state based on current system status."""
         return {
             "camera_calibrated": SESSION.calibration_bundle is not None,
@@ -11100,6 +12154,7 @@ def create_app() -> Dash:
             "robot_calibrated": SESSION.robot_calibration_min_z is not None,
             "model_loaded": SESSION.model_loaded,
             "gripper_ready": (gripper_state or {}).get("status") == "online",
+            "drop_target_defined": SESSION.drop_target_mm is not None,
         }
 
     @app.callback(
@@ -11120,6 +12175,7 @@ def create_app() -> Dash:
             prereqs.get("robot_calibrated", False),
             prereqs.get("model_loaded", False),
             prereqs.get("gripper_ready", False),
+            prereqs.get("drop_target_defined", False),
         ])
 
         running = (auto_state or {}).get("running", False)
@@ -11137,12 +12193,14 @@ def create_app() -> Dash:
         Input("auto-start", "n_clicks"),
         Input("auto-stop", "n_clicks"),
         State("auto-operation-state", "data"),
+        State("robot-uri", "value"),
         prevent_initial_call=True,
     )
-    def _handle_auto_operation(
+    async def _handle_auto_operation(
         start_clicks: int,
         stop_clicks: int,
         current_state: Optional[dict],
+        robot_uri: Optional[str],
     ) -> Tuple[dict, dmc.Notification]:
         """Handle auto operation start/stop."""
         ctx = callback_context
@@ -11152,8 +12210,37 @@ def create_app() -> Dash:
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
         if trigger_id == "auto-start":
-            # TODO: Start the auto pick & place operation
-            LOGGER.info("Starting auto pick & place operation")
+            if SESSION.auto_task is not None and not SESSION.auto_task.done():
+                return (
+                    {"running": True, "message": "Auto operation already running"},
+                    dmc.Notification(
+                        title="Auto Operation",
+                        message="Auto operation is already running.",
+                        color="yellow",
+                        action="show",
+                    ),
+                )
+            try:
+                run_id = _begin_operation(
+                    "auto",
+                    "Auto pick & place",
+                    message="Auto pick & place running.",
+                )
+            except RuntimeError as exc:
+                return (
+                    no_update,
+                    dmc.Notification(
+                        title="Auto Operation",
+                        message=str(exc),
+                        color="red",
+                        action="show",
+                    ),
+                )
+            SESSION.auto_waiting_at_drop = False
+            _set_auto_state("Auto pick & place running.", running=True)
+            SESSION.auto_task = asyncio.create_task(
+                _auto_operation_task(run_id, robot_uri)
+            )
             return (
                 {"running": True, "message": "Auto operation started"},
                 dmc.Notification(
@@ -11164,19 +12251,42 @@ def create_app() -> Dash:
                 ),
             )
         elif trigger_id == "auto-stop":
-            # TODO: Stop the auto pick & place operation
-            LOGGER.info("Stopping auto pick & place operation")
+            _request_stop_operation("Auto stop requested.")
+            _set_auto_state("Auto stop requested.", running=True)
+
+            async def _stop_motion(api: CodroidAPI) -> None:
+                await api.stop_command()
+
+            try:
+                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _stop_motion)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Auto stop command failed: %s", exc)
             return (
-                {"running": False, "message": "Auto operation stopped"},
+                {"running": True, "message": "Auto operation stopping"},
                 dmc.Notification(
                     title="Auto Operation",
-                    message="Auto pick & place operation stopped",
+                    message="Auto pick & place operation stopping",
                     color="orange",
                     action="show",
                 ),
             )
 
         return no_update, no_update
+
+    @app.callback(
+        Output("auto-operation-state", "data", allow_duplicate=True),
+        Input("monitor-interval", "n_intervals"),
+        State("auto-operation-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _sync_auto_operation_state(
+        _ticks: int,
+        current_state: Optional[dict],
+    ) -> dict:
+        snapshot = _auto_state_snapshot()
+        if current_state == snapshot:
+            return no_update
+        return snapshot
 
     @app.callback(
         Output("robot-operation-state", "data"),
