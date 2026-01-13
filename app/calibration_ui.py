@@ -92,6 +92,16 @@ PLATE_TEST_TOLERANCE_MM = 2.0
 PLATE_TEST_Z_TOLERANCE_MM = 2.0
 PLATE_TEST_SETTLE_S = 0.4
 PLATE_TEST_MOTION_EPS_MM = 0.5
+PLATE_TEST_FOLLOW_UPDATE_S = 0.05
+PLATE_TEST_FOLLOW_SEGMENT_S = 0.1
+SEGMENT_FOLLOW_MIN_MM = 20.0
+SEGMENT_FOLLOW_MAX_MM = 300.0
+SEGMENT_FOLLOW_FRACTION = 0.8
+PICK_FOLLOW_UPDATE_S = 0.05
+PICK_FOLLOW_SEGMENT_S = 0.1
+PICK_FOLLOW_TIMEOUT_S = 15.0
+PICK_FOLLOW_TOLERANCE_MM = 3.0
+PICK_FOLLOW_SETTLE_S = 0.6
 RESCUE_JOG_HOLD_S = 0.35
 # Use coordinate system 5 (robot calibration frame) instead of base coordinates.
 # Coordinate system 5 is aligned with the plate reference frame at calibration time.
@@ -1990,6 +2000,180 @@ def _format_detection_list(detections: list[dict]) -> list:
         rows.append(
             dmc.Text(f"{idx}. {label} ({conf:.2f}) @ {coord}", size="sm"))
     return rows
+
+
+def _refresh_follow_detections() -> list[dict]:
+    frame, _depth = get_latest_frame()
+    if frame is None:
+        return SESSION.detections or []
+    if SESSION.yolo_model is None:
+        return SESSION.detections or []
+    try:
+        detections = _run_detection(
+            frame,
+            SESSION.detection_confidence,
+            SESSION.detection_iou,
+            SESSION.detection_max,
+            SESSION.detection_classes,
+        )
+        SESSION.detections = detections
+        SESSION.last_detection_error = None
+        return detections
+    except Exception as exc:  # noqa: BLE001
+        SESSION.last_detection_error = str(exc)
+        LOGGER.warning("Follow detection update failed: %s", exc)
+        return SESSION.detections or []
+
+
+def _detection_workspace_mm(
+    detection: dict,
+    workspace_def: workspace.WorkspaceDefinition,
+) -> Optional[Tuple[float, float]]:
+    workspace_mm = detection.get("workspace_mm")
+    if workspace_mm is not None:
+        return (float(workspace_mm[0]), float(workspace_mm[1]))
+    center = detection.get("center")
+    if center is None:
+        return None
+    try:
+        workspace_mm = _workspace_pixel_to_mm(workspace_def, center)
+    except Exception:  # noqa: BLE001
+        return None
+    return (float(workspace_mm[0]), float(workspace_mm[1]))
+
+
+def _select_follow_detection(
+    detections: list[dict],
+    last_workspace_mm: Optional[Tuple[float, float]],
+    fallback: Optional[dict],
+) -> Optional[dict]:
+    if not detections:
+        return fallback
+    if last_workspace_mm is not None:
+        best_detection = None
+        best_distance = float("inf")
+        for detection in detections:
+            workspace_mm = detection.get("workspace_mm")
+            if workspace_mm is None:
+                continue
+            dist = float(
+                np.linalg.norm(
+                    np.array(workspace_mm[:2]) - np.array(last_workspace_mm)
+                )
+            )
+            if dist < best_distance:
+                best_distance = dist
+                best_detection = detection
+        if best_detection is not None:
+            return best_detection
+    return fallback or detections[0]
+
+
+def _build_follow_pose_fetcher(
+    workspace_def: workspace.WorkspaceDefinition,
+    initial_detection: dict,
+    z_offset_mm: float,
+) -> Callable[[], Optional[dict]]:
+    last_detection = initial_detection
+    last_workspace_mm = _detection_workspace_mm(initial_detection, workspace_def)
+
+    def _fetch() -> Optional[dict]:
+        nonlocal last_detection, last_workspace_mm
+        detections = _refresh_follow_detections()
+        detection = _select_follow_detection(
+            detections, last_workspace_mm, last_detection
+        )
+        if detection is None:
+            return None
+        last_detection = detection
+        workspace_mm = _detection_workspace_mm(detection, workspace_def)
+        if workspace_mm is None:
+            workspace_mm = last_workspace_mm
+        if workspace_mm is None:
+            return None
+        last_workspace_mm = workspace_mm
+        return _pose_from_workspace_mm(
+            workspace_def, workspace_mm[0], workspace_mm[1], z_offset_mm
+        )
+
+    return _fetch
+
+
+async def _move_linear_follow_target(
+    robot_api: CodroidAPI,
+    target_fetch: Callable[[], Optional[dict]],
+    *,
+    label: str,
+    coordinate_id: int = ROBOT_COORDINATE_ID,
+    timeout_s: float = PICK_FOLLOW_TIMEOUT_S,
+    update_interval: float = PICK_FOLLOW_UPDATE_S,
+    segment_hold_s: float = PICK_FOLLOW_SEGMENT_S,
+    settle_s: float = PICK_FOLLOW_SETTLE_S,
+    tolerance_mm: float = PICK_FOLLOW_TOLERANCE_MM,
+    require_posture: bool = True,
+) -> Optional[dict]:
+    session = _get_robot_session()
+    last_target: Optional[dict] = None
+    if require_posture and not session.posture_seen():
+        initial_target = await asyncio.to_thread(target_fetch)
+        if initial_target is None:
+            raise RuntimeError("No target available for follow move.")
+        await robot_api.move_to_cartesian_target_linear(
+            robot_api.build_target_cpos(**initial_target)
+        )
+        return initial_target
+    await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+    stable_since: Optional[float] = None
+    deadline = time.monotonic() + timeout_s
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            LOGGER.warning(
+                "Follow move '%s' timed out after %.1f s.", label, timeout_s
+            )
+            break
+        target = await asyncio.to_thread(target_fetch)
+        if target is not None:
+            last_target = target
+        if last_target is None:
+            raise RuntimeError("No target available for follow move.")
+        await robot_api.set_target_cpos(
+            robot_api.attach_coordinate_to_cpos(
+                robot_api.build_target_cpos(**last_target),
+                coordinate_id=coordinate_id,
+            )
+        )
+        await robot_api.set_robot_command(
+            robot_api.config.commands.move_target_linear
+        )
+        segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
+        while time.monotonic() < segment_deadline:
+            await robot_api.send_command_heartbeat()
+            await asyncio.sleep(min(update_interval, 0.05))
+        if session.posture_seen():
+            posture = session.position_snapshot()
+            curr_xyz = np.array(
+                [posture.x, posture.y, posture.z], dtype=np.float64
+            )
+            target_xyz = np.array(
+                [
+                    float(last_target["x"]),
+                    float(last_target["y"]),
+                    float(last_target["z"]),
+                ],
+                dtype=np.float64,
+            )
+            if np.linalg.norm(curr_xyz - target_xyz) <= tolerance_mm:
+                if stable_since is None:
+                    stable_since = now
+                elif now - stable_since >= settle_s:
+                    break
+            else:
+                stable_since = None
+        await asyncio.sleep(update_interval)
+    await robot_api.clear_target_position()
+    await robot_api.stop_command()
+    return last_target
 
 
 def _detect_drop_marker(
@@ -5120,6 +5304,48 @@ def build_pick_place_tab() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
+            dmc.Select(
+                id="plate-test-tracking-mode",
+                label="Tracking mode",
+                data=[
+                    {"label": "Move target (default)", "value": "move"},
+                    {"label": "Segmented tracking", "value": "segment"},
+                ],
+                value="move",
+                clearable=False,
+            ),
+            dmc.Group(
+                [
+                    dmc.NumberInput(
+                        id="plate-test-segment-min",
+                        label="Segment min (mm)",
+                        description="Minimum step size for segmented tracking.",
+                        value=SEGMENT_FOLLOW_MIN_MM,
+                        min=1.0,
+                        max=200.0,
+                        step=1.0,
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-segment-max",
+                        label="Segment max (mm)",
+                        description="Maximum step size for segmented tracking.",
+                        value=SEGMENT_FOLLOW_MAX_MM,
+                        min=5.0,
+                        max=500.0,
+                        step=5.0,
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-segment-fraction",
+                        label="Segment fraction",
+                        description="Fraction of remaining XY distance each step; higher = fewer, longer segments.",
+                        value=SEGMENT_FOLLOW_FRACTION,
+                        min=0.1,
+                        max=1.0,
+                        step=0.1,
+                    ),
+                ],
+                grow=True,
+            ),
             dmc.Group(
                 [
                     dmc.NumberInput(
@@ -5875,7 +6101,7 @@ def register_callbacks(app: Dash) -> None:
             return no_update
         rate = max(0.0, min(1.0, float(value) / 100.0))
         now = time.time()
-        if abs(rate - SESSION.robot_speed_rate) < 0.001 and (now - SESSION.robot_speed_last_set) < 0.4:
+        if abs(rate - SESSION.robot_speed_rate) < 0.001:
             return no_update
 
         SESSION.robot_speed_rate = rate
@@ -6910,6 +7136,10 @@ def register_callbacks(app: Dash) -> None:
             workspace_def, workspace_mm[0], workspace_mm[1], approach_mm
         )
         SESSION.last_pick_mm = workspace_mm
+        tracker_detection = detection
+        tracker_workspace = _detection_workspace_mm(
+            detection, workspace_def
+        ) or workspace_mm
 
         def _resolve_drop_target() -> Tuple[float, float]:
             if SESSION.drop_target_mm:
@@ -6919,20 +7149,57 @@ def register_callbacks(app: Dash) -> None:
         async def _pick_action(robot_api: CodroidAPI) -> None:
             await robot_api.power_on()
             await _ensure_coordinate5_active(robot_api)
+            nonlocal tracker_detection, tracker_workspace
+
+            def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
+                nonlocal tracker_detection, tracker_workspace
+                detections = _refresh_follow_detections()
+                candidate = _select_follow_detection(
+                    detections, tracker_workspace, tracker_detection
+                )
+                if candidate is not None:
+                    tracker_detection = candidate
+                    workspace_xy = _detection_workspace_mm(
+                        candidate, workspace_def
+                    )
+                    if workspace_xy is not None:
+                        tracker_workspace = workspace_xy
+                if tracker_workspace is None:
+                    return None
+                return _pose_from_workspace_mm(
+                    workspace_def,
+                    tracker_workspace[0],
+                    tracker_workspace[1],
+                    z_offset_mm,
+                )
+
             _log_move_target(
                 "pick_approach", approach_pose, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
+            await _move_linear_follow_target(
+                robot_api,
+                lambda: _fetch_pose(approach_mm),
+                label="pick_approach_follow",
+            )
             _log_move_target(
                 "pick_pose", pick_pose, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**pick_pose))
-            _command_gripper(gripper_close_val, "closed")
-            _log_move_target(
-                "pick_retreat", approach_pose, coordinate_id=ROBOT_COORDINATE_ID
+            await _move_linear_follow_target(
+                robot_api,
+                lambda: _fetch_pose(pick_mm),
+                label="pick_pose_follow",
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**approach_pose))
+            _command_gripper(gripper_close_val, "closed")
+            retreat_pose = _fetch_pose(approach_mm) or approach_pose
+            _log_move_target(
+                "pick_retreat", retreat_pose, coordinate_id=ROBOT_COORDINATE_ID
+            )
+            await robot_api.move_to_cartesian_target_linear(
+                robot_api.build_target_cpos(**retreat_pose)
+            )
             SESSION.robot_has_object = True
+            if tracker_workspace is not None:
+                SESSION.last_pick_mm = tracker_workspace
 
         async def _drop_action(robot_api: CodroidAPI, drop_target_mm: Tuple[float, float]) -> None:
             await robot_api.power_on()
@@ -7043,6 +7310,10 @@ def register_callbacks(app: Dash) -> None:
         Output("plate-test-status", "children"),
         Output("plate-test-analysis", "value"),
         Input("plate-test-run", "n_clicks"),
+        State("plate-test-tracking-mode", "value"),
+        State("plate-test-segment-min", "value"),
+        State("plate-test-segment-max", "value"),
+        State("plate-test-segment-fraction", "value"),
         State("plate-test-approach-height", "value"),
         State("plate-test-pick-height", "value"),
         State("plate-test-drop-height", "value"),
@@ -7054,6 +7325,10 @@ def register_callbacks(app: Dash) -> None:
     )
     async def _run_plate_pick_place_test(
         _clicks: int,
+        tracking_mode: Optional[str],
+        segment_min: Optional[float],
+        segment_max: Optional[float],
+        segment_fraction: Optional[float],
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
@@ -7110,10 +7385,20 @@ def register_callbacks(app: Dash) -> None:
         drop_mm = _safe_float(drop_height, 0.0)
         grip_timeout = _safe_float(grip_timeout_s, PLATE_TEST_GRIP_TIMEOUT_S)
         grip_timeout = max(grip_timeout, 0.5)
+        segment_min = _safe_float(segment_min, SEGMENT_FOLLOW_MIN_MM)
+        segment_max = _safe_float(segment_max, SEGMENT_FOLLOW_MAX_MM)
+        segment_fraction = _safe_float(segment_fraction, SEGMENT_FOLLOW_FRACTION)
+        segment_min = float(np.clip(segment_min, 1.0, 200.0))
+        segment_max = float(np.clip(segment_max, 5.0, 500.0))
+        segment_fraction = float(np.clip(segment_fraction, 0.1, 1.0))
+        if segment_max < segment_min:
+            segment_min, segment_max = segment_max, segment_min
         workspace_def = SESSION.workspace_definition
         session = _get_robot_session()
         if not session.posture_seen():
             return _plate_test_abort("Robot posture stream not available yet.")
+        tracking_mode = (tracking_mode or "move").strip().lower()
+        use_segment_tracking = tracking_mode == "segment"
         use_base_coordinates = PLATE_TEST_USE_BASE_COORDINATES
         if use_base_coordinates:
             if approach_mm < drop_mm:
@@ -7460,6 +7745,266 @@ def register_callbacks(app: Dash) -> None:
                     dtype=np.float64,
                 )
 
+            def _travel_z(
+                z_a: float, z_b: float, *, use_base: bool
+            ) -> float:
+                if use_base:
+                    return float(max(z_a, z_b))
+                return float(min(z_a, z_b))
+
+            def _plate_pose_for_target(
+                target: dict,
+                z_value: float,
+                *,
+                use_travel_z: bool,
+            ) -> dict:
+                coord_xy = target.get("adjusted_xy", target["reference_xy"])
+                coord = np.array(
+                    [coord_xy[0], coord_xy[1], z_value], dtype=np.float64
+                )
+                pose_coord5 = {
+                    "x": float(coord[0]),
+                    "y": float(coord[1]),
+                    "z": _clamp_z_for_coord5(
+                        float(coord[2]), use_base_coords=use_base_coordinates
+                    ),
+                    "poscfg": poscfg,
+                }
+                pose_coord5.update(plate_orientation)
+                base = _coord_to_base(coord)
+                pose_base = {
+                    "x": float(base[0]),
+                    "y": float(base[1]),
+                    "z": float(base[2]),
+                    "poscfg": poscfg,
+                }
+                pose_base.update(plate_orientation)
+                pose = pose_base if use_base_coordinates else pose_coord5
+                if use_travel_z:
+                    travel_z = _travel_z(
+                        float(drop_approach["z"]),
+                        float(pose["z"]),
+                        use_base=use_base_coordinates,
+                    )
+                    pose = dict(pose)
+                    pose["z"] = travel_z
+                return pose
+
+            async def _move_linear_follow_plate_target(
+                sequence: int,
+                z_value: float,
+                *,
+                label: str,
+                use_travel_z: bool,
+                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
+                update_interval: float = PLATE_TEST_FOLLOW_UPDATE_S,
+                settle_s: float = PLATE_TEST_SETTLE_S,
+                segment_hold_s: float = PLATE_TEST_FOLLOW_SEGMENT_S,
+            ) -> dict:
+                await _wait_for_operation_resume(run_id)
+                target = targets_by_sequence.get(sequence)
+                if target is None:
+                    raise RuntimeError(
+                        f"Plate test target {sequence} missing from pose data."
+                    )
+                command_pose = _plate_pose_for_target(
+                    target, z_value, use_travel_z=use_travel_z
+                )
+                _log_move_target(
+                    label, command_pose, coordinate_id=plate_test_coord_id
+                )
+                await robot_api.set_target_pos_type(
+                    robot_api.config.target_pos_types.cpos
+                )
+                stable_since: Optional[float] = None
+                deadline = time.monotonic() + timeout_s
+                last_pose = command_pose
+                while True:
+                    await _wait_for_operation_resume(run_id)
+                    now = time.monotonic()
+                    if now >= deadline:
+                        LOGGER.warning(
+                            "Plate follow move '%s' timed out after %.1f s.",
+                            label,
+                            timeout_s,
+                        )
+                        break
+                    refreshed = await _refresh_plate_targets()
+                    if not refreshed:
+                        LOGGER.warning(
+                            "Plate follow move '%s': pose refresh failed.",
+                            label,
+                        )
+                    target = targets_by_sequence.get(sequence)
+                    if target is not None:
+                        last_pose = _plate_pose_for_target(
+                            target, z_value, use_travel_z=use_travel_z
+                        )
+                    await robot_api.set_target_cpos(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**last_pose),
+                            coordinate_id=plate_test_coord_id,
+                        )
+                    )
+                    await robot_api.set_robot_command(
+                        robot_api.config.commands.move_target_linear
+                    )
+                    segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
+                    while time.monotonic() < segment_deadline:
+                        await robot_api.send_command_heartbeat()
+                        await asyncio.sleep(min(update_interval, 0.05))
+                    posture = session.position_snapshot()
+                    curr_xyz = _pose_xyz(
+                        posture, plate_test_coord_id, last_pose
+                    )
+                    target_xyz = np.array(
+                        [
+                            float(last_pose["x"]),
+                            float(last_pose["y"]),
+                            float(last_pose["z"]),
+                        ],
+                        dtype=np.float64,
+                    )
+                    if (
+                        abs(curr_xyz[0] - target_xyz[0])
+                        <= PLATE_TEST_TOLERANCE_MM
+                        and abs(curr_xyz[1] - target_xyz[1])
+                        <= PLATE_TEST_TOLERANCE_MM
+                        and abs(curr_xyz[2] - target_xyz[2])
+                        <= PLATE_TEST_Z_TOLERANCE_MM
+                    ):
+                        if settle_s <= 0:
+                            break
+                        if stable_since is None:
+                            stable_since = now
+                        elif now - stable_since >= settle_s:
+                            break
+                    else:
+                        stable_since = None
+                    await asyncio.sleep(update_interval)
+                await robot_api.clear_target_position()
+                await robot_api.stop_command()
+                _record_move(label, last_pose, plate_test_coord_id)
+                return last_pose
+
+            async def _segment_follow_plate_target(
+                sequence: int,
+                z_value: float,
+                *,
+                label: str,
+                use_travel_z: bool,
+                segment_min_mm: float,
+                segment_max_mm: float,
+                segment_fraction: float,
+                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
+                update_interval: float = PLATE_TEST_FOLLOW_UPDATE_S,
+                segment_hold_s: float = PLATE_TEST_FOLLOW_SEGMENT_S,
+                settle_s: float = PLATE_TEST_SETTLE_S,
+            ) -> dict:
+                await _wait_for_operation_resume(run_id)
+                target = targets_by_sequence.get(sequence)
+                if target is None:
+                    raise RuntimeError(
+                        f"Plate test target {sequence} missing from pose data."
+                    )
+                last_pose = _plate_pose_for_target(
+                    target, z_value, use_travel_z=use_travel_z
+                )
+                _log_move_target(
+                    label, last_pose, coordinate_id=plate_test_coord_id
+                )
+                deadline = time.monotonic() + timeout_s
+                stable_since: Optional[float] = None
+
+                while True:
+                    await _wait_for_operation_resume(run_id)
+                    now = time.monotonic()
+                    if now >= deadline:
+                        LOGGER.warning(
+                            "Plate segment follow '%s' timed out after %.1f s.",
+                            label,
+                            timeout_s,
+                        )
+                        break
+                    refreshed = await _refresh_plate_targets()
+                    if not refreshed:
+                        LOGGER.warning(
+                            "Plate segment follow '%s': pose refresh failed.",
+                            label,
+                        )
+                    target = targets_by_sequence.get(sequence)
+                    if target is not None:
+                        last_pose = _plate_pose_for_target(
+                            target, z_value, use_travel_z=use_travel_z
+                        )
+                    posture = session.position_snapshot()
+                    curr_xyz = _pose_xyz(
+                        posture, plate_test_coord_id, last_pose
+                    )
+                    target_xyz = np.array(
+                        [
+                            float(last_pose["x"]),
+                            float(last_pose["y"]),
+                            float(last_pose["z"]),
+                        ],
+                        dtype=np.float64,
+                    )
+                    delta = target_xyz - curr_xyz
+                    planar_dist = float(np.hypot(delta[0], delta[1]))
+                    if (
+                        abs(delta[0]) <= PLATE_TEST_TOLERANCE_MM
+                        and abs(delta[1]) <= PLATE_TEST_TOLERANCE_MM
+                        and abs(delta[2]) <= PLATE_TEST_Z_TOLERANCE_MM
+                    ):
+                        if settle_s <= 0:
+                            break
+                        if stable_since is None:
+                            stable_since = now
+                        elif now - stable_since >= settle_s:
+                            break
+                    else:
+                        stable_since = None
+                    step_ratio = 1.0
+                    if planar_dist > 0:
+                        step_len = float(
+                            np.clip(
+                                planar_dist * segment_fraction,
+                                segment_min_mm,
+                                segment_max_mm,
+                            )
+                        )
+                        step_ratio = min(1.0, step_len / planar_dist)
+                    step_pose = dict(last_pose)
+                    if planar_dist > 0:
+                        step_pose["x"] = float(
+                            curr_xyz[0] + delta[0] * step_ratio
+                        )
+                        step_pose["y"] = float(
+                            curr_xyz[1] + delta[1] * step_ratio
+                        )
+                    await robot_api.set_target_pos_type(
+                        robot_api.config.target_pos_types.cpos
+                    )
+                    await robot_api.set_target_cpos(
+                        robot_api.attach_coordinate_to_cpos(
+                            robot_api.build_target_cpos(**step_pose),
+                            coordinate_id=plate_test_coord_id,
+                        )
+                    )
+                    await robot_api.set_robot_command(
+                        robot_api.config.commands.move_target_linear
+                    )
+                    segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
+                    while time.monotonic() < segment_deadline:
+                        await robot_api.send_command_heartbeat()
+                        await asyncio.sleep(min(update_interval, 0.05))
+                    await asyncio.sleep(update_interval)
+
+                await robot_api.clear_target_position()
+                await robot_api.stop_command()
+                _record_move(label, last_pose, plate_test_coord_id)
+                return last_pose
+
             async def _await_motion_settle(
                 target: dict,
                 *,
@@ -7661,31 +8206,46 @@ def register_callbacks(app: Dash) -> None:
                     pick_pose_base if use_base_coordinates else pick_pose_coord5
                 )
 
-                def _travel_z(
-                    z_a: float, z_b: float, *, use_base: bool
-                ) -> float:
-                    if use_base:
-                        return float(max(z_a, z_b))
-                    return float(min(z_a, z_b))
-
                 travel_z = _travel_z(
                     float(drop_approach["z"]),
                     float(approach_pose["z"]),
                     use_base=use_base_coordinates,
                 )
-                transit_to_pick_pose = approach_pose.copy()
-                transit_to_pick_pose["z"] = travel_z
                 cycle_started_at = time.monotonic()
-                await _move_linear_with_hold(
-                    transit_to_pick_pose,
-                    hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                    label=f"target_{sequence}_transit_to_pick",
-                )
-                await _move_linear_with_hold(
-                    pick_pose,
-                    hold_seconds=PLATE_TEST_MOVE_HOLD_S,
-                    label=f"target_{sequence}_pick",
-                )
+                if use_segment_tracking:
+                    await _segment_follow_plate_target(
+                        sequence,
+                        approach_mm,
+                        label=f"target_{sequence}_transit_to_pick",
+                        use_travel_z=True,
+                        segment_min_mm=segment_min,
+                        segment_max_mm=segment_max,
+                        segment_fraction=segment_fraction,
+                    )
+                    last_pick_pose = await _segment_follow_plate_target(
+                        sequence,
+                        pick_mm,
+                        label=f"target_{sequence}_pick",
+                        use_travel_z=False,
+                        segment_min_mm=segment_min,
+                        segment_max_mm=segment_max,
+                        segment_fraction=segment_fraction,
+                    )
+                else:
+                    await _move_linear_follow_plate_target(
+                        sequence,
+                        approach_mm,
+                        label=f"target_{sequence}_transit_to_pick",
+                        use_travel_z=True,
+                        settle_s=0.0,
+                    )
+                    last_pick_pose = await _move_linear_follow_plate_target(
+                        sequence,
+                        pick_mm,
+                        label=f"target_{sequence}_pick",
+                        use_travel_z=False,
+                        settle_s=0.0,
+                    )
                 await _wait_for_operation_resume(run_id)
                 _command_gripper(
                     gripper_min_width,
@@ -7709,7 +8269,7 @@ def register_callbacks(app: Dash) -> None:
                 if gripped:
                     summary["successes"] += 1
                     SESSION.robot_has_object = True
-                    lift_pose = pick_pose.copy()
+                    lift_pose = (last_pick_pose or pick_pose).copy()
                     lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         lift_pose,
@@ -7746,7 +8306,7 @@ def register_callbacks(app: Dash) -> None:
                 else:
                     await _wait_for_operation_resume(run_id)
                     _command_gripper(gripper_max_width, "opened")
-                    lift_pose = pick_pose.copy()
+                    lift_pose = (last_pick_pose or pick_pose).copy()
                     lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         lift_pose,

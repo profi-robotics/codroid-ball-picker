@@ -178,6 +178,7 @@ The gripper is integrated into Applications > Pick & Place:
 3. **Automated Pick & Place:**
    - The gripper automatically opens/closes during pick-drop sequences
    - Grip detection confirms successful object acquisition
+   - Pick approach/pick motions continuously refresh the target from the latest camera detections while moving
 
 ## Authentication
 

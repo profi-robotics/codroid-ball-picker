@@ -14,9 +14,9 @@ indentations labeled **1**, **2**, **3**.
 
 1. Place the calibration plate in the workspace.
 2. Place **three orange balls** in indentations **1**, **2**, **3**.
-3. Keep the plate markers visible; the test re-tracks the plate pose before
-   each target. If detection fails, re-run the plate detection step to
-   re-initialize tracking.
+3. Keep the plate markers visible; the test continuously re-tracks the plate
+   pose while approaching and picking each target. If detection fails, re-run
+   the plate detection step to re-initialize tracking.
 4. Verify the drop-off position is still reachable and safe.
 
 ## UI Control
@@ -24,7 +24,11 @@ indentations labeled **1**, **2**, **3**.
 Use **Pick & Place → Plate Pick & Place Test** in the calibration UI. Set the
 approach/pick/drop heights and the grip timeout, then run the test. The run
 returns to the drop position and fully opens the gripper before any targets,
-then re-tracks the plate pose before each target move.
+then re-tracks the plate pose continuously during each approach/pick move. Use
+**Tracking mode** to switch between standard move updates and segmented
+tracking (longer steps when far away, finer steps near the target). The
+segment min/max and fraction controls let you tune how many steps the robot
+takes during tracking.
 
 After each run, the UI shows a short analysis of commanded vs. reported
 positions and saves a capture log under `data/plate_test_runs/` for deeper
@@ -60,8 +64,8 @@ After all targets are processed:
 
 ## Notes
 
-- Keep the plate markers in view; the test refreshes the plate pose between
-  targets, but you may need to re-run detection if tracking drops.
+- Keep the plate markers in view; the test refreshes the plate pose during
+  approach/pick moves, but you may need to re-run detection if tracking drops.
 - The plate test compares the live pose to the reference pose captured during
   robot calibration. Re-run robot calibration if the plate baseline changes
   significantly.
