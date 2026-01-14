@@ -121,6 +121,52 @@ PLATE_TEST_USE_BASE_COORDINATES = False
 COORD5_MAX_Z_MM = 0.0
 
 
+def build_tracking_mode_controls() -> dmc.Group:
+    """Build shared tracking mode controls used in both plate test and dynamic pick & place."""
+    return dmc.Group(
+        [
+            dmc.Select(
+                id="shared-tracking-mode",
+                label="Tracking mode",
+                data=[
+                    {"label": "Move target (default)", "value": "move"},
+                    {"label": "Segmented tracking", "value": "segment"},
+                ],
+                value=SETTINGS.tracking_mode,
+                clearable=False,
+            ),
+            dmc.NumberInput(
+                id="shared-segment-min",
+                label="Segment min (mm)",
+                description="Minimum step size for segmented tracking.",
+                value=SETTINGS.segment_min,
+                min=1.0,
+                max=200.0,
+                step=1.0,
+            ),
+            dmc.NumberInput(
+                id="shared-segment-max",
+                label="Segment max (mm)",
+                description="Maximum step size for segmented tracking.",
+                value=SETTINGS.segment_max,
+                min=5.0,
+                max=500.0,
+                step=5.0,
+            ),
+            dmc.NumberInput(
+                id="shared-segment-fraction",
+                label="Segment fraction",
+                description="Fraction of remaining XY distance each step; higher = fewer, longer segments.",
+                value=SETTINGS.segment_fraction,
+                min=0.1,
+                max=1.0,
+                step=0.1,
+            ),
+        ],
+        grow=True,
+    )
+
+
 def _clamp_z_for_coord5(z: float, *, use_base_coords: bool) -> float:
     """Clamp Z to safe maximum when using coordinate system 5.
 
@@ -152,10 +198,15 @@ class AppSettings(BaseModel):
     marker_ids: Tuple[int, int] = (1, 2)
     marker_size_mm: float = 40.0
     last_model: Optional[str] = None
+    active_model: Optional[str] = None
     drop_target: Optional[Tuple[float, float]] = None
     calibration_bundle_path: Optional[str] = None
     workspace_path: Optional[str] = None
     robot_calibration_path: Optional[str] = None
+    tracking_mode: str = "move"
+    segment_min: float = 20.0
+    segment_max: float = 300.0
+    segment_fraction: float = 0.8
 
 
 def _load_settings() -> AppSettings:
@@ -281,7 +332,7 @@ class UISession:
     plate_test_state: dict = field(default_factory=dict)
     last_frame_id: int = 0  # Track frame changes to avoid duplicate stream pushes
     continuous_detection: bool = False  # Enable continuous detection mode
-    detection_confidence: float = 0.7
+    detection_confidence: float = 0.4
     detection_iou: float = 0.45
     detection_max: int = 10
     detection_classes: Optional[str] = None
@@ -305,6 +356,7 @@ class UISession:
     plate_origin_mm: Optional[np.ndarray] = None
     coord5_transform: Optional[workspace.RigidTransform] = None
     robot_has_object: bool = False
+    operation_in_progress: bool = False
     pick_attempts: int = 0
     pick_successes: int = 0
     pick_failures: int = 0
@@ -1455,7 +1507,7 @@ def format_gpu_status() -> list:
     if not gpu_info["available"]:
         return [
             dmc.Alert(
-                "No NVIDIA GPU detected or NVML not available",
+                "No GPU detected (NVIDIA CUDA or Apple MPS not available)",
                 color="yellow",
                 title="GPU Status",
             )
@@ -1463,20 +1515,36 @@ def format_gpu_status() -> list:
 
     elements = []
 
-    # Overall status
-    cuda_status = "✓ Available" if gpu_info["cuda_available"] else "✗ Not available"
-    elements.append(
-        dmc.Group(
-            [
-                dmc.Badge(
-                    f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
-                dmc.Badge(
-                    f"Driver: {gpu_info['driver_version']}", color="blue"),
-                dmc.Badge(f"{gpu_info['gpu_count']} GPU(s)", color="brand"),
-            ],
-            gap="xs",
+    # Overall status - handle both CUDA and MPS
+    if gpu_info.get("mps_available"):
+        # Apple Silicon MPS
+        elements.append(
+            dmc.Group(
+                [
+                    dmc.Badge("MPS: ✓ Available", color="green"),
+                    dmc.Badge(f"{gpu_info['name']}", color="blue"),
+                    dmc.Badge(
+                        f"{gpu_info['gpu_count']} GPU(s)", color="brand"),
+                ],
+                gap="xs",
+            )
         )
-    )
+    else:
+        # NVIDIA CUDA
+        cuda_status = "✓ Available" if gpu_info["cuda_available"] else "✗ Not available"
+        elements.append(
+            dmc.Group(
+                [
+                    dmc.Badge(
+                        f"CUDA: {cuda_status}", color="green" if gpu_info["cuda_available"] else "red"),
+                    dmc.Badge(
+                        f"Driver: {gpu_info['driver_version']}", color="blue"),
+                    dmc.Badge(
+                        f"{gpu_info['gpu_count']} GPU(s)", color="brand"),
+                ],
+                gap="xs",
+            )
+        )
 
     # Per-device info
     for dev in gpu_info["devices"]:
@@ -1609,7 +1677,7 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.active_model_path = None
         SESSION.yolo_model = None
         SESSION.model_loaded = False
-        _commit_settings(last_model=None)
+        _commit_settings(last_model=None, active_model=None)
         return "No model selected."
     if not model_path.exists():
         SESSION.active_model_path = None
@@ -1621,8 +1689,11 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.yolo_model = _load_ultralytics_model(model_path)
         SESSION.model_loaded = True
         SESSION.last_detection_error = None
-        _commit_settings(last_model=str(model_path))
-        return f"Model loaded: {model_path.name}."
+        _commit_settings(last_model=str(model_path),
+                         active_model=str(model_path))
+        LOGGER.info(
+            f"Model loaded and detection auto-started: {model_path.name}")
+        return f"Model loaded: {model_path.name}. Detection auto-started."
     except Exception as exc:
         SESSION.yolo_model = None
         SESSION.model_loaded = False
@@ -2375,17 +2446,29 @@ def _auto_filter_targets(
     drop_ignore_radius_mm: float,
 ) -> list[dict]:
     label_norm = target_label.strip().lower()
+    # Log what labels are available
+    available_labels = set(str(det.get("label", "")).strip().lower()
+                           for det in detections if det.get("label"))
+    LOGGER.info(
+        f"_auto_filter_targets: Filtering {len(detections)} detections, target_label='{target_label}', available_labels={available_labels}")
     targets = []
-    for det in detections:
+    for i, det in enumerate(detections):
         if label_norm:
             det_label = str(det.get("label", "")).strip().lower()
             if det_label != label_norm:
+                LOGGER.info(
+                    f"_auto_filter_targets: Det {i} skipped - label mismatch ('{det_label}' != '{label_norm}')")
                 continue
         workspace_mm = _detection_workspace_mm(det, workspace_def)
         if workspace_mm is None:
+            LOGGER.info(
+                f"_auto_filter_targets: Det {i} skipped - no workspace coordinates")
             continue
-        if not _workspace_contains(workspace_def, workspace_mm):
-            continue
+        # Skip workspace boundary check in auto mode - user can verify visually
+        # if not _workspace_contains(workspace_def, workspace_mm):
+        #     LOGGER.info(
+        #         f"_auto_filter_targets: Det {i} skipped - outside workspace (coords={workspace_mm}, bounds=0-{workspace_def.width_mm}x0-{workspace_def.height_mm})")
+        #     continue
         if (
             drop_target_mm is not None
             and drop_ignore_radius_mm > 0.0
@@ -2396,8 +2479,16 @@ def _auto_filter_targets(
             )
             <= drop_ignore_radius_mm
         ):
+            dist = float(np.linalg.norm(
+                np.array(workspace_mm) - np.array(drop_target_mm)))
+            LOGGER.info(
+                f"_auto_filter_targets: Det {i} skipped - too close to drop target (dist={dist:.1f}mm, threshold={drop_ignore_radius_mm}mm)")
             continue
+        LOGGER.info(
+            f"_auto_filter_targets: Det {i} accepted - workspace={workspace_mm}")
         targets.append(det)
+    LOGGER.info(
+        f"_auto_filter_targets: Result: {len(targets)} targets from {len(detections)} detections")
     return targets
 
 
@@ -2641,17 +2732,26 @@ async def _move_linear_follow_target(
 
     if require_posture and not session.posture_seen():
         _check_operation()
-        initial_target = await asyncio.to_thread(target_fetch)
+        LOGGER.info(
+            f"_move_linear_follow_target '{label}': No posture seen yet, fetching initial target")
+        # Call directly, don't thread - target_fetch is synchronous and fast
+        initial_target = target_fetch()
+        LOGGER.info(
+            f"_move_linear_follow_target '{label}': Got initial target: {initial_target}")
         if initial_target is None:
             raise RuntimeError("No target available for follow move.")
         await robot_api.move_to_cartesian_target_linear(
             robot_api.build_target_cpos(**initial_target)
         )
         return initial_target
+    LOGGER.info(
+        f"_move_linear_follow_target '{label}': Starting follow loop")
     await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
     stable_since: Optional[float] = None
     deadline = time.monotonic() + timeout_s
+    loop_iter = 0
     while True:
+        loop_iter += 1
         _check_operation()
         now = time.monotonic()
         if now >= deadline:
@@ -2659,7 +2759,8 @@ async def _move_linear_follow_target(
                 "Follow move '%s' timed out after %.1f s.", label, timeout_s
             )
             break
-        target = await asyncio.to_thread(target_fetch)
+        # Call directly, don't thread - target_fetch is synchronous and fast
+        target = target_fetch()
         if target is not None:
             last_target = target
         if last_target is None:
@@ -2753,13 +2854,19 @@ async def _auto_pick_place_loop(
     *,
     run_id: int,
 ) -> None:
+    LOGGER.info(f"_auto_pick_place_loop: Starting with run_id={run_id}")
     workspace_def = SESSION.workspace_definition
     if workspace_def is None:
         raise RuntimeError("Workspace is not defined.")
+    LOGGER.info("_auto_pick_place_loop: Workspace defined")
     if SESSION.drop_target_mm is None:
         raise RuntimeError("Drop position is not defined.")
+    LOGGER.info(
+        f"_auto_pick_place_loop: Drop target defined at {SESSION.drop_target_mm}")
     await robot_api.power_on()
+    LOGGER.info("_auto_pick_place_loop: Robot powered on")
     await _ensure_coordinate5_active(robot_api)
+    LOGGER.info("_auto_pick_place_loop: Coordinate 5 active")
     SESSION.auto_waiting_at_drop = False
 
     def _drop_poses(
@@ -2831,9 +2938,12 @@ async def _auto_pick_place_loop(
         SESSION.auto_waiting_at_drop = True
 
     while True:
+        LOGGER.info("_auto_pick_place_loop: Starting new iteration")
         try:
             _ensure_operation_active(run_id)
         except OperationPaused:
+            LOGGER.info(
+                "_auto_pick_place_loop: Operation paused, waiting for resume")
             await _wait_for_operation_resume(run_id)
             continue
         config = SESSION.auto_config or {}
@@ -2850,18 +2960,14 @@ async def _auto_pick_place_loop(
 
         frame, _depth = get_latest_frame()
         detections = SESSION.detections or []
-        if frame is not None and (
-            time.monotonic() - SESSION.auto_detection_updated_at
-            > AUTO_DETECTION_STALE_S
-        ):
-            try:
-                detections = await asyncio.to_thread(
-                    _auto_refresh_detections, frame
-                )
-            except Exception as exc:  # noqa: BLE001
-                SESSION.last_detection_error = str(exc)
-                LOGGER.warning("Auto detection refresh failed: %s", exc)
+        LOGGER.info(
+            f"_auto_pick_place_loop: Got {len(detections)} detections from SESSION")
+        stale_age = time.monotonic() - SESSION.auto_detection_updated_at
+        LOGGER.info(
+            f"_auto_pick_place_loop: Detection age={stale_age:.2f}s, using SESSION detections directly")
 
+        LOGGER.info(
+            f"_auto_pick_place_loop: About to filter targets with label='{target_label}'")
         targets = _auto_filter_targets(
             detections,
             workspace_def,
@@ -2869,33 +2975,52 @@ async def _auto_pick_place_loop(
             drop_target_mm=SESSION.drop_target_mm,
             drop_ignore_radius_mm=drop_ignore_radius_mm,
         )
+        LOGGER.info(
+            f"_auto_pick_place_loop: Filtered to {len(targets)} targets (label={target_label})")
         if not targets:
+            LOGGER.info(
+                f"_auto_pick_place_loop: No targets found, auto_waiting_at_drop={SESSION.auto_waiting_at_drop}")
             if not SESSION.auto_waiting_at_drop:
+                LOGGER.info(
+                    "_auto_pick_place_loop: Moving to drop position (no object in gripper)")
                 await _auto_drop_only(
                     approach_mm=approach_mm,
                     drop_mm=drop_mm,
                 )
+            LOGGER.info(
+                f"_auto_pick_place_loop: Sleeping {AUTO_IDLE_SLEEP_S}s before next check")
             await asyncio.sleep(AUTO_IDLE_SLEEP_S)
             continue
 
         target = _auto_select_nearest_target(targets, workspace_def)
         if target is None:
+            LOGGER.warning(
+                "_auto_pick_place_loop: Failed to select nearest target")
             await asyncio.sleep(AUTO_IDLE_SLEEP_S)
             continue
+        LOGGER.info(
+            f"_auto_pick_place_loop: Selected target with label={target.get('label')}")
         target_xy = _detection_workspace_mm(target, workspace_def)
         if target_xy is None:
+            LOGGER.warning(
+                "_auto_pick_place_loop: Target missing workspace coordinates")
             await asyncio.sleep(AUTO_IDLE_SLEEP_S)
             continue
         target_coord5 = _detection_coord5_mm(target, workspace_def)
         if target_coord5 is None:
+            LOGGER.warning(
+                "_auto_pick_place_loop: Target missing coord5 coordinates")
             await asyncio.sleep(AUTO_IDLE_SLEEP_S)
             continue
+        LOGGER.info(
+            f"_auto_pick_place_loop: Target at workspace {target_xy[:2]}, coord5 {target_coord5[:2]}")
 
         tracker_detection = target
         tracker_workspace = target_xy
         tracker_coord5 = target_coord5
         SESSION.auto_waiting_at_drop = False
 
+        LOGGER.info("_auto_pick_place_loop: Starting pick & place operation")
         gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
         gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
         if estimate_width:
@@ -2913,17 +3038,8 @@ async def _auto_pick_place_loop(
         async def _safety_check() -> None:
             frame, _depth = get_latest_frame()
             detections = SESSION.detections or []
-            if frame is not None and (
-                time.monotonic() - SESSION.auto_detection_updated_at
-                > AUTO_DETECTION_STALE_S
-            ):
-                try:
-                    detections = await asyncio.to_thread(
-                        _auto_refresh_detections, frame
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    SESSION.last_detection_error = str(exc)
-                    LOGGER.warning("Auto detection refresh failed: %s", exc)
+            # Don't try to refresh detections during movement - use cached detections
+            # The background detection loop keeps SESSION.detections updated
             if _auto_intrusion_present(
                 detections,
                 workspace_def,
@@ -2953,6 +3069,7 @@ async def _auto_pick_place_loop(
                 z_offset_mm,
             )
 
+        LOGGER.info("_auto_pick_place_loop: About to move to pick approach")
         await _move_linear_follow_target(
             robot_api,
             lambda: _fetch_pose(approach_mm),
@@ -2960,6 +3077,8 @@ async def _auto_pick_place_loop(
             run_id=run_id,
             safety_check=_safety_check,
         )
+        LOGGER.info(
+            "_auto_pick_place_loop: Pick approach completed, moving to pick pose")
         await _move_linear_follow_target(
             robot_api,
             lambda: _fetch_pose(pick_mm),
@@ -2967,10 +3086,13 @@ async def _auto_pick_place_loop(
             run_id=run_id,
             safety_check=_safety_check,
         )
+        LOGGER.info(
+            "_auto_pick_place_loop: Pick pose completed, closing gripper")
         _command_gripper(gripper_close_val, "closed")
         SESSION.robot_has_object = True
         retreat_pose = _fetch_pose(approach_mm)
         if retreat_pose is not None:
+            LOGGER.info("_auto_pick_place_loop: About to retreat from pick")
             await _move_linear_follow_target(
                 robot_api,
                 lambda: retreat_pose,
@@ -2978,8 +3100,10 @@ async def _auto_pick_place_loop(
                 run_id=run_id,
                 safety_check=_safety_check,
             )
+            LOGGER.info("_auto_pick_place_loop: Pick retreat completed")
         SESSION.last_pick_mm = tracker_workspace
 
+        LOGGER.info("_auto_pick_place_loop: About to move to drop")
         drop_pose, drop_approach = _drop_poses(approach_mm, drop_mm)
         await _move_linear_follow_target(
             robot_api,
@@ -3005,6 +3129,7 @@ async def _auto_pick_place_loop(
             safety_check=_safety_check,
         )
         SESSION.auto_waiting_at_drop = True
+        LOGGER.info("_auto_pick_place_loop: Pick & place cycle completed, looping to find next target")
 
 
 async def _auto_operation_task(run_id: int, robot_uri: Optional[str]) -> None:
@@ -4343,7 +4468,7 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     coord5_frame_ok = bool(coord5_frame)
 
     # Run detection continuously if enabled and model is loaded
-    if SESSION.continuous_detection and SESSION.model_loaded and SESSION.yolo_model is not None:
+    if SESSION.model_loaded and SESSION.yolo_model is not None:
         try:
             detections = _run_detection(
                 frame,
@@ -4360,7 +4485,7 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
 
     detections = SESSION.detections or []
     if not detections:
-        msg = "Continuous detection: waiting..." if SESSION.continuous_detection else "No detections available."
+        msg = "Detection waiting..." if SESSION.model_loaded else "No detections available (model not loaded)."
         return vis, msg, "Detections: 0"
 
     for det in detections:
@@ -4409,7 +4534,7 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     metric = f"Detections: {len(detections)}"
     _draw_label(vis, metric, (10, 30), (255, 255, 255))
     coord_note = "coord5: live" if coord5_frame_ok else "coord5: missing"
-    status = "Continuous detection active." if SESSION.continuous_detection else "Detection overlay ready."
+    status = "Detection active." if SESSION.model_loaded else "Detection overlay ready."
     status = f"{status} · {coord_note}"
     return vis, status, metric
 
@@ -5814,7 +5939,8 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                     src="/video_feed",  # Use MJPEG stream to avoid per-frame HTTP polling
                     style={
                         "width": "100%",
-                        "height": "560px",
+                        "height": "auto",
+                        "maxHeight": "100%",
                         "objectFit": "contain",
                         "borderRadius": "16px",
                         "border": "1px solid rgba(240, 65, 0, 0.25)",
@@ -5822,7 +5948,8 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                         "backgroundColor": "#0b0f14",
                     },
                 ),
-                style={"position": "relative"}
+                style={"position": "relative",
+                       "height": "100%", "overflow": "hidden"}
             ),
         ],
         withBorder=True,
@@ -5981,27 +6108,40 @@ def build_detection_tab() -> dmc.Stack:
         className="panel-card",
     )
 
+    model_options = _model_options()
+    has_models = len(model_options) > 0
+
+    if has_models:
+        model_select_placeholder = "Select a model"
+        upload_button_variant = "light"
+    else:
+        model_select_placeholder = "No models available - upload a model first"
+        upload_button_variant = "gradient"  # Highlighted
+
     model_card = dmc.Card(
         [
             dmc.Text("Model Loader", fw=600, size="lg"),
             dmc.Text(
-                "Upload a YOLO model (.pt/.onnx) to enable detection.", size="sm", c="dimmed"),
+                "Upload a YOLO model (.pt/.onnx) to enable detection." if not has_models else "Detection starts automatically when a model is loaded.", size="sm", c="dimmed"),
             dcc.Upload(
                 id="model-upload",
-                children=dmc.Button("Upload YOLO model", variant="light"),
+                children=dmc.Button("Upload YOLO model",
+                                    variant=upload_button_variant),
                 multiple=False,
             ),
             dmc.Select(
                 id="model-select",
                 label="Active model",
-                data=_model_options(),
+                data=model_options,
                 value=str(
                     SESSION.active_model_path) if SESSION.active_model_path else None,
+                placeholder=model_select_placeholder,
                 searchable=True,
                 clearable=True,
+                disabled=not has_models,
             ),
             dmc.Button("Load selected model",
-                       id="load-model", variant="outline"),
+                       id="load-model", variant="outline", disabled=not has_models),
             dmc.Text(id="model-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
@@ -6012,19 +6152,14 @@ def build_detection_tab() -> dmc.Stack:
     detection_card = dmc.Card(
         [
             dmc.Text("Detection Controls", fw=600, size="lg"),
-            dmc.Switch(
-                id="continuous-detection-toggle",
-                label="Continuous detection",
-                checked=False,
-                color="teal",
-                size="md",
-            ),
+            dmc.Text("Detection runs automatically when a model is loaded.",
+                     size="sm", c="dimmed", style={"marginBottom": "10px"}),
             dmc.Group(
                 [
                     dmc.NumberInput(
                         id="detection-confidence",
                         label="Confidence",
-                        value=0.7,
+                        value=0.4,
                         min=0.0,
                         max=1.0,
                         step=0.05,
@@ -6057,8 +6192,6 @@ def build_detection_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
-            dmc.Button("Run detection once",
-                       id="run-detection", variant="light"),
             dmc.Text(id="detection-status", size="sm", c="dimmed"),
             dmc.Text(id="detection-metrics", size="sm"),
         ],
@@ -6081,62 +6214,33 @@ def build_detection_tab() -> dmc.Stack:
 
 
 def build_pick_place_tab() -> dmc.Stack:
-    target_card = dmc.Card(
-        [
-            dmc.Text("Pick Targets", fw=600, size="lg"),
-            dmc.Select(
-                id="pick-detection-select",
-                label="Detection to pick",
-                data=[],
-                placeholder="Run detection first",
-                clearable=True,
-            ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="pick-approach-height",
-                        label="Approach height (mm)",
-                        description="Negative = UP from table (safe in coord5)",
-                        value=-30.0,
-                        min=-200,
-                        max=0,
-                    ),
-                    dmc.NumberInput(
-                        id="pick-height",
-                        label="Pick height (mm)",
-                        value=0.0,
-                        min=-50,
-                        max=200,
-                    ),
-                ],
-                grow=True,
-            ),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
-    )
-
+    # Improved drop location controls with better button styling
     drop_card = dmc.Card(
         [
             dmc.Text("Drop Target", fw=600, size="lg"),
+            dmc.Text("First teach a drop position, then use return to go back to it.",
+                     size="sm", c="dimmed"),
             dmc.Button(
                 "Teach drop position (use current robot pose)",
                 id="teach-drop-position",
-                variant="light",
+                variant="filled",
+                className="action-btn",
+                color="green",
             ),
             dmc.Button(
-                "Return to drop position",
+                "↩ Return to drop position",
                 id="return-to-drop-position",
                 variant="outline",
+                className="action-btn-outline",
             ),
             dmc.Text(id="drop-position-metrics", size="sm"),
             dmc.NumberInput(
                 id="drop-height",
                 label="Drop height offset (mm)",
-                value=0.0,
+                value=10.0,
                 min=-50,
                 max=200,
+                description="Height above taught drop position (positive = higher)",
             ),
         ],
         withBorder=True,
@@ -6144,44 +6248,42 @@ def build_pick_place_tab() -> dmc.Stack:
         className="panel-card",
     )
 
-    gripper_card = dmc.Card(
-        [
-            dmc.Text("Gripper Control", fw=600, size="lg"),
-            dmc.Switch(
-                id="estimate-object-width-toggle",
-                label="Estimate object width from detection",
-                checked=False,
-                color="teal",
-                size="md",
-            ),
-            dmc.Group(
-                [
-                    dmc.Button("Open gripper", id="gripper-open",
-                               variant="light"),
-                    dmc.Button("Close gripper", id="gripper-close",
-                               variant="light"),
-                ],
-                grow=True,
-            ),
-            dmc.Text(id="holding-status", size="sm", c="dimmed"),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
-    )
-
+    # Merged Pick/Drop Actions (combines manual control with action card)
     action_card = dmc.Card(
         [
-            dmc.Text("Pick/Drop Actions", fw=600, size="lg"),
+            dmc.Text("Pick & Drop Controls", fw=600, size="lg"),
+            build_tracking_mode_controls(),  # Add shared tracking mode controls
+            # Hidden select kept for callbacks that expect a pick target selector
+            dmc.Select(
+                id="pick-detection-select",
+                label="Detection to pick",
+                data=[],
+                value=None,
+                placeholder="(hidden) Pick detection",
+                clearable=True,
+                style={"display": "none"},
+            ),
             dmc.Group(
                 [
-                    dmc.Button("Pick", id="execute-pick"),
+                    dmc.Button("Pick closest object", id="manual-pick-closest",
+                               variant="filled", color="teal"),
                     dmc.Button("Drop", id="execute-drop", variant="light"),
                 ],
                 grow=True,
             ),
-            dmc.Button("Pick & Drop", id="execute-pick-drop",
-                       variant="outline"),
+            dmc.Space(h="md"),  # Add space for visual separation
+            dmc.Button("🔄 Pick & Drop closest",
+                       id="manual-pick-place-target",
+                       variant="filled",
+                       color="blue",
+                       size="md"),
+            dmc.Group([
+                dmc.Button("Reset if stuck",
+                           id="reset-operation-lock",
+                           variant="subtle",
+                           color="red",
+                           size="xs"),
+            ], justify="center", style={"marginTop": "8px"}),
             dmc.Text(id="pick-place-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
@@ -6197,48 +6299,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
-            dmc.Select(
-                id="plate-test-tracking-mode",
-                label="Tracking mode",
-                data=[
-                    {"label": "Move target (default)", "value": "move"},
-                    {"label": "Segmented tracking", "value": "segment"},
-                ],
-                value="move",
-                clearable=False,
-            ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="plate-test-segment-min",
-                        label="Segment min (mm)",
-                        description="Minimum step size for segmented tracking.",
-                        value=SEGMENT_FOLLOW_MIN_MM,
-                        min=1.0,
-                        max=200.0,
-                        step=1.0,
-                    ),
-                    dmc.NumberInput(
-                        id="plate-test-segment-max",
-                        label="Segment max (mm)",
-                        description="Maximum step size for segmented tracking.",
-                        value=SEGMENT_FOLLOW_MAX_MM,
-                        min=5.0,
-                        max=500.0,
-                        step=5.0,
-                    ),
-                    dmc.NumberInput(
-                        id="plate-test-segment-fraction",
-                        label="Segment fraction",
-                        description="Fraction of remaining XY distance each step; higher = fewer, longer segments.",
-                        value=SEGMENT_FOLLOW_FRACTION,
-                        min=0.1,
-                        max=1.0,
-                        step=0.1,
-                    ),
-                ],
-                grow=True,
-            ),
+            build_tracking_mode_controls(),  # Use shared tracking controls
             dmc.Group(
                 [
                     dmc.NumberInput(
@@ -6264,9 +6325,10 @@ def build_pick_place_tab() -> dmc.Stack:
                     dmc.NumberInput(
                         id="plate-test-drop-height",
                         label="Drop height offset (mm)",
-                        value=0.0,
+                        value=10.0,
                         min=-50,
                         max=200,
+                        description="Height above taught drop position",
                     ),
                     dmc.NumberInput(
                         id="plate-test-grip-timeout",
@@ -6299,36 +6361,6 @@ def build_pick_place_tab() -> dmc.Stack:
                     "minHeight": "120px",
                     "marginTop": "6px",
                 },
-            ),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
-    )
-
-    manual_card = dmc.Card(
-        [
-            dmc.Text("Manual Control", fw=600, size="lg"),
-            dmc.Group(
-                [
-                    dmc.Button(
-                        "Pick closest object",
-                        id="manual-pick-closest",
-                        variant="light",
-                    ),
-                    dmc.Button(
-                        "Release object",
-                        id="manual-release",
-                        variant="outline",
-                    ),
-                    dmc.Button(
-                        "Pick closest & place at target",
-                        id="manual-pick-place-target",
-                        variant="filled",
-                        color="teal",
-                    ),
-                ],
-                grow=True,
             ),
         ],
         withBorder=True,
@@ -6380,41 +6412,10 @@ def build_pick_place_tab() -> dmc.Stack:
         ),
         dmc.AccordionItem(
             [
-                dmc.AccordionControl("Acquire target"),
-                dmc.AccordionPanel(target_card),
-            ],
-            value="acquire-target",
-        ),
-        dmc.AccordionItem(
-            [
-                dmc.AccordionControl("Grab target"),
-                dmc.AccordionPanel(gripper_card),
-            ],
-            value="grab-target",
-        ),
-        dmc.AccordionItem(
-            [
-                dmc.AccordionControl("Acquire drop location"),
+                dmc.AccordionControl("Drop Location"),
                 dmc.AccordionPanel(drop_card),
             ],
             value="drop-target",
-        ),
-        dmc.AccordionItem(
-            [
-                dmc.AccordionControl("Release target"),
-                dmc.AccordionPanel(
-                    dmc.Text("Configure release options (TBD).",
-                             size="sm", c="dimmed")
-                ),
-            ],
-            value="release-target",
-        ),
-        dmc.AccordionItem(
-            [
-                dmc.AccordionControl("Manual control"),
-                dmc.AccordionPanel(manual_card),
-            ],
-            value="manual",
         ),
         dmc.AccordionItem(
             [
@@ -6422,6 +6423,13 @@ def build_pick_place_tab() -> dmc.Stack:
                 dmc.AccordionPanel(auto_card),
             ],
             value="auto",
+        ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Plate Pick & Place Test"),
+                dmc.AccordionPanel(plate_test_card),
+            ],
+            value="plate-test",
         ),
     ]
 
@@ -6433,8 +6441,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 value=["detect"],
                 variant="separated",
             ),
-            action_card,
-            plate_test_card,
+            action_card,  # Pick & Drop Controls (merged from manual control)
         ],
         gap="md",
     )
@@ -7722,31 +7729,27 @@ def register_callbacks(app: Dash) -> None:
         )
 
     @app.callback(
-        Output("continuous-detection-toggle", "checked"),
-        Input("continuous-detection-toggle", "checked"),
+        Output("detection-confidence", "value"),
+        Input("detection-confidence", "value"),
+        Input("detection-iou", "value"),
+        Input("detection-max", "value"),
+        Input("detection-classes", "value"),
         State("detection-confidence", "value"),
-        State("detection-iou", "value"),
-        State("detection-max", "value"),
-        State("detection-classes", "value"),
+        prevent_initial_call=True,
     )
-    def _toggle_continuous_detection(
-        enabled: bool,
+    def _update_detection_parameters(
         confidence: Optional[float],
         iou: Optional[float],
         max_detections: Optional[float],
         class_filter: Optional[str],
-    ) -> bool:
-        """Enable/disable continuous detection and store parameters."""
-        SESSION.continuous_detection = enabled
-        SESSION.detection_confidence = _safe_float(confidence, 0.7)
+        current_confidence: Optional[float],
+    ) -> float:
+        """Store detection parameters when they change."""
+        SESSION.detection_confidence = _safe_float(confidence, 0.4)
         SESSION.detection_iou = _safe_float(iou, 0.45)
         SESSION.detection_max = _safe_int(max_detections, 10)
         SESSION.detection_classes = class_filter
-        if enabled:
-            LOGGER.info("Continuous detection enabled")
-        else:
-            LOGGER.info("Continuous detection disabled")
-        return enabled
+        return SESSION.detection_confidence
 
     @app.callback(
         Output("detection-status", "children"),
@@ -7811,15 +7814,17 @@ def register_callbacks(app: Dash) -> None:
         Output("pick-detection-select", "data", allow_duplicate=True),
         Output("detection-metrics", "children", allow_duplicate=True),
         Input("camera-interval", "n_intervals"),
-        State("continuous-detection-toggle", "checked"),
         prevent_initial_call=True,
     )
     def _update_detection_display(
         _n: int,
-        continuous_enabled: bool,
     ) -> Tuple[list, list, str]:
-        """Update detection display from continuous detection results."""
-        if not continuous_enabled:
+        """Update detection display from continuous detection results.
+
+        Detection updates are produced automatically when a model is loaded;
+        if no model is loaded skip updating the display.
+        """
+        if not SESSION.model_loaded:
             return no_update, no_update, no_update
 
         detections = SESSION.detections or []
@@ -7842,10 +7847,9 @@ def register_callbacks(app: Dash) -> None:
         Output("auto-config-state", "data"),
         Input("auto-target-class", "value"),
         Input("auto-drop-ignore-radius", "value"),
-        Input("pick-approach-height", "value"),
-        Input("pick-height", "value"),
-        Input("drop-height", "value"),
-        Input("estimate-object-width-toggle", "checked"),
+        Input("plate-test-approach-height", "value"),
+        Input("plate-test-pick-height", "value"),
+        Input("plate-test-drop-height", "value"),
     )
     def _update_auto_config(
         target_label: Optional[str],
@@ -7853,7 +7857,6 @@ def register_callbacks(app: Dash) -> None:
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
-        estimate_width: Optional[bool],
     ) -> dict:
         config = {
             "target_label": (target_label or AUTO_TARGET_LABEL_DEFAULT),
@@ -7863,7 +7866,7 @@ def register_callbacks(app: Dash) -> None:
             "approach_mm": _safe_float(approach_height, -30.0),
             "pick_mm": _safe_float(pick_height, 0.0),
             "drop_mm": _safe_float(drop_height, 0.0),
-            "estimate_width": bool(estimate_width),
+            "estimate_width": bool(SESSION.auto_config.get("estimate_width", False)),
         }
         SESSION.auto_config.update(config)
         return config
@@ -7873,41 +7876,35 @@ def register_callbacks(app: Dash) -> None:
         Output("drop-position-metrics", "children", allow_duplicate=True),
         Input("teach-drop-position", "n_clicks"),
         Input("return-to-drop-position", "n_clicks"),
-        Input("execute-pick", "n_clicks"),
         Input("execute-drop", "n_clicks"),
-        Input("execute-pick-drop", "n_clicks"),
         Input("manual-pick-closest", "n_clicks"),
-        Input("manual-release", "n_clicks"),
         Input("manual-pick-place-target", "n_clicks"),
-        Input("gripper-open", "n_clicks"),
-        Input("gripper-close", "n_clicks"),
         State("pick-detection-select", "value"),
-        State("pick-approach-height", "value"),
-        State("pick-height", "value"),
-        State("drop-height", "value"),
-        State("estimate-object-width-toggle", "checked"),
+        State("plate-test-approach-height", "value"),
+        State("plate-test-pick-height", "value"),
+        State("plate-test-drop-height", "value"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
     async def _handle_pick_place(
         _teach_drop: int,
         _return_to_drop: int,
-        _pick_clicks: int,
         _drop_action: int,
-        _pick_drop_clicks: int,
         _manual_pick: int,
-        _manual_release: int,
         _manual_pick_place: int,
-        _gripper_open: int,
-        _gripper_close: int,
         selected_detection: Optional[str],
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
-        estimate_width: Optional[bool],
         robot_uri: Optional[str],
     ) -> Tuple[str, str]:
         trigger = callback_context.triggered_id
+        LOGGER.info(f"Pick/place callback triggered: {trigger}")
+
+        # Prevent multiple rapid operations
+        if SESSION.operation_in_progress:
+            return f"Operation already in progress, please wait...", no_update
+
         frame, _depth = get_latest_frame()
         drop_text = no_update
         gripper_min_width, gripper_max_width = _resolve_gripper_limits()
@@ -7915,7 +7912,7 @@ def register_callbacks(app: Dash) -> None:
         gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
         if trigger is None:
             return no_update, no_update
-        if frame is None and trigger not in {"teach-drop-position", "return-to-drop-position", "manual-release", "gripper-open", "gripper-close"}:
+        if frame is None and trigger not in {"teach-drop-position", "return-to-drop-position"}:
             return "Camera stream is not running.", drop_text
 
         workspace_def = SESSION.workspace_definition
@@ -7925,7 +7922,9 @@ def register_callbacks(app: Dash) -> None:
         drop_mm = _safe_float(drop_height, 0.0)
 
         def _estimate_width_mm(det: dict) -> Optional[float]:
-            if not estimate_width or workspace_def is None:
+            estimate_enabled = bool(
+                SESSION.auto_config.get("estimate_width", False))
+            if not estimate_enabled or workspace_def is None:
                 return None
             bbox = det.get("bbox")
             if not bbox:
@@ -8048,11 +8047,8 @@ def register_callbacks(app: Dash) -> None:
             except Exception as exc:  # noqa: BLE001
                 return f"Failed to move to drop position: {exc}", drop_text
 
-        if trigger == "gripper-open":
-            return _command_gripper(gripper_max_width, "opened"), drop_text
-
-        if trigger == "gripper-close":
-            return _command_gripper(gripper_min_width, "closed"), drop_text
+        # Gripper open/close UI was removed; gripper commands are managed
+        # elsewhere. Ignore triggers for those actions here.
 
         if workspace_def is None:
             return "Workspace is not defined; run workspace calibration first.", drop_text
@@ -8060,8 +8056,44 @@ def register_callbacks(app: Dash) -> None:
         approach_mm = _safe_float(approach_height, -30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
-        gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
-        gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+        LOGGER.info(
+            f"Pick/drop heights: approach={approach_mm}mm, pick={pick_mm}mm, drop={drop_mm}mm")
+
+        # Get dynamic gripper limits instead of using hardcoded values
+        if SESSION.gripper is not None and SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+            try:
+                max_gripper_width = SESSION.gripper.get_max_ext_width(
+                    t_index=GRIPPER_DEFAULTS["t_index"])
+                min_gripper_width = SESSION.gripper.get_min_ext_width(
+                    t_index=GRIPPER_DEFAULTS["t_index"])
+
+                if isinstance(max_gripper_width, (int, float)) and max_gripper_width > 0:
+                    # Open to maximum width for reliable release
+                    gripper_open_val = max_gripper_width
+                    LOGGER.info(
+                        f"Using dynamic gripper max width: {gripper_open_val} mm")
+                else:
+                    gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+                    LOGGER.warning(
+                        f"Could not get dynamic gripper width, using default: {gripper_open_val} mm")
+
+                if isinstance(min_gripper_width, (int, float)) and min_gripper_width > 0:
+                    gripper_close_val = min_gripper_width  # Close to minimum width for secure grip
+                    LOGGER.info(
+                        f"Using dynamic gripper min width: {gripper_close_val} mm")
+                else:
+                    gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+                    LOGGER.warning(
+                        f"Could not get dynamic gripper min width, using default: {gripper_close_val} mm")
+            except Exception as e:
+                LOGGER.warning(
+                    f"Error getting dynamic gripper limits: {e}, using defaults")
+                gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+                gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
+        else:
+            LOGGER.warning("Gripper not connected, using default widths")
+            gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
+            gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
         if not SESSION.detections and trigger in {"execute-pick", "execute-pick-drop", "manual-pick-closest", "manual-pick-place-target"}:
             return "No detections available; run detection first.", drop_text
 
@@ -8143,6 +8175,9 @@ def register_callbacks(app: Dash) -> None:
             raise RuntimeError("No drop location taught yet.")
 
         async def _pick_action(robot_api: CodroidAPI) -> None:
+            LOGGER.info("_pick_action: Starting")
+            # Check if operation is still active
+            await _wait_for_operation_resume(run_id)
             await robot_api.power_on()
             await _ensure_coordinate5_active(robot_api)
             nonlocal tracker_detection, tracker_workspace
@@ -8172,43 +8207,98 @@ def register_callbacks(app: Dash) -> None:
                 lambda: _fetch_pose(pick_mm),
                 label="pick_pose_follow",
             )
-            _command_gripper(gripper_close_val, "closed")
+            # Check before gripper operation
+            await _wait_for_operation_resume(run_id)
+            # Use higher force for gripping objects
+            # Double the force for better grip
+            grip_force = min(GRIPPER_FORCE_DEFAULT * 2, GRIPPER_FORCE_MAX)
+            gripper_result = _command_gripper(
+                gripper_close_val, "closed", force=grip_force)
+            LOGGER.info(
+                f"_pick_action: Gripper close command result: {gripper_result}")
+            if "not connected" in gripper_result.lower() or "error" in gripper_result.lower():
+                LOGGER.warning(
+                    f"Gripper command may have failed: {gripper_result}")
+            else:
+                # Verify gripper closed properly
+                if SESSION.gripper is not None and SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+                    try:
+                        # Gripper command already waits for completion (f_wait=True)
+                        actual_width = SESSION.gripper.get_ext_width(
+                            t_index=GRIPPER_DEFAULTS["t_index"])
+                        LOGGER.info(
+                            f"_pick_action: Gripper actual width after close command: {actual_width} mm")
+                    except Exception as e:
+                        LOGGER.warning(
+                            f"_pick_action: Error checking gripper state: {e}")
+
             retreat_pose = _fetch_pose(approach_mm) or approach_pose
             _log_move_target(
                 "pick_retreat", retreat_pose, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(
-                robot_api.build_target_cpos(**retreat_pose)
+            await robot_api.set_target_cpos(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**retreat_pose),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                )
             )
+            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+
+            # Hold with heartbeats for 2 seconds to ensure movement completes
+            hold_seconds = 2.0
+            heartbeat_interval = 0.2
+            deadline = time.monotonic() + hold_seconds
+            while time.monotonic() < deadline:
+                await robot_api.send_command_heartbeat()
+                await asyncio.sleep(heartbeat_interval)
+
+            await robot_api.clear_target_position()
+            await robot_api.stop_command()
             SESSION.robot_has_object = True
             if tracker_workspace is not None:
                 SESSION.last_pick_mm = tracker_workspace
+            LOGGER.info("_pick_action: Completed successfully")
 
         async def _drop_action(robot_api: CodroidAPI, drop_target_mm: Tuple[float, float]) -> None:
+            LOGGER.info(f"_drop_action: Starting with target {drop_target_mm}")
+            # Check if operation is still active
+            await _wait_for_operation_resume(run_id)
             await robot_api.power_on()
             await _ensure_coordinate5_active(robot_api)
-            drop_pose = None
-            drop_approach = None
-            if (
-                SESSION.drop_target_robot is not None
-                and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
-            ):
+
+            # Use the stored robot coordinates directly (same as "Return to drop position")
+            # This ensures we drop at the exact same location where the drop position was taught
+            if SESSION.drop_target_robot is not None:
                 base = SESSION.drop_target_robot
-                drop_pose = _pose_from_coord5_mm(
-                    float(base[0]), float(base[1]), float(base[2]) + drop_mm
-                )
-                drop_approach = _pose_from_coord5_mm(
-                    float(base[0]),
-                    float(base[1]),
-                    float(base[2]) + approach_mm,
-                )
+                drop_pose = {
+                    "x": float(base[0]),
+                    "y": float(base[1]),
+                    "z": float(base[2]) + drop_mm,
+                    "a": 0.0, "b": 0.0, "c": 0.0
+                }
+                drop_approach = {
+                    "x": float(base[0]),
+                    "y": float(base[1]),
+                    "z": float(base[2]) + approach_mm,
+                    "a": 0.0, "b": 0.0, "c": 0.0
+                }
+                LOGGER.info(
+                    f"_drop_action: Using stored robot coords - base: {base}")
             else:
+                # Fallback to workspace coordinate transformation (shouldn't normally happen)
                 drop_pose = _pose_from_workspace_coord5_mm(
                     workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
                 )
                 drop_approach = _pose_from_workspace_coord5_mm(
                     workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
                 )
+                LOGGER.warning(
+                    "_drop_action: No stored robot coords, using workspace transformation")
+
+            LOGGER.info(
+                f"_drop_action: Drop coords - pose: {drop_pose}, approach: {drop_approach}")
+
+            # Apply stored orientation if available
             if SESSION.drop_target_orientation is not None:
                 drop_pose.update(
                     {
@@ -8227,83 +8317,307 @@ def register_callbacks(app: Dash) -> None:
             _log_move_target(
                 "drop_approach", drop_approach, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
+            LOGGER.info("_drop_action: Executing drop_approach movement...")
+            await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+            await robot_api.set_target_cpos(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_approach),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                )
+            )
+            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+
+            # Hold with heartbeats for 2 seconds to ensure movement completes
+            hold_seconds = 2.0
+            heartbeat_interval = 0.2
+            deadline = time.monotonic() + hold_seconds
+            while time.monotonic() < deadline:
+                await robot_api.send_command_heartbeat()
+                await asyncio.sleep(heartbeat_interval)
+
+            await robot_api.clear_target_position()
+            await robot_api.stop_command()
+            LOGGER.info("_drop_action: Drop_approach movement completed")
+
+            # Check before next movement
+            await _wait_for_operation_resume(run_id)
             _log_move_target(
                 "drop_pose", drop_pose, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_pose))
-            _command_gripper(gripper_open_val, "opened")
+            LOGGER.info("_drop_action: Executing drop_pose movement...")
+            await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+            await robot_api.set_target_cpos(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_pose),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                )
+            )
+            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+
+            deadline = time.monotonic() + hold_seconds
+            while time.monotonic() < deadline:
+                await robot_api.send_command_heartbeat()
+                await asyncio.sleep(heartbeat_interval)
+
+            await robot_api.clear_target_position()
+            await robot_api.stop_command()
+            LOGGER.info("_drop_action: Drop_pose movement completed")
+
+            # Check before gripper operation
+            await _wait_for_operation_resume(run_id)
+            LOGGER.info(
+                f"_drop_action: Opening gripper to {gripper_open_val} mm...")
+# Use standard gripper command for opening
+            gripper_result = _command_gripper(gripper_open_val, "opened")
+
+            LOGGER.info(
+                f"_drop_action: Gripper open command result: {gripper_result}")
+            if "not connected" in gripper_result.lower() or "error" in gripper_result.lower():
+                LOGGER.warning(
+                    f"Gripper command may have failed: {gripper_result}")
+            else:
+                # Poll gripper busy status instead of fixed wait
+                if SESSION.gripper is not None:
+                    max_polls = 20  # 2 seconds max at 0.1s intervals
+                    poll_count = 0
+                    while poll_count < max_polls:
+                        try:
+                            busy = SESSION.gripper.isBusy(
+                                t_index=GRIPPER_DEFAULTS["t_index"])
+                            if not busy:
+                                break
+                        except Exception:
+                            break
+                        await asyncio.sleep(0.1)
+                        poll_count += 1
+                    LOGGER.info(
+                        f"_drop_action: Gripper ready after {poll_count * 0.1:.1f}s")
+
+                # Verify gripper actually opened
+                if SESSION.gripper is not None and SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+                    try:
+                        actual_width = SESSION.gripper.get_ext_width(
+                            t_index=GRIPPER_DEFAULTS["t_index"])
+                        LOGGER.info(
+                            f"_drop_action: Gripper actual width after open command: {actual_width} mm")
+
+                        # Check if gripper actually opened (should be close to target width)
+                        if isinstance(actual_width, (int, float)) and actual_width > 0:
+                            width_diff = abs(actual_width - gripper_open_val)
+                            if width_diff > 5.0:  # If more than 5mm difference, retry
+                                LOGGER.warning(
+                                    f"_drop_action: Gripper width mismatch (target: {gripper_open_val}, actual: {actual_width}), retrying...")
+                                # Get maximum gripper width and try to open to that
+                                try:
+                                    max_width = SESSION.gripper.get_max_ext_width(
+                                        t_index=GRIPPER_DEFAULTS["t_index"])
+                                    if isinstance(max_width, (int, float)) and max_width > actual_width:
+                                        retry_width = max_width
+                                        LOGGER.info(
+                                            f"_drop_action: Retrying with maximum gripper width: {retry_width} mm")
+                                    else:
+                                        retry_width = gripper_open_val + 10.0  # Fallback: try 10mm wider
+                                        LOGGER.info(
+                                            f"_drop_action: Retrying with wider opening: {retry_width} mm")
+                                except Exception as e:
+                                    retry_width = gripper_open_val + 10.0
+                                    LOGGER.warning(
+                                        f"_drop_action: Could not get max width ({e}), trying {retry_width} mm")
+
+                                retry_result = _command_gripper(
+                                    retry_width, "opened (retry wider)", force=GRIPPER_FORCE_MAX)
+                                LOGGER.info(
+                                    f"_drop_action: Gripper retry result: {retry_result}")
+                                # Gripper command already waits for completion
+
+                                # Check again
+                                final_width = SESSION.gripper.get_ext_width(
+                                    t_index=GRIPPER_DEFAULTS["t_index"])
+                                LOGGER.info(
+                                    f"_drop_action: Final gripper width: {final_width} mm")
+                            else:
+                                LOGGER.info(
+                                    "_drop_action: Gripper opened successfully")
+                        else:
+                            LOGGER.warning(
+                                f"_drop_action: Could not read gripper width: {actual_width}")
+                    except Exception as e:
+                        LOGGER.warning(
+                            f"_drop_action: Error verifying gripper state: {e}")
+                else:
+                    LOGGER.warning(
+                        "_drop_action: Cannot verify gripper state - not connected")
+
+                LOGGER.info("_drop_action: Gripper wait completed")
+
+            # Check before retreat movement
+            await _wait_for_operation_resume(run_id)
             _log_move_target(
                 "drop_retreat", drop_approach, coordinate_id=ROBOT_COORDINATE_ID
             )
-            await robot_api.move_to_cartesian_target_linear(robot_api.build_target_cpos(**drop_approach))
-            await robot_api.power_off()
+            LOGGER.info("_drop_action: Executing drop_retreat movement...")
+
+            # Re-establish robot command state after gripper operations
+            await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+            await robot_api.set_target_cpos(
+                robot_api.attach_coordinate_to_cpos(
+                    robot_api.build_target_cpos(**drop_approach),
+                    coordinate_id=ROBOT_COORDINATE_ID,
+                )
+            )
+            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+
+            # Hold with heartbeats for 5 seconds to ensure movement completes
+            deadline = time.monotonic() + hold_seconds
+            while time.monotonic() < deadline:
+                await robot_api.send_command_heartbeat()
+                await asyncio.sleep(heartbeat_interval)
+
+            await robot_api.clear_target_position()
+            await robot_api.stop_command()
+            LOGGER.info("_drop_action: Drop_retreat movement completed")
+            # Keep robot powered for faster subsequent operations
+            # await robot_api.power_off()  # Disabled to keep robot ready
+            LOGGER.info(
+                "_drop_action: Drop completed, robot staying powered for next operation")
             SESSION.robot_has_object = False
 
         async def _pick_drop_action(robot_api: CodroidAPI) -> None:
-            await _pick_action(robot_api)
-            drop_target_mm = _resolve_drop_target()
-            await _drop_action(robot_api, drop_target_mm)
+            LOGGER.info("Starting pick & drop sequence")
+            # Check if operation is still active
+            await _wait_for_operation_resume(run_id)
+            try:
+                await _pick_action(robot_api)
+                LOGGER.info("Pick action completed, starting drop")
+                await _wait_for_operation_resume(run_id)  # Check before drop
+                drop_target_mm = _resolve_drop_target()
+                LOGGER.info(f"Drop target resolved: {drop_target_mm}")
+                await _drop_action(robot_api, drop_target_mm)
+                LOGGER.info("Drop action completed successfully")
+            except Exception as exc:
+                LOGGER.exception("Exception in pick & drop sequence")
+                raise
 
         pick_cycle = trigger in {
-            "execute-pick",
-            "execute-pick-drop",
             "manual-pick-closest",
             "manual-pick-place-target",
         }
         cycle_started_at = time.monotonic() if pick_cycle else None
 
         try:
-            if trigger in {"execute-pick", "manual-pick-closest"}:
-                await _with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _pick_action)
-                SESSION.last_action = "Pick command sent."
-                if pick_cycle:
-                    _record_pick_cycle(True, cycle_started_at)
+            if trigger in {"manual-pick-closest"}:
+                SESSION.operation_in_progress = True
+                run_id = _begin_operation(
+                    source="manual",
+                    label="Manual Pick Closest",
+                    message="Picking closest object..."
+                )
+                try:
+                    await _with_robot_api(
+                        robot_uri or DEFAULT_ROBOT_URI, _pick_action)
+                    SESSION.last_action = "Pick command sent."
+                    if pick_cycle:
+                        _record_pick_cycle(True, cycle_started_at)
+                    _finish_operation(run_id, status="success",
+                                      message="Pick completed successfully.")
+                except Exception as e:
+                    _finish_operation(run_id, status="error",
+                                      message=f"Pick failed: {e}")
+                    raise
+                finally:
+                    SESSION.operation_in_progress = False
                 return "Pick command sent.", drop_text
             if trigger == "execute-drop":
                 drop_target_mm = _resolve_drop_target()
-
-                async def _drop_only(robot_api: CodroidAPI) -> None:
-                    await _drop_action(robot_api, drop_target_mm)
-
-                await _with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _drop_only)
-                SESSION.last_action = "Drop command sent."
-                drop_text = f"Drop at {drop_target_mm[0]:.1f}, {drop_target_mm[1]:.1f} mm"
-                return "Drop command sent.", drop_text
-            if trigger in {"execute-pick-drop", "manual-pick-place-target"}:
-                if trigger == "manual-pick-place-target" and SESSION.drop_target_mm is None:
-                    return "Teach a drop position first.", drop_text
-                await _with_robot_api(
-                    robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action)
-                SESSION.last_action = "Pick & drop command sent."
-                drop_text = (
-                    f"Drop at {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm"
-                    if SESSION.drop_target_mm
-                    else drop_text
+                SESSION.operation_in_progress = True
+                run_id = _begin_operation(
+                    source="manual",
+                    label="Manual Drop",
+                    message="Dropping object..."
                 )
-                if pick_cycle:
-                    _record_pick_cycle(True, cycle_started_at)
+
+                try:
+                    async def _drop_only(robot_api: CodroidAPI) -> None:
+                        await _drop_action(robot_api, drop_target_mm)
+
+                    await _with_robot_api(
+                        robot_uri or DEFAULT_ROBOT_URI, _drop_only)
+                    SESSION.last_action = "Drop command sent."
+                    drop_text = f"Drop at {drop_target_mm[0]:.1f}, {drop_target_mm[1]:.1f} mm"
+                    _finish_operation(run_id, status="success",
+                                      message="Drop completed successfully.")
+                except Exception as e:
+                    _finish_operation(run_id, status="error",
+                                      message=f"Drop failed: {e}")
+                    raise
+                finally:
+                    SESSION.operation_in_progress = False
+                return "Drop command sent.", drop_text
+            if trigger in {"manual-pick-place-target"}:
+                if SESSION.drop_target_mm is None:
+                    return "Teach a drop position first.", drop_text
+                SESSION.operation_in_progress = True
+                run_id = _begin_operation(
+                    source="manual",
+                    label="Manual Pick & Drop",
+                    message="Picking and dropping object..."
+                )
+                try:
+                    await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _pick_drop_action)
+                    SESSION.last_action = "Pick & drop command sent."
+                    drop_text = (
+                        f"Drop at {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm"
+                        if SESSION.drop_target_mm
+                        else drop_text
+                    )
+                    if pick_cycle:
+                        _record_pick_cycle(True, cycle_started_at)
+                    _finish_operation(
+                        run_id, status="success", message="Pick & drop completed successfully.")
+                except Exception as e:
+                    _finish_operation(run_id, status="error",
+                                      message=f"Pick & drop failed: {e}")
+                    raise
+                finally:
+                    SESSION.operation_in_progress = False
                 return "Pick & drop command sent.", drop_text
-            if trigger == "manual-release":
-                if not SESSION.robot_has_object:
-                    return "No object held.", drop_text
-
-                async def _release_only(api: CodroidAPI) -> None:
-                    _command_gripper(gripper_open_val, "opened")
-                    SESSION.robot_has_object = False
-
-                await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _release_only)
-                SESSION.last_action = "Release command sent."
-                return "Release command sent.", drop_text
+            # Release action removed from this UI; handled elsewhere.
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Pick/place action failed")
+            SESSION.operation_in_progress = False
             if pick_cycle:
                 _record_pick_cycle(False, cycle_started_at)
             return f"Pick/place action failed: {exc}", drop_text
 
         return no_update, drop_text
+
+    @app.callback(
+        [
+            Output("manual-pick-closest", "disabled"),
+            Output("execute-drop", "disabled"),
+            Output("manual-pick-place-target", "disabled"),
+            Output("reset-operation-lock", "disabled"),
+        ],
+        Input("camera-interval", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def _update_button_states(_n: int) -> Tuple[bool, bool, bool, bool]:
+        """Disable buttons during operations to prevent rapid clicking."""
+        disabled = SESSION.operation_in_progress
+        # Only enable reset when operation is in progress
+        reset_disabled = not SESSION.operation_in_progress
+        return disabled, disabled, disabled, reset_disabled
+
+    @app.callback(
+        Output("pick-place-status", "children", allow_duplicate=True),
+        Input("reset-operation-lock", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _reset_operation_lock(_clicks: int) -> str:
+        """Emergency reset for stuck operations."""
+        SESSION.operation_in_progress = False
+        LOGGER.info("Operation lock manually reset by user")
+        return "Operation lock reset."
 
     @app.callback(
         Output("plate-test-status", "children"),
@@ -12480,6 +12794,18 @@ def create_app() -> Dash:
             frame_data,
             mimetype='image/jpeg'
         )
+
+    # Auto-load model on startup if one is configured
+    if SETTINGS.active_model:
+        try:
+            model_path = Path(SETTINGS.active_model)
+            if model_path.exists():
+                activate_model(model_path)
+                LOGGER.info(f"Auto-loaded model on startup: {model_path.name}")
+            else:
+                LOGGER.warning(f"Configured model not found: {model_path}")
+        except Exception as exc:
+            LOGGER.error(f"Failed to auto-load model: {exc}")
 
     return app
 

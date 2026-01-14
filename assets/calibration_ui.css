@@ -178,10 +178,11 @@ body {
   top: 0;
   padding-top: 12px;
   max-height: calc(
-    100vh - var(--app-header-height, 90px) - var(--app-footer-height, 340px) - 16px
+    100vh - var(--app-header-height, 90px) - var(--app-footer-height, 240px) - 16px
   );
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .panel-card {
@@ -193,6 +194,42 @@ body {
 
 .camera-panel {
   background: #ffffff;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.camera-feed {
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(241, 91, 95, 0.35);
+  margin-top: 12px;
+  background: #0b0f14;
+  display: block;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.camera-feed-container {
+  position: relative;
+  width: 100%;
+}
+
+/* Action button styles for consistent appearance */
+.action-btn {
+  font-weight: 600;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.action-btn-outline {
+  font-weight: 500;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  border: 1.5px solid var(--brand-primary);
 }
 
 .modebar {
@@ -210,24 +247,6 @@ body {
   background: #f04100;
   border-bottom: 0;
 }
-
-.camera-feed {
-  width: 100%;
-  height: auto;
-  border-radius: 18px;
-  border: 1px solid rgba(241, 91, 95, 0.35);
-  margin-top: 12px;
-  background: #0b0f14;
-  display: block;
-  max-width: 100%;
-}
-
-.camera-feed-container {
-  position: relative;
-  width: 100%;
-}
-
-.mantine-Tabs-tabsList {
   padding: 0 !important;
   margin: 0;
   gap: 8px;
