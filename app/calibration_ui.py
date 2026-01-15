@@ -8,11 +8,11 @@ from vision.camera_check import list_oak_devices
 from vision import aruco_board, calibration, markers, plate, workspace
 from onrobot.twofg import TWOFG as TwoFG7Gripper
 from onrobot.device import Device as GripperDevice
+from onrobot.gripper_profiles import DEFAULT_GRIPPER_TYPE, gripper_profile_options
 from codroid_api import CodroidAPI, CodroidSettings, RobotSession
 from codroid_api.robot_session import RobotPosture
 import app.settings as app_settings
 from app.settings import _commit_settings, _save_settings, reload_defaults, set_asset_paths
-from app.orchestrator import BootstrapDemo, DemoConfig
 
 import asyncio
 import base64
@@ -60,19 +60,6 @@ DEFAULT_MODEL_DIR = app_settings.DEFAULT_MODEL_DIR
 DEFAULT_DROP_MARKER_ID = app_settings.DEFAULT_DROP_MARKER_ID
 DROP_TARGET_PATH = app_settings.DROP_TARGET_PATH
 ROBOT_COORDINATE_ID = 5
-PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
-MIN_PLATE_MARKERS = 2
-PLATE_MOVEMENT_THRESHOLD_PX = 500.0
-PLATE_VISIBILITY_MAX_AGE_S = 5.0
-ROBOT_POSTURE_MAX_AGE_S = 2.0
-VERIFICATION_RAISE_MM = 300.0
-ROBOT_COORDINATE_TIMEOUT_S = 60.0
-VERIFICATION_HOLD_SECONDS = 5.0
-VERIFICATION_MOVE_TIMEOUT_S = 20.0
-VERIFICATION_TOLERANCE_MM = 2.0
-VERIFICATION_Z_TOLERANCE_MM = 2.0
-VERIFICATION_SETTLE_S = 1.5
-VERIFICATION_MOTION_EPS_MM = 0.5
 FLANGE_BUTTON_PORT = 41
 FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
 
@@ -81,23 +68,17 @@ CODROID_DEFAULTS = app_settings.CODROID_DEFAULTS
 DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
 GRIPPER_DEFAULTS = app_settings.GRIPPER_DEFAULTS
 DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
-GRIPPER_FORCE_MIN = 20
-GRIPPER_FORCE_MAX = 140
-GRIPPER_FORCE_DEFAULT = 20
-GRIPPER_SPEED_DEFAULT = 10
-GRIPPER_SPEED_MIN = 10
-GRIPPER_CALIBRATION_WIDTH_MM = 5.0
-GRIPPER_OPEN_WIDTH_DEFAULT = 25.0
-GRIPPER_CLOSE_WIDTH_DEFAULT = 5.0
-PLATE_TEST_GRIP_TIMEOUT_S = 2.5
-PLATE_TEST_MOVE_HOLD_S = 0.2
-PLATE_TEST_MOVE_TIMEOUT_S = 25.0
-PLATE_TEST_TOLERANCE_MM = 2.0
-PLATE_TEST_Z_TOLERANCE_MM = 2.0
-PLATE_TEST_SETTLE_S = 0.4
-PLATE_TEST_MOTION_EPS_MM = 0.5
-PLATE_TEST_FOLLOW_UPDATE_S = 0.05
-PLATE_TEST_FOLLOW_SEGMENT_S = 0.1
+GRIPPER_PROFILE_OPTIONS = app_settings.GRIPPER_PROFILE_OPTIONS
+GRIPPER_PROFILE_KEYS = {option["value"] for option in GRIPPER_PROFILE_OPTIONS}
+GRIPPER_PROFILE = SETTINGS.gripper_profile
+GRIPPER_FORCE_MIN = GRIPPER_PROFILE.force_min
+GRIPPER_FORCE_MAX = GRIPPER_PROFILE.force_max
+GRIPPER_FORCE_DEFAULT = GRIPPER_PROFILE.force_default
+GRIPPER_SPEED_DEFAULT = GRIPPER_PROFILE.speed_default
+GRIPPER_SPEED_MIN = GRIPPER_PROFILE.speed_min
+GRIPPER_CALIBRATION_WIDTH_MM = GRIPPER_PROFILE.calibration_width
+GRIPPER_OPEN_WIDTH_DEFAULT = GRIPPER_PROFILE.open_width_default
+GRIPPER_CLOSE_WIDTH_DEFAULT = GRIPPER_PROFILE.close_width_default
 SEGMENT_FOLLOW_MIN_MM = 20.0
 SEGMENT_FOLLOW_MAX_MM = 300.0
 SEGMENT_FOLLOW_FRACTION = 0.8
@@ -106,23 +87,123 @@ PICK_FOLLOW_SEGMENT_S = 0.1
 PICK_FOLLOW_TIMEOUT_S = 15.0
 PICK_FOLLOW_TOLERANCE_MM = 3.0
 PICK_FOLLOW_SETTLE_S = 0.6
-AUTO_TARGET_LABEL_DEFAULT = "orange"
-AUTO_DROP_IGNORE_RADIUS_MM = 60.0
-AUTO_INTRUSION_MATCH_MM = 40.0
-AUTO_DETECTION_STALE_S = 0.3
-AUTO_IDLE_SLEEP_S = 0.25
 RESCUE_JOG_HOLD_S = 0.35
 # Use coordinate system 5 (robot calibration frame) instead of base coordinates.
 # Coordinate system 5 is aligned with the plate reference frame at calibration time.
 # Setting to True would use base coordinates with dynamic plate tracking adjustments.
-PLATE_TEST_USE_BASE_COORDINATES = False
-
 # Maximum Z height (mm) allowed in coordinate system 5.
 # CRITICAL: Z-axis is INVERTED in coord5:
 #   - Negative Z = UP (away from table) - SAFE
 #   - Positive Z = DOWN (toward table) - DANGEROUS
 # Z=0 is the working plane; positive values would collide with the table.
 COORD5_MAX_Z_MM = 0.0
+
+
+def _refresh_gripper_constants() -> None:
+    """Refresh cached gripper limits when settings change."""
+    global GRIPPER_PROFILE
+    global GRIPPER_FORCE_MIN, GRIPPER_FORCE_MAX, GRIPPER_FORCE_DEFAULT
+    global GRIPPER_SPEED_MIN, GRIPPER_SPEED_DEFAULT
+    global GRIPPER_CALIBRATION_WIDTH_MM, GRIPPER_OPEN_WIDTH_DEFAULT, GRIPPER_CLOSE_WIDTH_DEFAULT
+
+    GRIPPER_PROFILE = SETTINGS.gripper_profile
+    GRIPPER_FORCE_MIN = GRIPPER_PROFILE.force_min
+    GRIPPER_FORCE_MAX = GRIPPER_PROFILE.force_max
+    GRIPPER_FORCE_DEFAULT = GRIPPER_PROFILE.force_default
+    GRIPPER_SPEED_MIN = GRIPPER_PROFILE.speed_min
+    GRIPPER_SPEED_DEFAULT = GRIPPER_PROFILE.speed_default
+    GRIPPER_CALIBRATION_WIDTH_MM = GRIPPER_PROFILE.calibration_width
+    GRIPPER_OPEN_WIDTH_DEFAULT = GRIPPER_PROFILE.open_width_default
+    GRIPPER_CLOSE_WIDTH_DEFAULT = GRIPPER_PROFILE.close_width_default
+
+
+def _camera_calibration_path() -> Path:
+    """Return the currently configured camera calibration bundle path."""
+    return DEFAULT_BUNDLE_PATH
+
+
+def _robot_calibration_path() -> Path:
+    """Return the currently configured robot calibration data path."""
+    return DEFAULT_ROBOT_CALIBRATION_PATH
+
+
+def _calibration_metadata_entries() -> list[str]:
+    """Produce human-readable metadata about existing calibration artifacts."""
+    entries: list[str] = []
+    bundle = SESSION.calibration_bundle
+    if bundle is not None:
+        pixel_scale = bundle.pixel_to_mm
+        entries.append(f"Pixel scale: {pixel_scale:.3f} mm/px")
+        cam = bundle.camera.camera_matrix
+        entries.append(
+            f"Camera focal: fx={cam[0,0]:.1f}, fy={cam[1,1]:.1f} px"
+        )
+        plane = bundle.workspace_plane
+        entries.append(
+            f"Workspace plane offset: {plane.offset:.1f} mm · normal="
+            f"{tuple(float(v) for v in plane.normal.round(3))}"
+        )
+    if DEFAULT_BUNDLE_PATH.exists():
+        entries.append(
+            f"Camera bundle saved: "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(DEFAULT_BUNDLE_PATH.stat().st_mtime))}"
+        )
+    if SESSION.robot_calibration_points:
+        entries.append(
+            f"Robot calibration points: {len(SESSION.robot_calibration_points)}"
+        )
+    if SESSION.robot_calibration_min_z is not None:
+        entries.append(
+            f"Robot min Z: {SESSION.robot_calibration_min_z:.1f} mm"
+        )
+    if DEFAULT_ROBOT_CALIBRATION_PATH.exists():
+        entries.append(
+            f"Robot calibration saved: "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(DEFAULT_ROBOT_CALIBRATION_PATH.stat().st_mtime))}"
+        )
+    accuracy = ROBOT_CALIBRATION_GUIDANCE.get("accuracy")
+    if accuracy:
+        max_err = accuracy.get("max_xy_error")
+        mean_err = accuracy.get("mean_xy_error")
+        if max_err is not None and mean_err is not None:
+            entries.append(
+                f"Calibration accuracy max/mean XY error: "
+                f"{max_err:.2f}/{mean_err:.2f} mm"
+            )
+    return entries
+
+
+def _calibration_data_complete() -> bool:
+    """Check whether both camera and robot calibration artifacts exist."""
+    return _camera_calibration_path().exists() and _robot_calibration_path().exists()
+
+
+def _refresh_calibration_menu_visibility() -> bool:
+    """Update the session flag that controls whether the calibration stepper is visible."""
+    SESSION.calibration_menu_open = not _calibration_data_complete()
+    return SESSION.calibration_menu_open
+
+
+def _reset_calibration_assets() -> None:
+    """Delete saved calibration files and clear cached session state."""
+    for path in (_camera_calibration_path(), _robot_calibration_path()):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    SESSION.calibration_bundle = None
+    SESSION.plate_calibration = None
+    SESSION.robot_calibration_points = []
+    SESSION.robot_calibration_min_z = None
+    SESSION.plate_reference_homography = None
+    SESSION.plate_to_robot_transform = None
+    SESSION.plate_origin_mm = None
+    SESSION.robot_calibration_accuracy = None
+    SESSION.robot_calibration_gripper_width = None
+    _refresh_calibration_menu_visibility()
+
+
+_refresh_gripper_constants()
 
 
 def build_tracking_mode_controls() -> dmc.Group:
@@ -202,7 +283,8 @@ class CaptureState:
 
 @dataclass
 class UISession:
-    config: DemoConfig = field(default_factory=DemoConfig)
+    marker_ids: Tuple[int, int] = field(default_factory=lambda: SETTINGS.marker_ids)
+    marker_size_mm: float = SETTINGS.marker_size_mm
     camera_stream: Optional[DepthAIFrameStream] = None
     gripper_device: Optional[GripperDevice] = None
     gripper: Optional[TwoFG7Gripper] = None
@@ -222,12 +304,12 @@ class UISession:
     auto_waiting_at_drop: bool = False
     auto_config: dict = field(
         default_factory=lambda: {
-            "target_label": AUTO_TARGET_LABEL_DEFAULT,
-            "drop_ignore_radius_mm": AUTO_DROP_IGNORE_RADIUS_MM,
-            "approach_mm": -30.0,
-            "pick_mm": 0.0,
-            "drop_mm": 0.0,
-            "estimate_width": False,
+            "target_label": SETTINGS.auto_target_label,
+            "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
+            "approach_mm": SETTINGS.auto_approach_mm,
+            "pick_mm": SETTINGS.auto_pick_mm,
+            "drop_mm": SETTINGS.auto_drop_mm,
+            "estimate_width": SETTINGS.auto_estimate_width,
         }
     )
     auto_detection_updated_at: float = 0.0
@@ -276,17 +358,28 @@ class UISession:
     pick_failures: int = 0
     last_cycle_s: Optional[float] = None
     cycle_times: Deque[float] = field(default_factory=lambda: deque(maxlen=50))
+    calibration_menu_open: bool = True
 
 
-SESSION = UISession(
-    config=DemoConfig(
-        robot_host=CODROID_DEFAULTS["host"],
-        robot_port=CODROID_DEFAULTS["robot_port"],
-        user_port=CODROID_DEFAULTS["ws_port"],
-        marker_ids=SETTINGS.marker_ids,
-        marker_size_mm=SETTINGS.marker_size_mm,
+SESSION = UISession()
+_refresh_calibration_menu_visibility()
+
+
+def _refresh_session_auto_config_defaults() -> None:
+    """Overwrite the auto-config store with the persisted defaults."""
+    SESSION.auto_config.update(
+        {
+            "target_label": SETTINGS.auto_target_label,
+            "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
+            "approach_mm": SETTINGS.auto_approach_mm,
+            "pick_mm": SETTINGS.auto_pick_mm,
+            "drop_mm": SETTINGS.auto_drop_mm,
+            "estimate_width": SETTINGS.auto_estimate_width,
+        }
     )
-)
+
+
+_refresh_session_auto_config_defaults()
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT_DIR / "assets"
@@ -363,7 +456,7 @@ def _record_robot_accuracy(mean_xy_error: float, max_xy_error: float) -> dict[st
     ROBOT_CALIBRATION_GUIDANCE["accuracy"] = accuracy
     ROBOT_CALIBRATION_GUIDANCE["accuracy_ready"] = True
     ROBOT_CALIBRATION_GUIDANCE["accuracy_passed"] = (
-        float(max_xy_error) <= VERIFICATION_TOLERANCE_MM
+        float(max_xy_error) <= SETTINGS.verification_tolerance_mm
     )
     return accuracy
 
@@ -430,9 +523,9 @@ def _ensure_posture_axes(posture: dict, fallback: RobotPosture) -> dict:
 
 
 def _plate_test_capture_path() -> Path:
-    PLATE_TEST_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS.plate_test_capture_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    return PLATE_TEST_CAPTURE_DIR / f"plate_test_{stamp}.json"
+    return SETTINGS.plate_test_capture_dir / f"plate_test_{stamp}.json"
 
 
 def _save_plate_test_capture(payload: dict) -> Path:
@@ -669,7 +762,7 @@ def _set_plate_test_state(
 
 
 def _robot_posture_ready(
-    max_age_s: float = ROBOT_POSTURE_MAX_AGE_S,
+    max_age_s: float = SETTINGS.robot_posture_max_age_s,
 ) -> Tuple[bool, str]:
     session = _get_robot_session()
     if not session.posture_seen():
@@ -690,7 +783,7 @@ def _plate_center_px(detections: dict) -> Optional[np.ndarray]:
 
 
 def _plate_is_stable(
-    max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S,
+    max_age_s: float = SETTINGS.plate_visibility_max_age_s,
     require_baseline: bool = False,
     allow_lost: bool = False,
 ) -> Tuple[bool, str]:
@@ -701,7 +794,7 @@ def _plate_is_stable(
             return True, "Plate markers not visible; waiting for re-acquire."
         return False, "Calibration plate markers are not visible."
     movement_px = PLATE_STATUS.get("movement_px")
-    if movement_px is not None and movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+    if movement_px is not None and movement_px > SETTINGS.plate_movement_threshold_px:
         return False, f"Calibration plate moved ({movement_px:.1f}px)."
     if PLATE_STATUS.get("stable") is False:
         return False, PLATE_STATUS.get("message", "Calibration plate not stable.")
@@ -1685,8 +1778,8 @@ def _resolve_plate_test_targets(
     PLATE_STATUS.update(
         {
             "count": len(calibration_result.detections),
-            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
-            "stable": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
+            "stable": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
             "center_px": None,
             "movement_px": None,
             "timestamp": time.time(),
@@ -1828,8 +1921,8 @@ def _resolve_plate_test_coord5_targets(
     PLATE_STATUS.update(
         {
             "count": len(calibration_result.detections),
-            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
-            "stable": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
+            "stable": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
             "center_px": None,
             "movement_px": None,
             "timestamp": time.time(),
@@ -2741,7 +2834,7 @@ async def _auto_wait_for_clear(
         detections = SESSION.detections or []
         if frame is not None and (
             time.monotonic() - SESSION.auto_detection_updated_at
-            > AUTO_DETECTION_STALE_S
+            > SETTINGS.auto_detection_stale_s
         ):
             try:
                 detections = await asyncio.to_thread(
@@ -2756,11 +2849,11 @@ async def _auto_wait_for_clear(
             target_xy=target_xy,
             drop_target_mm=drop_target_mm,
             drop_ignore_radius_mm=drop_ignore_radius_mm,
-            target_match_mm=AUTO_INTRUSION_MATCH_MM,
+            target_match_mm=SETTINGS.auto_intrusion_match_mm,
         ):
             _resume_operation("Workspace clear. Resuming.")
             return
-        await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+        await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
 
 
 async def _auto_pick_place_loop(
@@ -2862,15 +2955,21 @@ async def _auto_pick_place_loop(
             continue
         config = SESSION.auto_config or {}
         target_label = str(
-            config.get("target_label", AUTO_TARGET_LABEL_DEFAULT)
+            config.get("target_label", SETTINGS.auto_target_label)
         )
         drop_ignore_radius_mm = float(
-            config.get("drop_ignore_radius_mm", AUTO_DROP_IGNORE_RADIUS_MM)
+            config.get(
+                "drop_ignore_radius_mm", SETTINGS.auto_drop_ignore_radius_mm
+            )
         )
-        approach_mm = float(config.get("approach_mm", -30.0))
-        pick_mm = float(config.get("pick_mm", 0.0))
-        drop_mm = float(config.get("drop_mm", 0.0))
-        estimate_width = bool(config.get("estimate_width", False))
+        approach_mm = float(
+            config.get("approach_mm", SETTINGS.auto_approach_mm)
+        )
+        pick_mm = float(config.get("pick_mm", SETTINGS.auto_pick_mm))
+        drop_mm = float(config.get("drop_mm", SETTINGS.auto_drop_mm))
+        estimate_width = bool(
+            config.get("estimate_width", SETTINGS.auto_estimate_width)
+        )
 
         frame, _depth = get_latest_frame()
         detections = SESSION.detections or []
@@ -2902,15 +3001,15 @@ async def _auto_pick_place_loop(
                     drop_mm=drop_mm,
                 )
             LOGGER.info(
-                f"_auto_pick_place_loop: Sleeping {AUTO_IDLE_SLEEP_S}s before next check")
-            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+                f"_auto_pick_place_loop: Sleeping {SETTINGS.auto_idle_sleep_s}s before next check")
+            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
             continue
 
         target = _auto_select_nearest_target(targets, workspace_def)
         if target is None:
             LOGGER.warning(
                 "_auto_pick_place_loop: Failed to select nearest target")
-            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
             continue
         LOGGER.info(
             f"_auto_pick_place_loop: Selected target with label={target.get('label')}")
@@ -2918,13 +3017,13 @@ async def _auto_pick_place_loop(
         if target_xy is None:
             LOGGER.warning(
                 "_auto_pick_place_loop: Target missing workspace coordinates")
-            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
             continue
         target_coord5 = _detection_coord5_mm(target, workspace_def)
         if target_coord5 is None:
             LOGGER.warning(
                 "_auto_pick_place_loop: Target missing coord5 coordinates")
-            await asyncio.sleep(AUTO_IDLE_SLEEP_S)
+            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
             continue
         LOGGER.info(
             f"_auto_pick_place_loop: Target at workspace {target_xy[:2]}, coord5 {target_coord5[:2]}")
@@ -2960,7 +3059,7 @@ async def _auto_pick_place_loop(
                 target_xy=target_xy,
                 drop_target_mm=SESSION.drop_target_mm,
                 drop_ignore_radius_mm=drop_ignore_radius_mm,
-                target_match_mm=AUTO_INTRUSION_MATCH_MM,
+                target_match_mm=SETTINGS.auto_intrusion_match_mm,
             ):
                 _pause_operation(
                     "workspace_intrusion",
@@ -3161,7 +3260,7 @@ def _rigid_transform_2d(
     return r, t
 
 
-def _ensure_plate_visible(max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S) -> None:
+def _ensure_plate_visible(max_age_s: float = SETTINGS.plate_visibility_max_age_s) -> None:
     ok, message = _plate_is_stable(
         max_age_s=max_age_s,
         require_baseline=False,
@@ -3172,7 +3271,7 @@ def _ensure_plate_visible(max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S) -> None
 
 
 def _ensure_plate_stable(
-    max_age_s: float = PLATE_VISIBILITY_MAX_AGE_S,
+    max_age_s: float = SETTINGS.plate_visibility_max_age_s,
     *,
     allow_lost: bool = False,
 ) -> None:
@@ -3333,17 +3432,32 @@ def compute_calibration_bundle(board_path: Path, bundle_path: Path, output_dir: 
     if not frames:
         raise RuntimeError(
             "No calibration frames found. Capture frames before calibrating.")
-    depth_frame = SESSION.capture.depth_frame if SESSION.capture.depth_frame is not None else load_depth_snapshot(
-        output_dir)
+    depth_frame = (
+        SESSION.capture.depth_frame
+        if SESSION.capture.depth_frame is not None
+        else load_depth_snapshot(output_dir)
+    )
     if depth_frame is None:
         raise RuntimeError(
             "No depth snapshot found. Capture a depth frame before calibrating.")
-    config = DemoConfig(calibration_path=bundle_path,
-                        aruco_board_layout_path=board_path)
-    demo = BootstrapDemo(config)
-    demo.load_or_create_calibration(
-        image_paths=frames, depth_frame=depth_frame, force_rebuild=True)
-    SESSION.calibration_bundle = demo.calibration
+    board_spec = aruco_board.load_charuco_board_spec(board_path)
+    cam = calibration.calibrate_camera_charuco(frames, board_spec)
+    try:
+        pixel_to_mm = calibration.charuco_board_pixel_scale(
+            frames[0], board_spec)
+    except Exception as exc:  # fallback to nominal pixel spacing
+        LOGGER.warning(
+            "Falling back to nominal pixel scale while calibrating: %s", exc
+        )
+        pixel_to_mm = board_spec.marker_length_mm
+    plane = calibration.estimate_workspace_plane(depth_frame, cam)
+    bundle = calibration.CalibrationBundle(
+        camera=cam,
+        workspace_plane=plane,
+        pixel_to_mm=pixel_to_mm,
+    )
+    calibration.save_calibration(bundle, bundle_path)
+    SESSION.calibration_bundle = bundle
     _commit_settings(calibration_bundle_path=str(bundle_path))
     return f"Calibration bundle saved to {bundle_path}."
 
@@ -3461,8 +3575,8 @@ async def _run_robot_plate_calibration(
         PLATE_STATUS.update(
             {
                 "count": len(calibration_result.detections),
-                "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
-                "stable": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+                "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
+                "stable": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
                 "center_px": (float(center_px[0]), float(center_px[1])),
                 "movement_px": None,
                 "timestamp": time.time(),
@@ -3683,7 +3797,7 @@ async def _run_robot_plate_calibration(
                 session.calibration_frame_snapshot,
                 session.calibration_frame_timestamp,
                 calibration_request_time,
-                ROBOT_COORDINATE_TIMEOUT_S,
+                SETTINGS.robot_coordinate_timeout_s,
                 "coordinate calibration response",
             )
         except asyncio.TimeoutError as exc:
@@ -3722,7 +3836,7 @@ async def _run_robot_plate_calibration(
         )
         await robot_api.send_message(change_request)
 
-        publish_timeout = min(ROBOT_COORDINATE_TIMEOUT_S, 5.0)
+        publish_timeout = min(SETTINGS.robot_coordinate_timeout_s, 5.0)
         try:
             await _await_listener_frame(
                 session.coordinate_frame_snapshot,
@@ -4295,17 +4409,17 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
     if center_px is not None:
         center_list = [float(center_px[0]), float(center_px[1])]
     movement_px = None
-    stable = len(calibration_result.detections) >= MIN_PLATE_MARKERS
+    stable = len(calibration_result.detections) >= SETTINGS.min_plate_markers
     baseline_px = SESSION.robot_calibration_baseline_px
     if baseline_px is not None and center_px is not None:
         movement_px = float(np.linalg.norm(center_px - baseline_px))
-        if movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+        if movement_px > SETTINGS.plate_movement_threshold_px:
             stable = False
             status = f"Plate moved ({movement_px:.1f}px); hold it steady."
     PLATE_STATUS.update(
         {
             "count": len(calibration_result.detections),
-            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
             "stable": stable,
             "center_px": center_list,
             "movement_px": movement_px,
@@ -4355,17 +4469,17 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
     if center_px is not None:
         center_list = [float(center_px[0]), float(center_px[1])]
     movement_px = None
-    stable = len(calibration_result.detections) >= MIN_PLATE_MARKERS
+    stable = len(calibration_result.detections) >= SETTINGS.min_plate_markers
     baseline_px = SESSION.robot_calibration_baseline_px
     if baseline_px is not None and center_px is not None:
         movement_px = float(np.linalg.norm(center_px - baseline_px))
-        if movement_px > PLATE_MOVEMENT_THRESHOLD_PX:
+        if movement_px > SETTINGS.plate_movement_threshold_px:
             stable = False
             status = f"Plate moved ({movement_px:.1f}px); hold it steady."
     PLATE_STATUS.update(
         {
             "count": len(calibration_result.detections),
-            "ok": len(calibration_result.detections) >= MIN_PLATE_MARKERS,
+            "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
             "stable": stable,
             "center_px": center_list,
             "movement_px": movement_px,
@@ -5212,6 +5326,115 @@ def build_setup_drawer() -> dmc.Drawer:
                     ],
                     gutter="sm",
                 ),
+                dmc.Text("Auto pick & place defaults", fw=600),
+                dmc.Grid(
+                    [
+                        dmc.GridCol(
+                            dmc.TextInput(
+                                id="settings-auto-target-label",
+                                label="Target label",
+                                value=SETTINGS.auto_target_label,
+                                size="sm",
+                                description="YOLO label the auto routine should pick.",
+                            ),
+                            span=12,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-drop-ignore-radius",
+                                label="Drop ignore radius (mm)",
+                                value=SETTINGS.auto_drop_ignore_radius_mm,
+                                min=0,
+                                max=200,
+                                step=5,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-intrusion-match",
+                                label="Intrusion match (mm)",
+                                value=SETTINGS.auto_intrusion_match_mm,
+                                min=10,
+                                max=200,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-detection-stale",
+                                label="Detection stale (s)",
+                                value=SETTINGS.auto_detection_stale_s,
+                                min=0.05,
+                                max=2.0,
+                                step=0.05,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-idle-sleep",
+                                label="Idle sleep (s)",
+                                value=SETTINGS.auto_idle_sleep_s,
+                                min=0.05,
+                                max=1.0,
+                                step=0.05,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.Switch(
+                                id="settings-auto-estimate-width",
+                                label="Estimate width",
+                                checked=SETTINGS.auto_estimate_width,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-approach-height",
+                                label="Approach height (mm)",
+                                value=SETTINGS.auto_approach_mm,
+                                min=-200,
+                                max=0,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-pick-height",
+                                label="Pick height (mm)",
+                                value=SETTINGS.auto_pick_mm,
+                                min=-50,
+                                max=200,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-drop-height",
+                                label="Drop height (mm)",
+                                value=SETTINGS.auto_drop_mm,
+                                min=-50,
+                                max=200,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                    ],
+                    gutter="sm",
+                ),
                 dmc.Group(
                     [
                         dmc.Button("Save settings",
@@ -5611,7 +5834,179 @@ def build_drag_not_allowed_modal() -> dmc.Modal:
     )
 
 
+def _calibration_stepper_stack() -> dmc.Stepper:
+    return dmc.Stepper(
+        id="calibration-stepper",
+        active=0,
+        orientation="vertical",
+        mt="sm",
+        children=[
+            dmc.StepperStep(
+                label="Camera calibration",
+                description="Intrinsics + workspace plane",
+                children=dmc.Stack(
+                    [
+                        dmc.Text(
+                            "Capture the ChArUco board frames to calibrate the camera.",
+                            size="sm",
+                            c="dimmed",
+                        ),
+                        dmc.Card(
+                            dmc.Group(
+                                [
+                                    dmc.ThemeIcon(
+                                        dmc.Text("✕", size="lg"),
+                                        size="lg",
+                                        radius="md",
+                                        color="red",
+                                        id="markers-detected-icon",
+                                    ),
+                                    dmc.Stack(
+                                        [
+                                            dmc.Text("Markers detected",
+                                                     size="sm", fw=600),
+                                            dmc.Text(
+                                                "Position the ChArUco board in view",
+                                                size="xs",
+                                                c="dimmed",
+                                            ),
+                                        ],
+                                        gap="xs",
+                                    ),
+                                ],
+                                gap="md",
+                            ),
+                            p="md",
+                            withBorder=True,
+                        ),
+                        dmc.Button(
+                            "Calibrate",
+                            id="calibrate-camera",
+                            fullWidth=True,
+                            disabled=True,
+                            color="teal",
+                        ),
+                        dmc.Button(
+                            "Use saved calibration",
+                            id="use-existing-calibration",
+                            fullWidth=True,
+                            variant="outline",
+                            disabled=True,
+                        ),
+                        dmc.Box(
+                            id="camera-calibration-action",
+                            style={"minHeight": "0px"},
+                        ),
+                        dmc.Text(
+                            id="calibration-progress-text",
+                            size="sm",
+                            c="dimmed",
+                            style={"display": "none",
+                                   "marginBottom": "8px"},
+                        ),
+                        dmc.Progress(
+                            id="calibration-progress",
+                            value=0,
+                            size="sm",
+                            striped=True,
+                            animated=True,
+                            style={"display": "none"},
+                        ),
+                        dmc.Text(
+                            id="camera-calibration-metrics", size="sm"),
+                    ],
+                    gap="md",
+                ),
+            ),
+            dmc.StepperStep(
+                label="Robot calibration",
+                description="Detect plate markers",
+                children=dmc.Stack(
+                    [
+                        dmc.Text(
+                            "Detect the calibration plate and attach the homography.",
+                            size="sm",
+                            c="dimmed",
+                        ),
+                        dmc.Alert(
+                            id="plate-detection-summary",
+                            title="Plate visibility",
+                            color="yellow",
+                            children="Waiting for plate markers...",
+                            variant="light",
+                        ),
+                        dmc.Button(
+                            "Begin calibrating robot",
+                            id="start-robot-calibration",
+                            variant="filled",
+                            color="teal",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Use saved calibration",
+                            id="use-existing-robot-calibration",
+                            fullWidth=True,
+                            variant="outline",
+                            color="brand",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Run verification move",
+                            id="run-verification-inline",
+                            fullWidth=True,
+                            variant="outline",
+                            color="teal",
+                            disabled=True,
+                        ),
+                        dmc.Text(id="current-robot-position",
+                                 size="xs", c="dimmed"),
+                        dmc.Text(id="plate-action-status",
+                                 size="sm", c="dimmed"),
+                        dmc.Text(id="plate-metrics", size="sm"),
+                        dmc.Text(
+                            id="robot-calibration-status",
+                            size="sm",
+                            c="teal",
+                        ),
+                    ],
+                    gap="xs",
+                ),
+            ),
+        ],
+    )
+
+
+def _calibration_loaded_body() -> dmc.Stack:
+    return dmc.Stack(
+        [
+            dmc.Text("Calibration data loaded", fw=600, size="lg"),
+            dmc.Text(
+                "Camera and robot calibration data already exist. Reset calibration to start over.",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Text(
+                "Loading new calibration artifacts will delete the existing bundle and plate data.",
+                size="xs",
+                c="dimmed",
+            ),
+            dmc.Button(
+                "Reset calibration",
+                id="calibration-reset-button",
+                variant="outline",
+                color="red",
+            ),
+            html.Div(id="calibration-metadata"),
+        ],
+        gap="sm",
+    )
+
+
 def build_stepper_card() -> dmc.Card:
+    stepper_visible = SESSION.calibration_menu_open
+    stepper_style = {} if stepper_visible else {"display": "none"}
+    loaded_style = {} if not stepper_visible else {"display": "none"}
+    nav_style = stepper_style
     return dmc.Card(
         [
             dmc.Group(
@@ -5621,153 +6016,27 @@ def build_stepper_card() -> dmc.Card:
                         [
                             dmc.Button("Back", id="step-prev",
                                        variant="light", size="sm"),
-                            dmc.Button("Next", id="step-next", size="sm"),
+                            dmc.Button("Next", id="step-next",
+                                       size="sm"),
                         ],
                         gap="xs",
+                        id="calibration-nav-actions",
+                        style=nav_style,
                     ),
                 ],
                 justify="space-between",
                 align="center",
             ),
             dmc.Divider(),
-            dmc.Stepper(
-                id="calibration-stepper",
-                active=0,
-                orientation="vertical",
-                mt="sm",
-                children=[
-                    dmc.StepperStep(
-                        label="Camera calibration",
-                        description="Intrinsics + workspace plane",
-                        children=dmc.Stack(
-                            [
-                                dmc.Text(
-                                    "Capture the ChArUco board frames to calibrate the camera.",
-                                    size="sm",
-                                    c="dimmed",
-                                ),
-                                dmc.Card(
-                                    dmc.Group(
-                                        [
-                                            dmc.ThemeIcon(
-                                                dmc.Text("✕", size="lg"),
-                                                size="lg",
-                                                radius="md",
-                                                color="red",
-                                                id="markers-detected-icon",
-                                            ),
-                                            dmc.Stack(
-                                                [
-                                                    dmc.Text(
-                                                        "Markers detected", size="sm", fw=600),
-                                                    dmc.Text(
-                                                        "Position the ChArUco board in view",
-                                                        size="xs",
-                                                        c="dimmed",
-                                                    ),
-                                                ],
-                                                gap="xs",
-                                            ),
-                                        ],
-                                        gap="md",
-                                    ),
-                                    p="md",
-                                    withBorder=True,
-                                ),
-                                dmc.Button(
-                                    "Calibrate",
-                                    id="calibrate-camera",
-                                    fullWidth=True,
-                                    disabled=True,
-                                    color="teal",
-                                ),
-                                dmc.Button(
-                                    "Use saved calibration",
-                                    id="use-existing-calibration",
-                                    fullWidth=True,
-                                    variant="outline",
-                                    disabled=True,
-                                ),
-                                dmc.Box(
-                                    id="camera-calibration-action",
-                                    style={"minHeight": "0px"},
-                                ),
-                                dmc.Text(
-                                    id="calibration-progress-text",
-                                    size="sm",
-                                    c="dimmed",
-                                    style={"display": "none",
-                                           "marginBottom": "8px"},
-                                ),
-                                dmc.Progress(
-                                    id="calibration-progress",
-                                    value=0,
-                                    size="sm",
-                                    striped=True,
-                                    animated=True,
-                                    style={"display": "none"},
-                                ),
-                                dmc.Text(
-                                    id="camera-calibration-metrics", size="sm"),
-                            ],
-                            gap="md",
-                        ),
-                    ),
-                    dmc.StepperStep(
-                        label="Robot calibration",
-                        description="Detect plate markers",
-                        children=dmc.Stack(
-                            [
-                                dmc.Text(
-                                    "Detect the calibration plate and attach the homography.",
-                                    size="sm",
-                                    c="dimmed",
-                                ),
-                                dmc.Alert(
-                                    id="plate-detection-summary",
-                                    title="Plate visibility",
-                                    color="yellow",
-                                    children="Waiting for plate markers...",
-                                    variant="light",
-                                ),
-                                dmc.Button(
-                                    "Begin calibrating robot",
-                                    id="start-robot-calibration",
-                                    variant="filled",
-                                    color="teal",
-                                    disabled=True,
-                                ),
-                                dmc.Button(
-                                    "Use saved calibration",
-                                    id="use-existing-robot-calibration",
-                                    fullWidth=True,
-                                    variant="outline",
-                                    color="brand",
-                                    disabled=True,
-                                ),
-                                dmc.Button(
-                                    "Run verification move",
-                                    id="run-verification-inline",
-                                    fullWidth=True,
-                                    variant="outline",
-                                    color="teal",
-                                    disabled=True,
-                                ),
-                                dmc.Text(id="current-robot-position",
-                                         size="xs", c="dimmed"),
-                                dmc.Text(id="plate-action-status",
-                                         size="sm", c="dimmed"),
-                                dmc.Text(id="plate-metrics", size="sm"),
-                                dmc.Text(
-                                    id="robot-calibration-status",
-                                    size="sm",
-                                    c="teal",
-                                ),
-                            ],
-                            gap="xs",
-                        ),
-                    ),
-                ],
+            html.Div(
+                id="calibration-stepper-body",
+                children=_calibration_stepper_stack(),
+                style=stepper_style,
+            ),
+            html.Div(
+                id="calibration-loaded-body",
+                children=_calibration_loaded_body(),
+                style=loaded_style,
             ),
         ],
         withBorder=True,
@@ -5924,6 +6193,17 @@ def build_settings_card() -> dmc.Card:
                             placeholder="192.168.101.180",
                             value=SETTINGS.gripper_ip,
                             size="sm",
+                        ),
+                        span=3,
+                    ),
+                    dmc.GridCol(
+                        dmc.Select(
+                            id="settings-gripper-type",
+                            label="Gripper type",
+                            data=GRIPPER_PROFILE_OPTIONS,
+                            value=SETTINGS.gripper_type,
+                            size="sm",
+                            clearable=False,
                         ),
                         span=3,
                     ),
@@ -6247,7 +6527,7 @@ def build_pick_place_tab() -> dmc.Stack:
                     dmc.NumberInput(
                         id="plate-test-grip-timeout",
                         label="Grip timeout (s)",
-                        value=PLATE_TEST_GRIP_TIMEOUT_S,
+                        value=SETTINGS.plate_test_grip_timeout_s,
                         min=0.5,
                         max=10.0,
                         step=0.5,
@@ -6295,13 +6575,13 @@ def build_pick_place_tab() -> dmc.Stack:
                     dmc.TextInput(
                         id="auto-target-class",
                         label="Target class",
-                        value=AUTO_TARGET_LABEL_DEFAULT,
+                        value=SETTINGS.auto_target_label,
                         description="YOLO label to pick (case-insensitive).",
                     ),
                     dmc.NumberInput(
                         id="auto-drop-ignore-radius",
                         label="Drop ignore radius (mm)",
-                        value=AUTO_DROP_IGNORE_RADIUS_MM,
+                        value=SETTINGS.auto_drop_ignore_radius_mm,
                         min=0,
                         max=200,
                         step=5,
@@ -6496,6 +6776,10 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(id="calibration-progress-store",
                           data={"progress": 0}),
                 dcc.Store(
+                    id="calibration-menu-open-store",
+                    data=SESSION.calibration_menu_open,
+                ),
+                dcc.Store(
                     id="plate-detection-state",
                     data={
                         "count": 0,
@@ -6526,8 +6810,8 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(
                     id="auto-config-state",
                     data={
-                        "target_label": AUTO_TARGET_LABEL_DEFAULT,
-                        "drop_ignore_radius_mm": AUTO_DROP_IGNORE_RADIUS_MM,
+                        "target_label": SETTINGS.auto_target_label,
+                        "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
                     },
                 ),
                 dcc.Store(
@@ -6835,6 +7119,57 @@ def register_callbacks(app: Dash) -> None:
         if trigger == "use-existing-calibration":
             return 1  # Advance to robot calibration step
         return current
+
+    @app.callback(
+        Output("calibration-stepper-body", "style"),
+        Output("calibration-loaded-body", "style"),
+        Output("calibration-nav-actions", "style"),
+        Input("calibration-menu-open-store", "data"),
+    )
+    def _toggle_calibration_menu(opened: bool) -> Tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        stepper_style = {} if opened else {"display": "none"}
+        loaded_style = {} if not opened else {"display": "none"}
+        return stepper_style, loaded_style, stepper_style
+
+    @app.callback(
+        Output("calibration-menu-open-store", "data"),
+        Input("calibration-reset-button", "n_clicks"),
+        Input("calibration-progress-store", "data"),
+        Input("robot-calibration-state", "data"),
+        State("calibration-menu-open-store", "data"),
+    )
+    def _sync_calibration_menu_state(
+        reset_clicks: Optional[int],
+        _progress: dict,
+        _robot_state: dict,
+        current_open: Optional[bool],
+    ) -> bool | None:
+        trigger = callback_context.triggered_id
+        if trigger == "calibration-reset-button" and reset_clicks:
+            _reset_calibration_assets()
+            return True
+        desired = not _calibration_data_complete()
+        if current_open is None or desired == current_open:
+            return no_update
+        return desired
+
+    @app.callback(
+        Output("calibration-metadata", "children"),
+        Input("calibration-menu-open-store", "data"),
+        Input("calibration-progress-store", "data"),
+        Input("robot-calibration-state", "data"),
+    )
+    def _update_calibration_metadata(
+        opened: Optional[bool],
+        _progress: dict,
+        _robot_state: dict,
+    ) -> list[Any] | str:
+        if not _calibration_data_complete():
+            return ""
+        entries = _calibration_metadata_entries()
+        if not entries:
+            return dmc.Text("Calibration metadata unavailable.", size="xs", c="dimmed")
+        return [dmc.Text(entry, size="xs", c="dimmed") for entry in entries]
 
     @app.callback(
         Output("camera-device-info", "children"),
@@ -7543,34 +7878,87 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("settings-status", "children"),
         Output("settings-robot-host", "value"),
+        Output("settings-gripper-ip", "value"),
+        Output("settings-gripper-type", "value"),
         Output("settings-marker-a", "value"),
         Output("settings-marker-b", "value"),
         Output("settings-marker-size", "value"),
         Output("settings-calib-path", "value"),
         Output("settings-workspace-path", "value"),
         Output("settings-robot-calib-path", "value"),
+        Output("settings-auto-target-label", "value"),
+        Output("settings-auto-drop-ignore-radius", "value"),
+        Output("settings-auto-intrusion-match", "value"),
+        Output("settings-auto-detection-stale", "value"),
+        Output("settings-auto-idle-sleep", "value"),
+        Output("settings-auto-estimate-width", "checked"),
+        Output("settings-auto-approach-height", "value"),
+        Output("settings-auto-pick-height", "value"),
+        Output("settings-auto-drop-height", "value"),
         Input("settings-save", "n_clicks"),
         Input("settings-reset", "n_clicks"),
         State("settings-robot-host", "value"),
+        State("settings-gripper-ip", "value"),
+        State("settings-gripper-type", "value"),
         State("settings-marker-a", "value"),
         State("settings-marker-b", "value"),
         State("settings-marker-size", "value"),
         State("settings-calib-path", "value"),
         State("settings-workspace-path", "value"),
         State("settings-robot-calib-path", "value"),
+        State("settings-auto-target-label", "value"),
+        State("settings-auto-drop-ignore-radius", "value"),
+        State("settings-auto-intrusion-match", "value"),
+        State("settings-auto-detection-stale", "value"),
+        State("settings-auto-idle-sleep", "value"),
+        State("settings-auto-estimate-width", "checked"),
+        State("settings-auto-approach-height", "value"),
+        State("settings-auto-pick-height", "value"),
+        State("settings-auto-drop-height", "value"),
         prevent_initial_call=True,
     )
     def _handle_settings(
         _save: int,
         _reset: int,
         robot_host: Optional[str],
+        gripper_ip: Optional[str],
+        gripper_type: Optional[str],
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
         calib_path: Optional[str],
         workspace_path: Optional[str],
         robot_calib_path: Optional[str],
-    ) -> Tuple[str, Optional[str], Optional[int], Optional[int], Optional[float], str, str, str]:
+        auto_target_label: Optional[str],
+        auto_drop_ignore_radius: Optional[float],
+        auto_intrusion_match: Optional[float],
+        auto_detection_stale: Optional[float],
+        auto_idle_sleep: Optional[float],
+        auto_estimate_width: Optional[bool],
+        auto_approach_height: Optional[float],
+        auto_pick_height: Optional[float],
+        auto_drop_height: Optional[float],
+    ) -> Tuple[
+        str,
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        Optional[int],
+        Optional[int],
+        Optional[float],
+        str,
+        str,
+        str,
+        str,
+        float,
+        float,
+        float,
+        float,
+        bool,
+        float,
+        float,
+        float,
+    ]:
         trigger = callback_context.triggered_id
         global CODROID_DEFAULTS, DEFAULT_ROBOT_URI, GRIPPER_DEFAULTS, DEFAULT_GRIPPER_IP
         global DEFAULT_BUNDLE_PATH, DEFAULT_WORKSPACE_PATH, DEFAULT_ROBOT_CALIBRATION_PATH
@@ -7580,46 +7968,83 @@ def register_callbacks(app: Dash) -> None:
         default_calib = str(DEFAULT_BUNDLE_PATH)
         default_workspace = str(DEFAULT_WORKSPACE_PATH)
         default_robot_calib = str(DEFAULT_ROBOT_CALIBRATION_PATH)
+        default_gripper_ip = app_settings.DEFAULT_GRIPPER_IP
+        default_gripper_type = DEFAULT_GRIPPER_TYPE
+        default_auto_target_label = app_settings._BASE_AUTO_TARGET_LABEL
+        default_auto_drop_ignore_radius = app_settings._BASE_AUTO_DROP_IGNORE_RADIUS_MM
+        default_auto_intrusion_match = app_settings._BASE_AUTO_INTRUSION_MATCH_MM
+        default_auto_detection_stale = app_settings._BASE_AUTO_DETECTION_STALE_S
+        default_auto_idle_sleep = app_settings._BASE_AUTO_IDLE_SLEEP_S
+        default_auto_estimate_width = app_settings._BASE_AUTO_ESTIMATE_WIDTH
+        default_auto_approach_height = app_settings._BASE_AUTO_APPROACH_MM
+        default_auto_pick_height = app_settings._BASE_AUTO_PICK_MM
+        default_auto_drop_height = app_settings._BASE_AUTO_DROP_MM
 
+        status_text = "Settings saved."
         if trigger == "settings-reset":
-            _commit_settings(
-                marker_ids=(default_marker_a, default_marker_b),
-                marker_size_mm=default_marker_size,
-                calibration_bundle_path=None,
-                workspace_path=None,
-                robot_calibration_path=str(DEFAULT_ROBOT_CALIBRATION_PATH),
+            status_text = "Settings reset to defaults (env + built-ins)."
+            host_val = None
+            gripper_ip_val = None
+            gripper_type_val = default_gripper_type
+            marker_a_val = default_marker_a
+            marker_b_val = default_marker_b
+            marker_size_val = default_marker_size
+            calib_path_val = default_calib
+            workspace_path_val = default_workspace
+            robot_calib_path_val = default_robot_calib
+            target_label_val = default_auto_target_label
+            drop_ignore_radius_val = default_auto_drop_ignore_radius
+            intrusion_match_val = default_auto_intrusion_match
+            detection_stale_val = default_auto_detection_stale
+            idle_sleep_val = default_auto_idle_sleep
+            estimate_width_val = default_auto_estimate_width
+            approach_height_val = default_auto_approach_height
+            pick_height_val = default_auto_pick_height
+            drop_height_val = default_auto_drop_height
+        else:
+            host_val = (robot_host or "").strip() or None
+            gripper_ip_val = (gripper_ip or "").strip() or None
+            gripper_type_val = (gripper_type or "").strip() or default_gripper_type
+            if gripper_type_val not in GRIPPER_PROFILE_KEYS:
+                gripper_type_val = default_gripper_type
+            marker_a_val = int(marker_a) if marker_a is not None else default_marker_a
+            marker_b_val = int(marker_b) if marker_b is not None else default_marker_b
+            marker_size_val = float(marker_size) if marker_size is not None else default_marker_size
+            calib_path_val = (calib_path or "").strip() or default_calib
+            workspace_path_val = (workspace_path or "").strip() or default_workspace
+            robot_calib_path_val = (robot_calib_path or "").strip() or default_robot_calib
+            target_label_val = (auto_target_label or "").strip() or default_auto_target_label
+            drop_ignore_radius_val = _safe_float(auto_drop_ignore_radius, default_auto_drop_ignore_radius)
+            intrusion_match_val = _safe_float(auto_intrusion_match, default_auto_intrusion_match)
+            detection_stale_val = _safe_float(auto_detection_stale, default_auto_detection_stale)
+            idle_sleep_val = _safe_float(auto_idle_sleep, default_auto_idle_sleep)
+            estimate_width_val = (
+                bool(auto_estimate_width)
+                if auto_estimate_width is not None
+                else default_auto_estimate_width
             )
-            return (
-                "Settings reset to defaults (env + built-ins).",
-                default_marker_a,
-                default_marker_b,
-                default_marker_size,
-                default_calib,
-                default_workspace,
-                default_robot_calib,
-            )
-
-        # Save path: sanitize inputs
-        host_val = (robot_host or "").strip() or None
-        marker_a_val = int(
-            marker_a) if marker_a is not None else default_marker_a
-        marker_b_val = int(
-            marker_b) if marker_b is not None else default_marker_b
-        marker_size_val = float(
-            marker_size) if marker_size is not None else default_marker_size
-        calib_path_val = (calib_path or "").strip() or str(DEFAULT_BUNDLE_PATH)
-        workspace_path_val = (workspace_path or "").strip() or str(
-            DEFAULT_WORKSPACE_PATH)
-        robot_calib_path_val = (robot_calib_path or "").strip() or str(
-            DEFAULT_ROBOT_CALIBRATION_PATH)
+            approach_height_val = _safe_float(auto_approach_height, default_auto_approach_height)
+            pick_height_val = _safe_float(auto_pick_height, default_auto_pick_height)
+            drop_height_val = _safe_float(auto_drop_height, default_auto_drop_height)
 
         _commit_settings(
             robot_host=host_val,
+            gripper_ip=gripper_ip_val,
+            gripper_type=gripper_type_val,
             marker_ids=(marker_a_val, marker_b_val),
             marker_size_mm=marker_size_val,
             calibration_bundle_path=calib_path_val,
             workspace_path=workspace_path_val,
             robot_calibration_path=robot_calib_path_val,
+            auto_target_label=target_label_val,
+            auto_drop_ignore_radius_mm=drop_ignore_radius_val,
+            auto_intrusion_match_mm=intrusion_match_val,
+            auto_detection_stale_s=detection_stale_val,
+            auto_idle_sleep_s=idle_sleep_val,
+            auto_estimate_width=estimate_width_val,
+            auto_approach_mm=approach_height_val,
+            auto_pick_mm=pick_height_val,
+            auto_drop_mm=drop_height_val,
         )
 
         app_settings.reload_defaults()
@@ -7627,6 +8052,8 @@ def register_callbacks(app: Dash) -> None:
         DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
         GRIPPER_DEFAULTS = app_settings.GRIPPER_DEFAULTS
         DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
+        _refresh_gripper_constants()
+        _refresh_session_auto_config_defaults()
         set_asset_paths(
             calibration_bundle_path=calib_path_val,
             workspace_path=workspace_path_val,
@@ -7635,17 +8062,32 @@ def register_callbacks(app: Dash) -> None:
         DEFAULT_BUNDLE_PATH = app_settings.DEFAULT_BUNDLE_PATH
         DEFAULT_WORKSPACE_PATH = app_settings.DEFAULT_WORKSPACE_PATH
         DEFAULT_ROBOT_CALIBRATION_PATH = app_settings.DEFAULT_ROBOT_CALIBRATION_PATH
-        SESSION.config.marker_ids = (marker_a_val, marker_b_val)
-        SESSION.config.marker_size_mm = marker_size_val
+        SESSION.marker_ids = (marker_a_val, marker_b_val)
+        SESSION.marker_size_mm = marker_size_val
+
+        host_display = host_val or CODROID_DEFAULTS.get("host")
+        gripper_ip_display = gripper_ip_val or app_settings.DEFAULT_GRIPPER_IP
 
         return (
-            "Settings saved.",
+            status_text,
+            host_display,
+            gripper_ip_display,
+            gripper_type_val,
             marker_a_val,
             marker_b_val,
             marker_size_val,
             calib_path_val,
             workspace_path_val,
             robot_calib_path_val,
+            target_label_val,
+            drop_ignore_radius_val,
+            intrusion_match_val,
+            detection_stale_val,
+            idle_sleep_val,
+            estimate_width_val,
+            approach_height_val,
+            pick_height_val,
+            drop_height_val,
         )
 
     @app.callback(
@@ -7779,14 +8221,20 @@ def register_callbacks(app: Dash) -> None:
         drop_height: Optional[float],
     ) -> dict:
         config = {
-            "target_label": (target_label or AUTO_TARGET_LABEL_DEFAULT),
+            "target_label": (target_label or SETTINGS.auto_target_label),
             "drop_ignore_radius_mm": _safe_float(
-                drop_ignore_radius, AUTO_DROP_IGNORE_RADIUS_MM
+                drop_ignore_radius, SETTINGS.auto_drop_ignore_radius_mm
             ),
-            "approach_mm": _safe_float(approach_height, -30.0),
-            "pick_mm": _safe_float(pick_height, 0.0),
-            "drop_mm": _safe_float(drop_height, 0.0),
-            "estimate_width": bool(SESSION.auto_config.get("estimate_width", False)),
+            "approach_mm": _safe_float(
+                approach_height, SETTINGS.auto_approach_mm
+            ),
+            "pick_mm": _safe_float(pick_height, SETTINGS.auto_pick_mm),
+            "drop_mm": _safe_float(drop_height, SETTINGS.auto_drop_mm),
+            "estimate_width": bool(
+                SESSION.auto_config.get(
+                    "estimate_width", SETTINGS.auto_estimate_width
+                )
+            ),
         }
         SESSION.auto_config.update(config)
         return config
@@ -8616,7 +9064,7 @@ def register_callbacks(app: Dash) -> None:
         approach_mm = _safe_float(approach_height, -30.0)
         pick_mm = _safe_float(pick_height, 0.0)
         drop_mm = _safe_float(drop_height, 0.0)
-        grip_timeout = _safe_float(grip_timeout_s, PLATE_TEST_GRIP_TIMEOUT_S)
+        grip_timeout = _safe_float(grip_timeout_s, SETTINGS.plate_test_grip_timeout_s)
         grip_timeout = max(grip_timeout, 0.5)
         segment_min = _safe_float(segment_min, SEGMENT_FOLLOW_MIN_MM)
         segment_max = _safe_float(segment_max, SEGMENT_FOLLOW_MAX_MM)
@@ -8633,7 +9081,7 @@ def register_callbacks(app: Dash) -> None:
             return _plate_test_abort("Robot posture stream not available yet.")
         tracking_mode = (tracking_mode or "move").strip().lower()
         use_segment_tracking = tracking_mode == "segment"
-        use_base_coordinates = PLATE_TEST_USE_BASE_COORDINATES
+        use_base_coordinates = SETTINGS.plate_test_use_base_coordinates
         if use_base_coordinates:
             if approach_mm < drop_mm:
                 LOGGER.info(
@@ -9036,10 +9484,10 @@ def register_callbacks(app: Dash) -> None:
                 *,
                 label: str,
                 use_travel_z: bool,
-                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
-                update_interval: float = PLATE_TEST_FOLLOW_UPDATE_S,
-                settle_s: float = PLATE_TEST_SETTLE_S,
-                segment_hold_s: float = PLATE_TEST_FOLLOW_SEGMENT_S,
+                timeout_s: float = SETTINGS.plate_test_move_timeout_s,
+                update_interval: float = SETTINGS.plate_test_follow_update_s,
+                settle_s: float = SETTINGS.plate_test_settle_s,
+                segment_hold_s: float = SETTINGS.plate_test_follow_segment_s,
             ) -> dict:
                 await _wait_for_operation_resume(run_id)
                 target = targets_by_sequence.get(sequence)
@@ -9107,11 +9555,11 @@ def register_callbacks(app: Dash) -> None:
                     )
                     if (
                         abs(curr_xyz[0] - target_xyz[0])
-                        <= PLATE_TEST_TOLERANCE_MM
+                        <= SETTINGS.plate_test_tolerance_mm
                         and abs(curr_xyz[1] - target_xyz[1])
-                        <= PLATE_TEST_TOLERANCE_MM
+                        <= SETTINGS.plate_test_tolerance_mm
                         and abs(curr_xyz[2] - target_xyz[2])
-                        <= PLATE_TEST_Z_TOLERANCE_MM
+                        <= SETTINGS.plate_test_z_tolerance_mm
                     ):
                         if settle_s <= 0:
                             break
@@ -9136,10 +9584,10 @@ def register_callbacks(app: Dash) -> None:
                 segment_min_mm: float,
                 segment_max_mm: float,
                 segment_fraction: float,
-                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
-                update_interval: float = PLATE_TEST_FOLLOW_UPDATE_S,
-                segment_hold_s: float = PLATE_TEST_FOLLOW_SEGMENT_S,
-                settle_s: float = PLATE_TEST_SETTLE_S,
+                timeout_s: float = SETTINGS.plate_test_move_timeout_s,
+                update_interval: float = SETTINGS.plate_test_follow_update_s,
+                segment_hold_s: float = SETTINGS.plate_test_follow_segment_s,
+                settle_s: float = SETTINGS.plate_test_settle_s,
             ) -> dict:
                 await _wait_for_operation_resume(run_id)
                 target = targets_by_sequence.get(sequence)
@@ -9192,9 +9640,9 @@ def register_callbacks(app: Dash) -> None:
                     delta = target_xyz - curr_xyz
                     planar_dist = float(np.hypot(delta[0], delta[1]))
                     if (
-                        abs(delta[0]) <= PLATE_TEST_TOLERANCE_MM
-                        and abs(delta[1]) <= PLATE_TEST_TOLERANCE_MM
-                        and abs(delta[2]) <= PLATE_TEST_Z_TOLERANCE_MM
+                        abs(delta[0]) <= SETTINGS.plate_test_tolerance_mm
+                        and abs(delta[1]) <= SETTINGS.plate_test_tolerance_mm
+                        and abs(delta[2]) <= SETTINGS.plate_test_z_tolerance_mm
                     ):
                         if settle_s <= 0:
                             break
@@ -9250,9 +9698,9 @@ def register_callbacks(app: Dash) -> None:
                 *,
                 label: str,
                 command_coord_id: int,
-                timeout_s: float = PLATE_TEST_MOVE_TIMEOUT_S,
-                settle_s: float = PLATE_TEST_SETTLE_S,
-                motion_eps_mm: float = PLATE_TEST_MOTION_EPS_MM,
+                timeout_s: float = SETTINGS.plate_test_move_timeout_s,
+                settle_s: float = SETTINGS.plate_test_settle_s,
+                motion_eps_mm: float = SETTINGS.plate_test_motion_eps_mm,
             ) -> None:
                 deadline = time.monotonic() + timeout_s
                 start = session.position_snapshot()
@@ -9267,11 +9715,11 @@ def register_callbacks(app: Dash) -> None:
                 )
                 if (
                     abs(float(start_xyz[0]) - float(target_xyz[0]))
-                    <= PLATE_TEST_TOLERANCE_MM
+                    <= SETTINGS.plate_test_tolerance_mm
                     and abs(float(start_xyz[1]) - float(target_xyz[1]))
-                    <= PLATE_TEST_TOLERANCE_MM
+                    <= SETTINGS.plate_test_tolerance_mm
                     and abs(float(start_xyz[2]) - float(target_xyz[2]))
-                    <= PLATE_TEST_Z_TOLERANCE_MM
+                    <= SETTINGS.plate_test_z_tolerance_mm
                 ):
                     return
                 last_xyz = start_xyz
@@ -9355,18 +9803,18 @@ def register_callbacks(app: Dash) -> None:
 
             await _move_linear_with_hold(
                 drop_approach,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                hold_seconds=SETTINGS.plate_test_move_hold_s,
                 label="drop_approach_start",
             )
             await _move_linear_with_hold(
                 drop_pose,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                hold_seconds=SETTINGS.plate_test_move_hold_s,
                 label="return_to_drop_pose",
             )
             _command_gripper(gripper_max_width, "opened")
             await _move_linear_with_hold(
                 drop_approach,
-                hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                hold_seconds=SETTINGS.plate_test_move_hold_s,
                 label="drop_approach_ready",
             )
 
@@ -9513,24 +9961,24 @@ def register_callbacks(app: Dash) -> None:
                     lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         lift_pose,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_lift",
                     )
                     drop_travel_pose = drop_approach.copy()
                     drop_travel_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         drop_travel_pose,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_transit_to_drop",
                     )
                     await _move_linear_with_hold(
                         drop_approach,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_drop_approach",
                     )
                     await _move_linear_with_hold(
                         drop_pose,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_drop_pose",
                     )
                     await _wait_for_operation_resume(run_id)
@@ -9538,7 +9986,7 @@ def register_callbacks(app: Dash) -> None:
                     SESSION.robot_has_object = False
                     await _move_linear_with_hold(
                         drop_approach,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_drop_retreat",
                     )
                     summary["details"].append(f"{sequence}: dropped")
@@ -9550,19 +9998,19 @@ def register_callbacks(app: Dash) -> None:
                     lift_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         lift_pose,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_empty_lift",
                     )
                     drop_travel_pose = drop_approach.copy()
                     drop_travel_pose["z"] = travel_z
                     await _move_linear_with_hold(
                         drop_travel_pose,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_empty_transit_to_drop",
                     )
                     await _move_linear_with_hold(
                         drop_approach,
-                        hold_seconds=PLATE_TEST_MOVE_HOLD_S,
+                        hold_seconds=SETTINGS.plate_test_move_hold_s,
                         label=f"target_{sequence}_return_to_drop",
                     )
                     summary["details"].append(f"{sequence}: empty")
@@ -10469,11 +10917,11 @@ def register_callbacks(app: Dash) -> None:
         marker_size: Optional[float],
     ) -> str:
         marker_ids = (
-            _safe_int(marker_a, SESSION.config.marker_ids[0]),
-            _safe_int(marker_b, SESSION.config.marker_ids[1]),
+            _safe_int(marker_a, SESSION.marker_ids[0]),
+            _safe_int(marker_b, SESSION.marker_ids[1]),
         )
         marker_size_mm = _safe_float(
-            marker_size, SESSION.config.marker_size_mm)
+            marker_size, SESSION.marker_size_mm)
         try:
             # Load calibration bundle from disk if not already in memory
             if SESSION.calibration_bundle is None and DEFAULT_BUNDLE_PATH.exists():
@@ -10599,11 +11047,11 @@ def register_callbacks(app: Dash) -> None:
         board_path = DEFAULT_BOARD_PATH
         plate_path = DEFAULT_PLATE_PATH
         marker_ids = (
-            _safe_int(marker_a, SESSION.config.marker_ids[0]),
-            _safe_int(marker_b, SESSION.config.marker_ids[1]),
+            _safe_int(marker_a, SESSION.marker_ids[0]),
+            _safe_int(marker_b, SESSION.marker_ids[1]),
         )
         marker_size_mm = _safe_float(
-            marker_size, SESSION.config.marker_size_mm)
+            marker_size, SESSION.marker_size_mm)
 
         requested_overlay = overlay_mode or "auto"
         task = _select_overlay_task(
@@ -11852,12 +12300,12 @@ def register_callbacks(app: Dash) -> None:
             f"mean XY error {mean_err:.2f} mm."
         )
         if passed:
-            text += f" Within {VERIFICATION_TOLERANCE_MM:.2f} mm threshold."
+            text += f" Within {SETTINGS.verification_tolerance_mm:.2f} mm threshold."
             continue_label = "Proceed to verification"
             text_color = "green"
         else:
             text += (
-                f" Above {VERIFICATION_TOLERANCE_MM:.2f} mm threshold; "
+                f" Above {SETTINGS.verification_tolerance_mm:.2f} mm threshold; "
                 "consider repeating calibration or proceed with caution."
             )
             continue_label = "Proceed with warning"
@@ -12007,19 +12455,19 @@ def register_callbacks(app: Dash) -> None:
             LOGGER.info("Calibration results applied successfully")
             mean_err = accuracy.get("mean_xy_error", 0.0)
             max_err = accuracy.get("max_xy_error", 0.0)
-            passes_threshold = max_err <= VERIFICATION_TOLERANCE_MM
+            passes_threshold = max_err <= SETTINGS.verification_tolerance_mm
             message = (
                 f"Calibration accuracy: max XY error {max_err:.2f} mm · "
                 f"mean XY error {mean_err:.2f} mm."
             )
             if passes_threshold:
                 message = (
-                    f"{message} Within {VERIFICATION_TOLERANCE_MM:.2f} mm "
+                    f"{message} Within {SETTINGS.verification_tolerance_mm:.2f} mm "
                     "threshold. Proceed to verification."
                 )
             else:
                 message = (
-                    f"{message} Above {VERIFICATION_TOLERANCE_MM:.2f} mm "
+                    f"{message} Above {SETTINGS.verification_tolerance_mm:.2f} mm "
                     "threshold; consider repeating calibration or proceed with caution."
                 )
             _set_robot_guidance(
@@ -12137,9 +12585,9 @@ def register_callbacks(app: Dash) -> None:
             async def _await_motion_then_settle(
                 *,
                 label: str,
-                timeout_s: float = VERIFICATION_MOVE_TIMEOUT_S,
-                settle_s: float = VERIFICATION_SETTLE_S,
-                motion_eps_mm: float = VERIFICATION_MOTION_EPS_MM,
+                timeout_s: float = SETTINGS.verification_move_timeout_s,
+                settle_s: float = SETTINGS.verification_settle_s,
+                motion_eps_mm: float = SETTINGS.verification_motion_eps_mm,
             ) -> None:
                 deadline = time.monotonic() + timeout_s
                 start = session.position_snapshot()
@@ -12187,7 +12635,7 @@ def register_callbacks(app: Dash) -> None:
                 target: dict,
                 *,
                 label: str,
-                hold_seconds: float = VERIFICATION_HOLD_SECONDS,
+                hold_seconds: float = SETTINGS.verification_hold_seconds,
                 coord_id: int,
             ) -> None:
                 while True:
@@ -12257,9 +12705,9 @@ def register_callbacks(app: Dash) -> None:
             z1 = _safe_z(p1.get("z", 0.0))
             z2 = _safe_z(p2.get("z", 0.0))
             z3 = _safe_z(p3.get("z", 0.0))
-            raise_1 = z1 + VERIFICATION_RAISE_MM
-            raise_2 = z2 + VERIFICATION_RAISE_MM
-            raise_3 = z3 + VERIFICATION_RAISE_MM
+            raise_1 = z1 + SETTINGS.verification_raise_mm
+            raise_2 = z2 + SETTINGS.verification_raise_mm
+            raise_3 = z3 + SETTINGS.verification_raise_mm
 
             # Determine which coordinate system to use
             coord_id = 0 if coord5_positions is None else ROBOT_COORDINATE_ID

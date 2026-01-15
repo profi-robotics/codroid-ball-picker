@@ -22,6 +22,10 @@ The Compute Box must be on the same network as the computer running the calibrat
 - **XML-RPC Port:** `41414`
 - **Tool Index:** `0` (for single gripper setup)
 
+### Gripper profiles
+
+The calibration UI relies on profile definitions shipped with `onrobot-api` to drive the default grip width, force, and speed for each supported gripper. A `Gripper type` select is available in the **Settings** card so you can switch between configured models; the choice is persisted to `data/app_settings.json`, and the UI automatically updates its force/speed bounds from the matching profile that lives inside `onrobot.gripper_profiles`.
+
 ## Software Configuration
 
 ### Installation

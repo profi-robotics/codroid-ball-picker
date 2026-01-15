@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from codroid_api import CodroidSettings
+from onrobot.gripper_profiles import (
+    DEFAULT_GRIPPER_TYPE,
+    GripperProfile,
+    get_gripper_profile,
+    gripper_profile_options,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOGGER = logging.getLogger(__name__)
@@ -28,6 +34,39 @@ _BASE_CAMERA_RESOLUTION: Tuple[int, int] = (1920, 1080)
 _BASE_CAMERA_FPS = 30.0
 _BASE_MODEL_DIR = Path("data/models")
 _BASE_DROP_MARKER_ID = 30
+_BASE_AUTO_TARGET_LABEL = "orange"
+_BASE_AUTO_DROP_IGNORE_RADIUS_MM = 60.0
+_BASE_AUTO_INTRUSION_MATCH_MM = 40.0
+_BASE_AUTO_DETECTION_STALE_S = 0.3
+_BASE_AUTO_IDLE_SLEEP_S = 0.25
+_BASE_AUTO_APPROACH_MM = -30.0
+_BASE_AUTO_PICK_MM = 0.0
+_BASE_AUTO_DROP_MM = 0.0
+_BASE_AUTO_ESTIMATE_WIDTH = False
+
+_BASE_PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
+_BASE_MIN_PLATE_MARKERS = 2
+_BASE_PLATE_MOVEMENT_THRESHOLD_PX = 500.0
+_BASE_PLATE_VISIBILITY_MAX_AGE_S = 5.0
+_BASE_ROBOT_POSTURE_MAX_AGE_S = 2.0
+_BASE_VERIFICATION_RAISE_MM = 300.0
+_BASE_ROBOT_COORDINATE_TIMEOUT_S = 60.0
+_BASE_VERIFICATION_HOLD_SECONDS = 5.0
+_BASE_VERIFICATION_MOVE_TIMEOUT_S = 20.0
+_BASE_VERIFICATION_TOLERANCE_MM = 2.0
+_BASE_VERIFICATION_Z_TOLERANCE_MM = 2.0
+_BASE_VERIFICATION_SETTLE_S = 1.5
+_BASE_VERIFICATION_MOTION_EPS_MM = 0.5
+_BASE_PLATE_TEST_GRIP_TIMEOUT_S = 2.5
+_BASE_PLATE_TEST_MOVE_HOLD_S = 0.2
+_BASE_PLATE_TEST_MOVE_TIMEOUT_S = 25.0
+_BASE_PLATE_TEST_TOLERANCE_MM = 2.0
+_BASE_PLATE_TEST_Z_TOLERANCE_MM = 2.0
+_BASE_PLATE_TEST_SETTLE_S = 0.4
+_BASE_PLATE_TEST_MOTION_EPS_MM = 0.5
+_BASE_PLATE_TEST_FOLLOW_UPDATE_S = 0.05
+_BASE_PLATE_TEST_FOLLOW_SEGMENT_S = 0.1
+_BASE_PLATE_TEST_USE_BASE_COORDINATES = False
 
 DEFAULT_PLATE_PATH = _BASE_PLATE_LAYOUT_PATH
 DEFAULT_CAPTURE_DIR = _BASE_CAPTURE_DIR
@@ -38,6 +77,7 @@ DEFAULT_DROP_MARKER_ID = _BASE_DROP_MARKER_ID
 
 DROP_TARGET_PATH = Path("data/drop_target.json")
 SETTINGS_PATH = Path("data/app_settings.json")
+GRIPPER_PROFILE_OPTIONS = gripper_profile_options()
 
 
 class AppSettings(BaseSettings):
@@ -63,6 +103,7 @@ class AppSettings(BaseSettings):
     last_model: Optional[str] = None
     active_model: Optional[str] = None
     drop_target: Optional[Tuple[float, float]] = None
+    gripper_type: str = DEFAULT_GRIPPER_TYPE
 
     # Asset paths that can be redirected via settings
     calibration_bundle_path: Path = DEFAULT_BUNDLE_PATH
@@ -75,6 +116,29 @@ class AppSettings(BaseSettings):
     camera_fps: float = _BASE_CAMERA_FPS
     model_dir: Path = _BASE_MODEL_DIR
     drop_marker_id: int = _BASE_DROP_MARKER_ID
+    plate_test_capture_dir: Path = _BASE_PLATE_TEST_CAPTURE_DIR
+    min_plate_markers: int = _BASE_MIN_PLATE_MARKERS
+    plate_movement_threshold_px: float = _BASE_PLATE_MOVEMENT_THRESHOLD_PX
+    plate_visibility_max_age_s: float = _BASE_PLATE_VISIBILITY_MAX_AGE_S
+    robot_posture_max_age_s: float = _BASE_ROBOT_POSTURE_MAX_AGE_S
+    verification_raise_mm: float = _BASE_VERIFICATION_RAISE_MM
+    robot_coordinate_timeout_s: float = _BASE_ROBOT_COORDINATE_TIMEOUT_S
+    verification_hold_seconds: float = _BASE_VERIFICATION_HOLD_SECONDS
+    verification_move_timeout_s: float = _BASE_VERIFICATION_MOVE_TIMEOUT_S
+    verification_tolerance_mm: float = _BASE_VERIFICATION_TOLERANCE_MM
+    verification_z_tolerance_mm: float = _BASE_VERIFICATION_Z_TOLERANCE_MM
+    verification_settle_s: float = _BASE_VERIFICATION_SETTLE_S
+    verification_motion_eps_mm: float = _BASE_VERIFICATION_MOTION_EPS_MM
+    plate_test_grip_timeout_s: float = _BASE_PLATE_TEST_GRIP_TIMEOUT_S
+    plate_test_move_hold_s: float = _BASE_PLATE_TEST_MOVE_HOLD_S
+    plate_test_move_timeout_s: float = _BASE_PLATE_TEST_MOVE_TIMEOUT_S
+    plate_test_tolerance_mm: float = _BASE_PLATE_TEST_TOLERANCE_MM
+    plate_test_z_tolerance_mm: float = _BASE_PLATE_TEST_Z_TOLERANCE_MM
+    plate_test_settle_s: float = _BASE_PLATE_TEST_SETTLE_S
+    plate_test_motion_eps_mm: float = _BASE_PLATE_TEST_MOTION_EPS_MM
+    plate_test_follow_update_s: float = _BASE_PLATE_TEST_FOLLOW_UPDATE_S
+    plate_test_follow_segment_s: float = _BASE_PLATE_TEST_FOLLOW_SEGMENT_S
+    plate_test_use_base_coordinates: bool = _BASE_PLATE_TEST_USE_BASE_COORDINATES
 
     # UI tracking controls
     tracking_mode: str = "move"
@@ -82,9 +146,26 @@ class AppSettings(BaseSettings):
     segment_max: float = 300.0
     segment_fraction: float = 0.8
 
+    # Auto pick & place defaults
+    auto_target_label: str = _BASE_AUTO_TARGET_LABEL
+    auto_drop_ignore_radius_mm: float = _BASE_AUTO_DROP_IGNORE_RADIUS_MM
+    auto_intrusion_match_mm: float = _BASE_AUTO_INTRUSION_MATCH_MM
+    auto_detection_stale_s: float = _BASE_AUTO_DETECTION_STALE_S
+    auto_idle_sleep_s: float = _BASE_AUTO_IDLE_SLEEP_S
+    auto_approach_mm: float = _BASE_AUTO_APPROACH_MM
+    auto_pick_mm: float = _BASE_AUTO_PICK_MM
+    auto_drop_mm: float = _BASE_AUTO_DROP_MM
+    auto_estimate_width: bool = _BASE_AUTO_ESTIMATE_WIDTH
+
+    @property
+    def gripper_profile(self) -> GripperProfile:
+        """Return the profile that matches the persisted gripper type."""
+        return get_gripper_profile(self.gripper_type)
+
     @classmethod
     def settings_customise_sources(
         cls,
+        settings_cls,
         init_settings,
         env_settings,
         dotenv_settings,
@@ -99,7 +180,7 @@ class AppSettings(BaseSettings):
         )
 
     @classmethod
-    def _json_settings_source(cls, settings):
+    def _json_settings_source(cls):
         if not SETTINGS_PATH.exists():
             return {}
         try:

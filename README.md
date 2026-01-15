@@ -26,7 +26,7 @@ robot motion commands.
      --count 15 \
      --preview
    ```
-3. Configure robot connectivity via `CODROID_*` env vars (defaults come from `codroid-api`). `AppSettings` in `app/calibration_ui.py` groups the robot/network, marker, and asset-path preferences and persists edits to `data/app_settings.json`. Add a `.env` file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_HOST=192.168.1.5`) to override those values in a particular environment.
+3. Configure robot connectivity via `CODROID_*` env vars (defaults come from `codroid-api`). `AppSettings` in `app/settings.py` groups the robot/network, marker, and asset-path preferences and persists edits to `data/app_settings.json`. Add a `.env` file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_HOST=192.168.1.5`) to override those values in a particular environment.
 4. Verify your OAK-D is visible:
    ```bash
    python -m vision.camera_check
@@ -39,7 +39,7 @@ robot motion commands.
 
 ## Application Settings
 
-`app/calibration_ui.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings. The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
+`app/settings.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings, and it now exposes auto pick-and-place defaults (target class, drop-ignore radius, approach/pick/drop offsets, estimate width, etc.). The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
 
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the
