@@ -9,7 +9,13 @@ from vision import aruco_board, calibration, markers, plate, workspace
 from onrobot.twofg import TWOFG as TwoFG7Gripper
 from onrobot.device import Device as GripperDevice
 from onrobot.gripper_profiles import DEFAULT_GRIPPER_TYPE, gripper_profile_options
-from codroid_api import CodroidAPI, CodroidSettings, RobotSession
+from codroid_api import (
+    CodroidAPI,
+    CodroidSettings,
+    RobotSession,
+    DEFAULT_FLANGE_BUTTON_PORT,
+    DEFAULT_FLANGE_BUTTON_PORTS,
+)
 from codroid_api.robot_session import RobotPosture
 import app.settings as app_settings
 from app.settings import _commit_settings, _save_settings, reload_defaults, set_asset_paths
@@ -59,10 +65,6 @@ DEFAULT_FPS = app_settings.DEFAULT_FPS
 DEFAULT_MODEL_DIR = app_settings.DEFAULT_MODEL_DIR
 DEFAULT_DROP_MARKER_ID = app_settings.DEFAULT_DROP_MARKER_ID
 DROP_TARGET_PATH = app_settings.DROP_TARGET_PATH
-ROBOT_COORDINATE_ID = 5
-FLANGE_BUTTON_PORT = 41
-FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
-
 SETTINGS = app_settings.SETTINGS
 CODROID_DEFAULTS = app_settings.CODROID_DEFAULTS
 DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
@@ -79,24 +81,7 @@ GRIPPER_SPEED_MIN = GRIPPER_PROFILE.speed_min
 GRIPPER_CALIBRATION_WIDTH_MM = GRIPPER_PROFILE.calibration_width
 GRIPPER_OPEN_WIDTH_DEFAULT = GRIPPER_PROFILE.open_width_default
 GRIPPER_CLOSE_WIDTH_DEFAULT = GRIPPER_PROFILE.close_width_default
-SEGMENT_FOLLOW_MIN_MM = 20.0
-SEGMENT_FOLLOW_MAX_MM = 300.0
-SEGMENT_FOLLOW_FRACTION = 0.8
-PICK_FOLLOW_UPDATE_S = 0.05
-PICK_FOLLOW_SEGMENT_S = 0.1
-PICK_FOLLOW_TIMEOUT_S = 15.0
-PICK_FOLLOW_TOLERANCE_MM = 3.0
-PICK_FOLLOW_SETTLE_S = 0.6
-RESCUE_JOG_HOLD_S = 0.35
-# Use coordinate system 5 (robot calibration frame) instead of base coordinates.
-# Coordinate system 5 is aligned with the plate reference frame at calibration time.
-# Setting to True would use base coordinates with dynamic plate tracking adjustments.
-# Maximum Z height (mm) allowed in coordinate system 5.
-# CRITICAL: Z-axis is INVERTED in coord5:
-#   - Negative Z = UP (away from table) - SAFE
-#   - Positive Z = DOWN (toward table) - DANGEROUS
-# Z=0 is the working plane; positive values would collide with the table.
-COORD5_MAX_Z_MM = 0.0
+ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
 
 
 def _refresh_gripper_constants() -> None:
@@ -265,12 +250,13 @@ def _clamp_z_for_coord5(z: float, *, use_base_coords: bool) -> float:
     if use_base_coords:
         # Base coordinates use robot's own Z limits; no clamping here.
         return z
-    if z > COORD5_MAX_Z_MM:
+    max_z = SETTINGS.coord5_max_z_mm
+    if z > max_z:
         LOGGER.warning(
             "Z value %.3f mm EXCEEDS safe maximum %.3f mm in coord5 (would collide with table); clamping to %.3f",
-            z, COORD5_MAX_Z_MM, COORD5_MAX_Z_MM,
+            z, max_z, max_z,
         )
-        return COORD5_MAX_Z_MM
+        return max_z
     return z
 
 
@@ -389,8 +375,8 @@ def _get_robot_session() -> RobotSession:
     if SESSION.robot_session is None:
         SESSION.robot_session = RobotSession(
             CodroidSettings(),
-            flange_button_port=FLANGE_BUTTON_PORT,
-            flange_button_ports=FLANGE_BUTTON_PORTS,
+            flange_button_port=DEFAULT_FLANGE_BUTTON_PORT,
+            flange_button_ports=DEFAULT_FLANGE_BUTTON_PORTS,
         )
     return SESSION.robot_session
 
@@ -2721,16 +2707,28 @@ async def _move_linear_follow_target(
     *,
     label: str,
     coordinate_id: int = ROBOT_COORDINATE_ID,
-    timeout_s: float = PICK_FOLLOW_TIMEOUT_S,
-    update_interval: float = PICK_FOLLOW_UPDATE_S,
-    segment_hold_s: float = PICK_FOLLOW_SEGMENT_S,
-    settle_s: float = PICK_FOLLOW_SETTLE_S,
-    tolerance_mm: float = PICK_FOLLOW_TOLERANCE_MM,
+    timeout_s: Optional[float] = None,
+    update_interval: Optional[float] = None,
+    segment_hold_s: Optional[float] = None,
+    settle_s: Optional[float] = None,
+    tolerance_mm: Optional[float] = None,
     require_posture: bool = True,
     run_id: Optional[int] = None,
     safety_check: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[dict]:
     session = _get_robot_session()
+    timeout_s = _safe_float(timeout_s, SETTINGS.pick_follow_timeout_s)
+    update_interval = _safe_float(
+        update_interval, SETTINGS.pick_follow_update_interval_s
+    )
+    segment_hold_s = _safe_float(
+        segment_hold_s, SETTINGS.pick_follow_segment_hold_s
+    )
+    settle_s = _safe_float(settle_s, SETTINGS.pick_follow_settle_s)
+    tolerance_mm = _safe_float(
+        tolerance_mm, SETTINGS.pick_follow_tolerance_mm
+    )
+
     last_target: Optional[dict] = None
 
     def _check_operation() -> None:
@@ -5199,6 +5197,15 @@ def build_setup_drawer() -> dmc.Drawer:
                     label="WebSocket URI",
                     value=DEFAULT_ROBOT_URI,
                 ),
+                dmc.NumberInput(
+                    id="settings-robot-coordinate-id",
+                    label="Robot coordinate ID",
+                    value=SETTINGS.robot_coordinate_id,
+                    description="Coordinate system used for plate + pick controls.",
+                    min=0,
+                    max=10,
+                    size="sm",
+                ),
                 dmc.Group(
                     [
                         dmc.Button("Test robot connection",
@@ -5427,6 +5434,104 @@ def build_setup_drawer() -> dmc.Drawer:
                                 value=SETTINGS.auto_drop_mm,
                                 min=-50,
                                 max=200,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                    ],
+                    gutter="sm",
+                ),
+                dmc.Text("Pick follow tuning", fw=600),
+                dmc.Grid(
+                    [
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-pick-follow-timeout",
+                                label="Timeout (s)",
+                                description="Max follow loop duration.",
+                                value=SETTINGS.pick_follow_timeout_s,
+                                min=1,
+                                max=60,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-pick-follow-interval",
+                                label="Update interval (s)",
+                                value=SETTINGS.pick_follow_update_interval_s,
+                                min=0.01,
+                                max=0.5,
+                                step=0.01,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-pick-follow-segment",
+                                label="Segment hold (s)",
+                                value=SETTINGS.pick_follow_segment_hold_s,
+                                min=0.01,
+                                max=1.0,
+                                step=0.01,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-pick-follow-settle",
+                                label="Settle time (s)",
+                                value=SETTINGS.pick_follow_settle_s,
+                                min=0.01,
+                                max=5.0,
+                                step=0.05,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-pick-follow-tolerance",
+                                label="Tolerance (mm)",
+                                value=SETTINGS.pick_follow_tolerance_mm,
+                                min=0.1,
+                                max=20.0,
+                                step=0.1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                    ],
+                    gutter="sm",
+                ),
+                dmc.Text("Safety guards", fw=600),
+                dmc.Grid(
+                    [
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-rescue-jog-hold",
+                                label="Rescue jog hold (s)",
+                                value=SETTINGS.rescue_jog_hold_s,
+                                min=0.1,
+                                max=1.5,
+                                step=0.05,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-coord5-max-z",
+                                label="Coord5 max Z (mm)",
+                                value=SETTINGS.coord5_max_z_mm,
+                                description="Positive Z moves downward; clamp to safe range.",
+                                min=-50,
+                                max=50,
                                 step=1,
                                 size="sm",
                             ),
@@ -6267,6 +6372,45 @@ def build_settings_card() -> dmc.Card:
                         ),
                         span=6,
                     ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-camera-calib-frames",
+                            label="Camera calib frames",
+                            value=SETTINGS.camera_calibration_frame_count,
+                            min=1,
+                            max=120,
+                            step=1,
+                            size="sm",
+                            description="Frames captured for each camera calibration run.",
+                        ),
+                        span=4,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-camera-calib-delay",
+                            label="Frame delay (s)",
+                            value=SETTINGS.camera_calibration_frame_delay_s,
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            size="sm",
+                            description="Wait between captures to reduce motion blur.",
+                        ),
+                        span=4,
+                    ),
+                    dmc.GridCol(
+                        dmc.NumberInput(
+                            id="settings-camera-calib-min-usable",
+                            label="Min usable frames",
+                            value=SETTINGS.camera_calibration_min_usable_frames,
+                            min=1,
+                            max=30,
+                            step=1,
+                            size="sm",
+                            description="Calibration failures when usable frames below this.",
+                        ),
+                        span=4,
+                    ),
                 ],
                 gutter="sm",
             ),
@@ -6632,7 +6776,7 @@ def build_pick_place_tab() -> dmc.Stack:
             dmc.Accordion(
                 accordion_items,
                 multiple=True,
-                value=["detect"],
+                value=[],
                 variant="separated",
             ),
             action_card,  # Pick & Drop Controls (merged from manual control)
@@ -6665,7 +6809,7 @@ def build_application_tab() -> dmc.Stack:
                     ),
                 ],
                 id="application-tabs",
-                value="workspace",
+                value="pick-place",
                 variant="pills",
                 color="brand",
                 style={"width": "100%"},
@@ -7822,7 +7966,7 @@ def register_callbacks(app: Dash) -> None:
         session = _get_robot_session()
         states = session.flange_button_states()
         classes = []
-        for port in FLANGE_BUTTON_PORTS:
+        for port in DEFAULT_FLANGE_BUTTON_PORTS:
             active = states.get(port, 0) == 1
             classes.append(
                 "footer-flange-indicator active" if active else "footer-flange-indicator"
@@ -7878,6 +8022,7 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("settings-status", "children"),
         Output("settings-robot-host", "value"),
+        Output("settings-robot-coordinate-id", "value"),
         Output("settings-gripper-ip", "value"),
         Output("settings-gripper-type", "value"),
         Output("settings-marker-a", "value"),
@@ -7895,9 +8040,20 @@ def register_callbacks(app: Dash) -> None:
         Output("settings-auto-approach-height", "value"),
         Output("settings-auto-pick-height", "value"),
         Output("settings-auto-drop-height", "value"),
+        Output("settings-camera-calib-frames", "value"),
+        Output("settings-camera-calib-delay", "value"),
+        Output("settings-camera-calib-min-usable", "value"),
+        Output("settings-pick-follow-timeout", "value"),
+        Output("settings-pick-follow-interval", "value"),
+        Output("settings-pick-follow-segment", "value"),
+        Output("settings-pick-follow-settle", "value"),
+        Output("settings-pick-follow-tolerance", "value"),
+        Output("settings-rescue-jog-hold", "value"),
+        Output("settings-coord5-max-z", "value"),
         Input("settings-save", "n_clicks"),
         Input("settings-reset", "n_clicks"),
         State("settings-robot-host", "value"),
+        State("settings-robot-coordinate-id", "value"),
         State("settings-gripper-ip", "value"),
         State("settings-gripper-type", "value"),
         State("settings-marker-a", "value"),
@@ -7915,12 +8071,23 @@ def register_callbacks(app: Dash) -> None:
         State("settings-auto-approach-height", "value"),
         State("settings-auto-pick-height", "value"),
         State("settings-auto-drop-height", "value"),
+        State("settings-camera-calib-frames", "value"),
+        State("settings-camera-calib-delay", "value"),
+        State("settings-camera-calib-min-usable", "value"),
+        State("settings-pick-follow-timeout", "value"),
+        State("settings-pick-follow-interval", "value"),
+        State("settings-pick-follow-segment", "value"),
+        State("settings-pick-follow-settle", "value"),
+        State("settings-pick-follow-tolerance", "value"),
+        State("settings-rescue-jog-hold", "value"),
+        State("settings-coord5-max-z", "value"),
         prevent_initial_call=True,
     )
     def _handle_settings(
         _save: int,
         _reset: int,
         robot_host: Optional[str],
+        robot_coordinate_id: Optional[float],
         gripper_ip: Optional[str],
         gripper_type: Optional[str],
         marker_a: Optional[float],
@@ -7938,9 +8105,20 @@ def register_callbacks(app: Dash) -> None:
         auto_approach_height: Optional[float],
         auto_pick_height: Optional[float],
         auto_drop_height: Optional[float],
+        camera_calib_frames: Optional[float],
+        camera_calib_delay: Optional[float],
+        camera_calib_min_usable: Optional[float],
+        pick_follow_timeout: Optional[float],
+        pick_follow_interval: Optional[float],
+        pick_follow_segment: Optional[float],
+        pick_follow_settle: Optional[float],
+        pick_follow_tolerance: Optional[float],
+        rescue_jog_hold: Optional[float],
+        coord5_max_z: Optional[float],
     ) -> Tuple[
         str,
         Optional[str],
+        int,
         Optional[str],
         Optional[str],
         Optional[int],
@@ -7958,10 +8136,19 @@ def register_callbacks(app: Dash) -> None:
         float,
         float,
         float,
+        int,
+        float,
+        int,
+        float,
+        float,
+        float,
+        float,
+        float,
     ]:
         trigger = callback_context.triggered_id
         global CODROID_DEFAULTS, DEFAULT_ROBOT_URI, GRIPPER_DEFAULTS, DEFAULT_GRIPPER_IP
         global DEFAULT_BUNDLE_PATH, DEFAULT_WORKSPACE_PATH, DEFAULT_ROBOT_CALIBRATION_PATH
+        global ROBOT_COORDINATE_ID
         default_marker_a = 1
         default_marker_b = 2
         default_marker_size = 40.0
@@ -7980,6 +8167,17 @@ def register_callbacks(app: Dash) -> None:
         default_auto_pick_height = app_settings._BASE_AUTO_PICK_MM
         default_auto_drop_height = app_settings._BASE_AUTO_DROP_MM
 
+        default_camera_calib_frames = app_settings._BASE_CAMERA_CALIBRATION_FRAMES
+        default_camera_calib_delay = app_settings._BASE_CAMERA_CALIBRATION_DELAY_S
+        default_camera_calib_min_usable = app_settings._BASE_CAMERA_CALIBRATION_MIN_USABLE_FRAMES
+        default_pick_follow_timeout = app_settings._BASE_PICK_FOLLOW_TIMEOUT_S
+        default_pick_follow_interval = app_settings._BASE_PICK_FOLLOW_UPDATE_S
+        default_pick_follow_segment = app_settings._BASE_PICK_FOLLOW_SEGMENT_S
+        default_pick_follow_settle = app_settings._BASE_PICK_FOLLOW_SETTLE_S
+        default_pick_follow_tolerance = app_settings._BASE_PICK_FOLLOW_TOLERANCE_MM
+        default_rescue_jog_hold = app_settings._BASE_RESCUE_JOG_HOLD_S
+        default_coord5_max_z = app_settings._BASE_COORD5_MAX_Z_MM
+        default_robot_coordinate_id = app_settings._BASE_ROBOT_COORDINATE_ID
         status_text = "Settings saved."
         if trigger == "settings-reset":
             status_text = "Settings reset to defaults (env + built-ins)."
@@ -8001,6 +8199,14 @@ def register_callbacks(app: Dash) -> None:
             approach_height_val = default_auto_approach_height
             pick_height_val = default_auto_pick_height
             drop_height_val = default_auto_drop_height
+            robot_coordinate_id_val = default_robot_coordinate_id
+            pick_follow_timeout_val = default_pick_follow_timeout
+            pick_follow_interval_val = default_pick_follow_interval
+            pick_follow_segment_val = default_pick_follow_segment
+            pick_follow_settle_val = default_pick_follow_settle
+            pick_follow_tolerance_val = default_pick_follow_tolerance
+            rescue_jog_hold_val = default_rescue_jog_hold
+            coord5_max_z_val = default_coord5_max_z
         else:
             host_val = (robot_host or "").strip() or None
             gripper_ip_val = (gripper_ip or "").strip() or None
@@ -8026,6 +8232,30 @@ def register_callbacks(app: Dash) -> None:
             approach_height_val = _safe_float(auto_approach_height, default_auto_approach_height)
             pick_height_val = _safe_float(auto_pick_height, default_auto_pick_height)
             drop_height_val = _safe_float(auto_drop_height, default_auto_drop_height)
+            robot_coordinate_id_val = _safe_int(
+                robot_coordinate_id, default_robot_coordinate_id
+            )
+            pick_follow_timeout_val = _safe_float(
+                pick_follow_timeout, default_pick_follow_timeout
+            )
+            pick_follow_interval_val = _safe_float(
+                pick_follow_interval, default_pick_follow_interval
+            )
+            pick_follow_segment_val = _safe_float(
+                pick_follow_segment, default_pick_follow_segment
+            )
+            pick_follow_settle_val = _safe_float(
+                pick_follow_settle, default_pick_follow_settle
+            )
+            pick_follow_tolerance_val = _safe_float(
+                pick_follow_tolerance, default_pick_follow_tolerance
+            )
+            rescue_jog_hold_val = _safe_float(
+                rescue_jog_hold, default_rescue_jog_hold
+            )
+            coord5_max_z_val = _safe_float(
+                coord5_max_z, default_coord5_max_z
+            )
 
         _commit_settings(
             robot_host=host_val,
@@ -8045,6 +8275,14 @@ def register_callbacks(app: Dash) -> None:
             auto_approach_mm=approach_height_val,
             auto_pick_mm=pick_height_val,
             auto_drop_mm=drop_height_val,
+            pick_follow_timeout_s=pick_follow_timeout_val,
+            pick_follow_update_interval_s=pick_follow_interval_val,
+            pick_follow_segment_hold_s=pick_follow_segment_val,
+            pick_follow_settle_s=pick_follow_settle_val,
+            pick_follow_tolerance_mm=pick_follow_tolerance_val,
+            rescue_jog_hold_s=rescue_jog_hold_val,
+            coord5_max_z_mm=coord5_max_z_val,
+            robot_coordinate_id=robot_coordinate_id_val,
         )
 
         app_settings.reload_defaults()
@@ -8064,6 +8302,7 @@ def register_callbacks(app: Dash) -> None:
         DEFAULT_ROBOT_CALIBRATION_PATH = app_settings.DEFAULT_ROBOT_CALIBRATION_PATH
         SESSION.marker_ids = (marker_a_val, marker_b_val)
         SESSION.marker_size_mm = marker_size_val
+        ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
 
         host_display = host_val or CODROID_DEFAULTS.get("host")
         gripper_ip_display = gripper_ip_val or app_settings.DEFAULT_GRIPPER_IP
@@ -8071,6 +8310,7 @@ def register_callbacks(app: Dash) -> None:
         return (
             status_text,
             host_display,
+            robot_coordinate_id_val,
             gripper_ip_display,
             gripper_type_val,
             marker_a_val,
@@ -8088,6 +8328,16 @@ def register_callbacks(app: Dash) -> None:
             approach_height_val,
             pick_height_val,
             drop_height_val,
+            camera_calib_frames,
+            camera_calib_delay,
+            camera_calib_min_usable,
+            pick_follow_timeout_val,
+            pick_follow_interval_val,
+            pick_follow_segment_val,
+            pick_follow_settle_val,
+            pick_follow_tolerance_val,
+            rescue_jog_hold_val,
+            coord5_max_z_val,
         )
 
     @app.callback(
@@ -9066,10 +9316,10 @@ def register_callbacks(app: Dash) -> None:
         drop_mm = _safe_float(drop_height, 0.0)
         grip_timeout = _safe_float(grip_timeout_s, SETTINGS.plate_test_grip_timeout_s)
         grip_timeout = max(grip_timeout, 0.5)
-        segment_min = _safe_float(segment_min, SEGMENT_FOLLOW_MIN_MM)
-        segment_max = _safe_float(segment_max, SEGMENT_FOLLOW_MAX_MM)
+        segment_min = _safe_float(segment_min, SETTINGS.segment_min)
+        segment_max = _safe_float(segment_max, SETTINGS.segment_max)
         segment_fraction = _safe_float(
-            segment_fraction, SEGMENT_FOLLOW_FRACTION)
+            segment_fraction, SETTINGS.segment_fraction)
         segment_min = float(np.clip(segment_min, 1.0, 200.0))
         segment_max = float(np.clip(segment_max, 5.0, 500.0))
         segment_fraction = float(np.clip(segment_fraction, 0.1, 1.0))
@@ -10780,8 +11030,8 @@ def register_callbacks(app: Dash) -> None:
                 SESSION.capture.frames = []
                 SESSION.capture.depth_frame = None
 
-                # Capture 30 frames for more robust calibration
-                num_frames = 30
+                # Capture frames for more robust calibration
+                num_frames = max(1, SETTINGS.camera_calibration_frame_count)
                 captured_frames = []
                 CALIBRATION_PROGRESS["max_frames"] = num_frames
                 CALIBRATION_PROGRESS["value"] = 1  # Start progress
@@ -10794,8 +11044,11 @@ def register_callbacks(app: Dash) -> None:
                     CALIBRATION_PROGRESS["value"] = int(
                         (frame_num / num_frames) * 95) + 3
                     # Small delay between captures to avoid motion blur
-                    if i < num_frames - 1:
-                        time.sleep(0.1)
+                    if (
+                        i < num_frames - 1
+                        and SETTINGS.camera_calibration_frame_delay_s > 0.0
+                    ):
+                        time.sleep(SETTINGS.camera_calibration_frame_delay_s)
 
                 # Capture depth snapshot
                 depth_path = capture_depth_snapshot(output_path)
@@ -10804,7 +11057,7 @@ def register_callbacks(app: Dash) -> None:
                 detection_counts, usable_frames = _charuco_detection_counts(
                     _list_capture_frames(output_path), board_path
                 )
-                if usable_frames == 0:
+                if usable_frames < SETTINGS.camera_calibration_min_usable_frames:
                     raise RuntimeError(
                         "No usable ChArUco detections in captured frames. "
                         f"Corner counts: {detection_counts}. "
@@ -12130,7 +12383,7 @@ def register_callbacks(app: Dash) -> None:
                 api.config.jog_modes.joint,
                 axis=axis,
                 direction=direction,
-                hold_seconds=RESCUE_JOG_HOLD_S,
+                hold_seconds=SETTINGS.rescue_jog_hold_s,
                 heartbeat_interval=0.25,
             )
 
@@ -12140,7 +12393,7 @@ def register_callbacks(app: Dash) -> None:
             LOGGER.exception("Rescue joint jog failed")
             return f"Rescue jog failed: {exc}"
         sign = "+" if direction > 0 else "-"
-        return f"Jogged J{axis}{sign} for {RESCUE_JOG_HOLD_S:.2f}s."
+        return f"Jogged J{axis}{sign} for {SETTINGS.rescue_jog_hold_s:.2f}s."
 
     @app.callback(
         Output("robot-calibration-status", "children"),

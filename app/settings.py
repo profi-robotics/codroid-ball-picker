@@ -34,6 +34,9 @@ _BASE_CAMERA_RESOLUTION: Tuple[int, int] = (1920, 1080)
 _BASE_CAMERA_FPS = 30.0
 _BASE_MODEL_DIR = Path("data/models")
 _BASE_DROP_MARKER_ID = 30
+_BASE_CAMERA_CALIBRATION_FRAMES = 30
+_BASE_CAMERA_CALIBRATION_DELAY_S = 0.1
+_BASE_CAMERA_CALIBRATION_MIN_USABLE_FRAMES = 1
 _BASE_AUTO_TARGET_LABEL = "orange"
 _BASE_AUTO_DROP_IGNORE_RADIUS_MM = 60.0
 _BASE_AUTO_INTRUSION_MATCH_MM = 40.0
@@ -43,6 +46,14 @@ _BASE_AUTO_APPROACH_MM = -30.0
 _BASE_AUTO_PICK_MM = 0.0
 _BASE_AUTO_DROP_MM = 0.0
 _BASE_AUTO_ESTIMATE_WIDTH = False
+_BASE_PICK_FOLLOW_TIMEOUT_S = 15.0
+_BASE_PICK_FOLLOW_UPDATE_S = 0.05
+_BASE_PICK_FOLLOW_SEGMENT_S = 0.1
+_BASE_PICK_FOLLOW_TOLERANCE_MM = 3.0
+_BASE_PICK_FOLLOW_SETTLE_S = 0.6
+_BASE_RESCUE_JOG_HOLD_S = 0.35
+_BASE_COORD5_MAX_Z_MM = 0.0
+_BASE_ROBOT_COORDINATE_ID = 5
 
 _BASE_PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
 _BASE_MIN_PLATE_MARKERS = 2
@@ -140,11 +151,30 @@ class AppSettings(BaseSettings):
     plate_test_follow_segment_s: float = _BASE_PLATE_TEST_FOLLOW_SEGMENT_S
     plate_test_use_base_coordinates: bool = _BASE_PLATE_TEST_USE_BASE_COORDINATES
 
+    # Camera calibration capture controls
+    camera_calibration_frame_count: int = _BASE_CAMERA_CALIBRATION_FRAMES
+    camera_calibration_frame_delay_s: float = _BASE_CAMERA_CALIBRATION_DELAY_S
+    camera_calibration_min_usable_frames: int = _BASE_CAMERA_CALIBRATION_MIN_USABLE_FRAMES
+
     # UI tracking controls
     tracking_mode: str = "move"
     segment_min: float = 20.0
     segment_max: float = 300.0
     segment_fraction: float = 0.8
+
+    # Pick-follow defaults used by conservative follow motion helpers
+    pick_follow_timeout_s: float = _BASE_PICK_FOLLOW_TIMEOUT_S
+    pick_follow_update_interval_s: float = _BASE_PICK_FOLLOW_UPDATE_S
+    pick_follow_segment_hold_s: float = _BASE_PICK_FOLLOW_SEGMENT_S
+    pick_follow_tolerance_mm: float = _BASE_PICK_FOLLOW_TOLERANCE_MM
+    pick_follow_settle_s: float = _BASE_PICK_FOLLOW_SETTLE_S
+
+    # Safety guards
+    rescue_jog_hold_s: float = _BASE_RESCUE_JOG_HOLD_S
+    coord5_max_z_mm: float = _BASE_COORD5_MAX_Z_MM
+
+    # Robot coordinate selection
+    robot_coordinate_id: int = _BASE_ROBOT_COORDINATE_ID
 
     # Auto pick & place defaults
     auto_target_label: str = _BASE_AUTO_TARGET_LABEL
