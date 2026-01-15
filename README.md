@@ -8,9 +8,8 @@ robot motion commands.
 ## Layout
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
 - `robot/` – WebSocket client, gripper control (OnRobot 2FG7), and command catalog extracted from browser traffic.
-- `app/` – orchestration logic that ties vision outputs to robot commands.
-- `run_bootstrap_demo.py` – entry point that runs the end-to-end flow using a
-  frame provider stub.
+- `app/` – orchestration logic that ties vision outputs to robot commands, now powering the Dash UI.
+- `run_calibration_ui.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 - `docs/` – integration guides for gripper and other peripherals.
@@ -20,55 +19,27 @@ robot motion commands.
    ```bash
    uv install
    ```
-2. Capture calibration data (ChArUco board images + one depth frame) and place them
-   somewhere accessible to the Jetson. The helper script can automate the capture.
-   For the default ChArUco board layout you’d run:
+2. Capture calibration data (ChArUco board images + one depth frame) and place them somewhere accessible to the Jetson. The helper script can automate the capture. For the default ChArUco board layout run:
    ```bash
    python scripts/capture_calibration_data.py \
      --output-dir data/calibration \
      --count 15 \
      --preview
    ```
-3. Configure robot connectivity via `CODROID_*` env vars (defaults come from
-   `codroid-api`). `DemoConfig` in `app/orchestrator.py` can override
-   `robot_host`, `robot_port`, or `user_port` if needed.
+3. Configure robot connectivity via `CODROID_*` env vars (defaults come from `codroid-api`). `AppSettings` in `app/calibration_ui.py` groups the robot/network, marker, and asset-path preferences and persists edits to `data/app_settings.json`. Add a `.env` file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_HOST=192.168.1.5`) to override those values in a particular environment.
 4. Verify your OAK-D is visible:
    ```bash
    python -m vision.camera_check
    ```
-5. Provide a real camera feed. You can now launch the demo with `--use-depthai-camera`
-   (optionally overriding `--camera-resolution`/`--camera-fps`) to stream live RGB frames
-   from the attached OAK-D, or replace the `frame_provider_stub` with your own camera hook.
-6. Run the demo (adjust the ChArUco board layout path if needed, e.g.
-   `python run_bootstrap_demo.py --aruco-board-layout data/markers/camera_calibration/camera_calibration_board.json`). To capture the calibration
-   data as part of this step, add `--auto-calibrate` (you can tweak resolution,
-   count, and preview mode):
-   ```bash
-   python run_bootstrap_demo.py --auto-calibrate --capture-count 15 --capture-resolution 1920x1080 --capture-preview
-   ```
-   Add `--use-depthai-camera --camera-resolution 1920x1080 --camera-fps 30` when you want the script
-   to grab an actual frame from the OAK-D before detecting the workspace markers. Include
-   `--marker-retry-attempts 20` (auto-enabled when using the live camera) to keep sampling frames until both
-   ArUco markers are detected instead of exiting immediately. Use `--marker-preview` to view the live feed and
-   press 'm' to lock a frame before detection, and inspect `data/marker_debug_frame.png` if detection still fails.
-   For a stable workspace-only run (no robot motion), this command has worked well in practice:
-   ```bash
-   python run_bootstrap_demo.py \
-     --use-depthai-camera --camera-resolution 1920x1080 --camera-fps 30 \
-     --track-workspace --marker-preview \
-     --workspace-scale 0.97
-   ```
-7. Launch the calibration UI when you want a visual, step-by-step bring-up:
+5. Launch the Dash calibration console:
    ```bash
    python run_calibration_ui.py --debug
    ```
-   Use the Setup drawer to start the camera stream, verify the robot connection, and
-   work through the workflow tabs (Calibration, Applications, Monitoring).
-   Applications include a shared workspace definition step plus per-application
-   panels (Pick & Place with Detection + Actions).
-   The UI reads/writes calibration assets under `data/` by default. Once the
-   workspace is computed it is saved to `data/workspace_definition.npz` and
-   reloaded automatically on restart, similar to the calibration bundle.
+   Use the Setup drawer to start the camera stream, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart.
+
+## Application Settings
+
+`app/calibration_ui.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings. The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
 
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the

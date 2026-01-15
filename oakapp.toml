@@ -7,6 +7,6 @@ prepare_container = [
 
 build_steps = []
 
-entrypoint = ["bash", "-c", "python run_bootstrap_demo.py --auto-calibrate --capture-count 10"]
+entrypoint = ["bash", "-c", "python run_calibration_ui.py --debug"]
 
 publish = false

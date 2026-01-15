@@ -10,6 +10,8 @@ from onrobot.twofg import TWOFG as TwoFG7Gripper
 from onrobot.device import Device as GripperDevice
 from codroid_api import CodroidAPI, CodroidSettings, RobotSession
 from codroid_api.robot_session import RobotPosture
+import app.settings as app_settings
+from app.settings import _commit_settings, _save_settings, reload_defaults, set_asset_paths
 from app.orchestrator import BootstrapDemo, DemoConfig
 
 import asyncio
@@ -24,7 +26,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict
 from typing import Any, Awaitable, Callable, Deque, Optional, Tuple
 
 import cv2
@@ -47,20 +48,17 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-DEFAULT_BOARD_PATH = Path(
-    "data/markers/camera_calibration/camera_calibration_board.json")
-DEFAULT_PLATE_PATH = Path(
-    "data/markers/robot_calibration/calibration_plate_layout.json")
-DEFAULT_BUNDLE_PATH = Path("data/calibration_bundle.npz")
-DEFAULT_WORKSPACE_PATH = Path("data/workspace_definition.npz")
-DEFAULT_ROBOT_CALIBRATION_PATH = Path("data/robot_calibration.json")
-DEFAULT_CAPTURE_DIR = Path("data/calibration")
-DEFAULT_RESOLUTION = (1920, 1080)
-DEFAULT_FPS = 30.0
-DEFAULT_MODEL_DIR = Path("data/models")
-DEFAULT_DROP_MARKER_ID = 30
-DROP_TARGET_PATH = Path("data/drop_target.json")
-SETTINGS_PATH = Path("data/app_settings.json")
+DEFAULT_BOARD_PATH = app_settings.DEFAULT_BOARD_PATH
+DEFAULT_PLATE_PATH = app_settings.DEFAULT_PLATE_PATH
+DEFAULT_BUNDLE_PATH = app_settings.DEFAULT_BUNDLE_PATH
+DEFAULT_WORKSPACE_PATH = app_settings.DEFAULT_WORKSPACE_PATH
+DEFAULT_ROBOT_CALIBRATION_PATH = app_settings.DEFAULT_ROBOT_CALIBRATION_PATH
+DEFAULT_CAPTURE_DIR = app_settings.DEFAULT_CAPTURE_DIR
+DEFAULT_RESOLUTION = app_settings.DEFAULT_RESOLUTION
+DEFAULT_FPS = app_settings.DEFAULT_FPS
+DEFAULT_MODEL_DIR = app_settings.DEFAULT_MODEL_DIR
+DEFAULT_DROP_MARKER_ID = app_settings.DEFAULT_DROP_MARKER_ID
+DROP_TARGET_PATH = app_settings.DROP_TARGET_PATH
 ROBOT_COORDINATE_ID = 5
 PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
 MIN_PLATE_MARKERS = 2
@@ -77,6 +75,12 @@ VERIFICATION_SETTLE_S = 1.5
 VERIFICATION_MOTION_EPS_MM = 0.5
 FLANGE_BUTTON_PORT = 41
 FLANGE_BUTTON_PORTS = (40, 41, 42, 43)
+
+SETTINGS = app_settings.SETTINGS
+CODROID_DEFAULTS = app_settings.CODROID_DEFAULTS
+DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
+GRIPPER_DEFAULTS = app_settings.GRIPPER_DEFAULTS
+DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
 GRIPPER_FORCE_MIN = 20
 GRIPPER_FORCE_MAX = 140
 GRIPPER_FORCE_DEFAULT = 20
@@ -187,96 +191,6 @@ def _clamp_z_for_coord5(z: float, *, use_base_coords: bool) -> float:
         )
         return COORD5_MAX_Z_MM
     return z
-
-
-class AppSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    robot_host: Optional[str] = None
-    robot_port: Optional[int] = None
-    user_port: Optional[int] = None
-    gripper_ip: Optional[str] = None
-    marker_ids: Tuple[int, int] = (1, 2)
-    marker_size_mm: float = 40.0
-    last_model: Optional[str] = None
-    active_model: Optional[str] = None
-    drop_target: Optional[Tuple[float, float]] = None
-    calibration_bundle_path: Optional[str] = None
-    workspace_path: Optional[str] = None
-    robot_calibration_path: Optional[str] = None
-    tracking_mode: str = "move"
-    segment_min: float = 20.0
-    segment_max: float = 300.0
-    segment_fraction: float = 0.8
-
-
-def _load_settings() -> AppSettings:
-    if not SETTINGS_PATH.exists():
-        return AppSettings()
-    try:
-        return AppSettings.model_validate_json(SETTINGS_PATH.read_text())
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Failed to load settings: %s", exc)
-        return AppSettings()
-
-
-def _save_settings(settings: AppSettings) -> None:
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(settings.model_dump_json(indent=2))
-
-
-SETTINGS = _load_settings()
-
-
-def _commit_settings(**updates) -> None:
-    global SETTINGS
-    SETTINGS = SETTINGS.model_copy(update=updates)
-    _save_settings(SETTINGS)
-
-
-def _load_codroid_defaults() -> dict:
-    try:
-        settings = CodroidSettings()
-        host = settings.host
-        robot_port = settings.robot_port
-        ws_port = settings.ws_port
-    except Exception:
-        host = SETTINGS.robot_host or os.getenv(
-            "CODROID_HOST", "192.168.101.100")
-        robot_port = int(SETTINGS.robot_port or os.getenv(
-            "CODROID_ROBOT_PORT", "9000"))
-        ws_port = int(SETTINGS.user_port or os.getenv(
-            "CODROID_WS_PORT", "9098"))
-    robot_ws_url = f"ws://{host}:{robot_port}/"
-    user_ws_url = f"ws://{host}:{ws_port}/"
-    return {
-        "host": host,
-        "robot_port": robot_port,
-        "ws_port": ws_port,
-        "robot_ws_url": robot_ws_url,
-        "user_ws_url": user_ws_url,
-    }
-
-
-def _load_gripper_defaults() -> dict:
-    """Load OnRobot gripper default configuration."""
-    return {
-        "compute_box_ip": SETTINGS.gripper_ip or os.getenv("ONROBOT_CB_IP", "192.168.101.180"),
-        "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
-    }
-
-
-CODROID_DEFAULTS = _load_codroid_defaults()
-DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
-GRIPPER_DEFAULTS = _load_gripper_defaults()
-DEFAULT_GRIPPER_IP = GRIPPER_DEFAULTS["compute_box_ip"]
-
-# Override default asset paths with persisted settings when present
-if SETTINGS.calibration_bundle_path:
-    DEFAULT_BUNDLE_PATH = Path(SETTINGS.calibration_bundle_path)
-if SETTINGS.workspace_path:
-    DEFAULT_WORKSPACE_PATH = Path(SETTINGS.workspace_path)
-if SETTINGS.robot_calibration_path:
-    DEFAULT_ROBOT_CALIBRATION_PATH = Path(SETTINGS.robot_calibration_path)
 
 
 @dataclass
@@ -7708,13 +7622,19 @@ def register_callbacks(app: Dash) -> None:
             robot_calibration_path=robot_calib_path_val,
         )
 
-        CODROID_DEFAULTS = _load_codroid_defaults()
-        DEFAULT_ROBOT_URI = CODROID_DEFAULTS["robot_ws_url"]
-        GRIPPER_DEFAULTS = _load_gripper_defaults()
-        DEFAULT_GRIPPER_IP = GRIPPER_DEFAULTS["compute_box_ip"]
-        DEFAULT_BUNDLE_PATH = Path(calib_path_val)
-        DEFAULT_WORKSPACE_PATH = Path(workspace_path_val)
-        DEFAULT_ROBOT_CALIBRATION_PATH = Path(robot_calib_path_val)
+        app_settings.reload_defaults()
+        CODROID_DEFAULTS = app_settings.CODROID_DEFAULTS
+        DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
+        GRIPPER_DEFAULTS = app_settings.GRIPPER_DEFAULTS
+        DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
+        set_asset_paths(
+            calibration_bundle_path=calib_path_val,
+            workspace_path=workspace_path_val,
+            robot_calibration_path=robot_calib_path_val,
+        )
+        DEFAULT_BUNDLE_PATH = app_settings.DEFAULT_BUNDLE_PATH
+        DEFAULT_WORKSPACE_PATH = app_settings.DEFAULT_WORKSPACE_PATH
+        DEFAULT_ROBOT_CALIBRATION_PATH = app_settings.DEFAULT_ROBOT_CALIBRATION_PATH
         SESSION.config.marker_ids = (marker_a_val, marker_b_val)
         SESSION.config.marker_size_mm = marker_size_val
 
