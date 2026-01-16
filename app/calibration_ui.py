@@ -20,6 +20,18 @@ from codroid_api.robot_session import RobotPosture
 import app.settings as app_settings
 from app.settings import _commit_settings, _save_settings, reload_defaults, set_asset_paths
 from app.ui.session import CALIBRATION_PROGRESS, SESSION, _refresh_session_auto_config_defaults
+from app.calibration_ui import state
+
+# Temporary compatibility globals during refactoring Phase 1
+# These will be removed as we continue to replace references
+PLATE_STATUS = state.get_plate_status_snapshot()
+ROBOT_CALIBRATION_GUIDANCE = state.get_calibration_guidance_snapshot()
+
+def _update_compatibility_globals():
+    """Update compatibility globals to reflect current state - called periodically."""
+    global PLATE_STATUS, ROBOT_CALIBRATION_GUIDANCE
+    PLATE_STATUS = state.get_plate_status_snapshot()
+    ROBOT_CALIBRATION_GUIDANCE = state.get_calibration_guidance_snapshot()
 
 import asyncio
 import base64
@@ -147,7 +159,7 @@ def _calibration_metadata_entries() -> list[str]:
             f"Robot calibration saved: "
             f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(DEFAULT_ROBOT_CALIBRATION_PATH.stat().st_mtime))}"
         )
-    accuracy = ROBOT_CALIBRATION_GUIDANCE.get("accuracy")
+    accuracy = state.get_calibration_guidance_snapshot().get("accuracy")
     if accuracy:
         max_err = accuracy.get("max_xy_error")
         mean_err = accuracy.get("mean_xy_error")
@@ -299,31 +311,29 @@ def _set_robot_guidance(
     verification_ready: Optional[bool] = None,
     modal_suppressed: Optional[bool] = None,
 ) -> None:
-    ROBOT_CALIBRATION_GUIDANCE["message"] = message
-    if step is not None:
-        ROBOT_CALIBRATION_GUIDANCE["step"] = step
-    if status is not None:
-        ROBOT_CALIBRATION_GUIDANCE["status"] = status
-    if verification_ready is not None:
-        ROBOT_CALIBRATION_GUIDANCE["verification_ready"] = verification_ready
-    if modal_suppressed is not None:
-        ROBOT_CALIBRATION_GUIDANCE["modal_suppressed"] = modal_suppressed
+    # Use the new state module function
+    state.update_calibration_guidance(
+        message,
+        step=step,
+        status=status,
+        verification_ready=verification_ready,
+        modal_suppressed=modal_suppressed
+    )
+    
+    # Clear accuracy if status changed
     if status is not None and status not in {
         "accuracy_ready",
         "awaiting_verification",
         "verifying",
         "complete",
     }:
-        _clear_robot_accuracy_guidance()
-    ROBOT_CALIBRATION_GUIDANCE["timestamp"] = time.time()
+        state.clear_calibration_accuracy()
 
 
 def _clear_robot_accuracy_guidance() -> None:
     """Reset the cached accuracy summary so the UI hides the panel."""
     SESSION.robot_calibration_accuracy = None
-    ROBOT_CALIBRATION_GUIDANCE["accuracy"] = None
-    ROBOT_CALIBRATION_GUIDANCE["accuracy_ready"] = False
-    ROBOT_CALIBRATION_GUIDANCE["accuracy_passed"] = False
+    state.clear_calibration_accuracy()
 
 
 def _record_robot_accuracy(mean_xy_error: float, max_xy_error: float) -> dict[str, float]:
@@ -333,11 +343,7 @@ def _record_robot_accuracy(mean_xy_error: float, max_xy_error: float) -> dict[st
         "max_xy_error": float(max_xy_error),
     }
     SESSION.robot_calibration_accuracy = accuracy
-    ROBOT_CALIBRATION_GUIDANCE["accuracy"] = accuracy
-    ROBOT_CALIBRATION_GUIDANCE["accuracy_ready"] = True
-    ROBOT_CALIBRATION_GUIDANCE["accuracy_passed"] = (
-        float(max_xy_error) <= SETTINGS.verification_tolerance_mm
-    )
+    state.set_calibration_accuracy(accuracy)
     return accuracy
 
 
@@ -669,38 +675,24 @@ def _plate_is_stable(
 ) -> Tuple[bool, str]:
     if require_baseline and SESSION.robot_calibration_baseline_px is None:
         return False, "Calibration plate baseline not set."
-    if not PLATE_STATUS.get("ok"):
+    
+    # Get plate status from new state module
+    plate_status = state.get_plate_status_snapshot()
+    
+    if not plate_status.get("ok"):
         if allow_lost and SESSION.robot_calibration_baseline_px is not None:
             return True, "Plate markers not visible; waiting for re-acquire."
         return False, "Calibration plate markers are not visible."
-    movement_px = PLATE_STATUS.get("movement_px")
+    movement_px = plate_status.get("movement_px")
     if movement_px is not None and movement_px > SETTINGS.plate_movement_threshold_px:
         return False, f"Calibration plate moved ({movement_px:.1f}px)."
-    if PLATE_STATUS.get("stable") is False:
-        return False, PLATE_STATUS.get("message", "Calibration plate not stable.")
-    return True, PLATE_STATUS.get("message", "Plate markers stable.")
+    if plate_status.get("stable") is False:
+        return False, plate_status.get("message", "Calibration plate not stable.")
+    return True, plate_status.get("message", "Plate markers stable.")
 
 
-PLATE_STATUS = {
-    "count": 0,
-    "ok": False,
-    "stable": False,
-    "center_px": None,
-    "movement_px": None,
-    "timestamp": time.time(),
-    "message": "Waiting for plate markers",
-}
-ROBOT_CALIBRATION_GUIDANCE = {
-    "status": "idle",
-    "step": 0,
-    "message": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
-    "verification_ready": False,
-    "modal_suppressed": False,
-    "accuracy": None,
-    "accuracy_ready": False,
-    "accuracy_passed": False,
-    "timestamp": time.time(),
-}
+# PLATE_STATUS now managed by state.plate_tracking_state
+# ROBOT_CALIBRATION_GUIDANCE now managed by state.calibration_stepper_state
 
 
 class OperationAbort(RuntimeError):
@@ -711,155 +703,41 @@ class OperationPaused(RuntimeError):
     """Raised when an operation should pause and wait for resume."""
 
 
-OPERATION_STATE_LOCK = threading.Lock()
-OPERATION_STATE = {
-    "status": "idle",
-    "source": "",
-    "label": "",
-    "message": "Program idle.",
-    "run_id": 0,
-    "started_at": None,
-    "updated_at": time.time(),
-    "pause_reason": None,
-}
-
-ROBOT_ERROR_LOCK = threading.Lock()
-ROBOT_ERROR_STATE = {
-    "active": False,
-    "error_type": None,
-    "message": "",
-    "detected_at": None,
-    "acknowledged": False,
-    "physical_pressed": False,
-}
-
-
-def _operation_snapshot() -> dict:
-    with OPERATION_STATE_LOCK:
-        return dict(OPERATION_STATE)
-
-
-def _update_operation_state(**updates: Any) -> dict:
-    with OPERATION_STATE_LOCK:
-        OPERATION_STATE.update(updates)
-        OPERATION_STATE["updated_at"] = time.time()
-        return dict(OPERATION_STATE)
-
-
-def _begin_operation(source: str, label: str, message: Optional[str] = None) -> int:
-    with OPERATION_STATE_LOCK:
-        status = OPERATION_STATE.get("status", "idle")
-        if status in {"running", "paused"}:
-            raise RuntimeError("Another program is already running.")
-        run_id = int(OPERATION_STATE.get("run_id", 0)) + 1
-        OPERATION_STATE.update(
-            {
-                "status": "running",
-                "source": source,
-                "label": label,
-                "message": message or f"{label} running.",
-                "run_id": run_id,
-                "started_at": time.time(),
-                "pause_reason": None,
-            }
-        )
-        OPERATION_STATE["updated_at"] = time.time()
-        return run_id
-
-
-def _finish_operation(run_id: int, *, status: str, message: str) -> None:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("run_id") != run_id:
-            return
-        OPERATION_STATE.update(
-            {
-                "status": status,
-                "message": message,
-                "source": "" if status == "idle" else OPERATION_STATE.get("source", ""),
-                "label": "" if status == "idle" else OPERATION_STATE.get("label", ""),
-                "pause_reason": None,
-            }
-        )
-        if status == "idle":
-            OPERATION_STATE["started_at"] = None
-        OPERATION_STATE["updated_at"] = time.time()
-
-
-def _update_operation_message(message: str, *, label: Optional[str] = None) -> None:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("status") not in {"running", "paused"}:
-            return
-        OPERATION_STATE["message"] = message
-        if label is not None:
-            OPERATION_STATE["label"] = label
-        OPERATION_STATE["updated_at"] = time.time()
-
-
-def _pause_operation(reason: str, message: str) -> None:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("status") != "running":
-            return
-        OPERATION_STATE.update(
-            {
-                "status": "paused",
-                "pause_reason": reason,
-                "message": message,
-            }
-        )
-        OPERATION_STATE["updated_at"] = time.time()
-
-
-def _resume_operation(message: str) -> None:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("status") != "paused":
-            return
-        OPERATION_STATE.update(
-            {
-                "status": "running",
-                "pause_reason": None,
-                "message": message,
-            }
-        )
-        OPERATION_STATE["updated_at"] = time.time()
-
-
-def _request_stop_operation(message: str) -> None:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("status") not in {"running", "paused"}:
-            return
-        OPERATION_STATE.update(
-            {
-                "status": "stopping",
-                "message": message,
-            }
-        )
-        OPERATION_STATE["updated_at"] = time.time()
-
-
-def _reset_operation_state(message: str) -> None:
-    with OPERATION_STATE_LOCK:
-        OPERATION_STATE.update(
-            {
-                "status": "idle",
-                "source": "",
-                "label": "",
-                "message": message,
-                "pause_reason": None,
-                "started_at": None,
-                "run_id": int(OPERATION_STATE.get("run_id", 0)) + 1,
-            }
-        )
-        OPERATION_STATE["updated_at"] = time.time()
+# OPERATION_STATE and ROBOT_ERROR_STATE now managed by state module
+# Import helper functions for backwards compatibility
+from app.calibration_ui.state import (
+    _operation_snapshot,
+    _update_operation_state,
+    _begin_operation,
+    _finish_operation,
+    _pause_operation,
+    _update_operation_message,
+    get_operation_run_id,
+    get_operation_status,
+    is_operation_running,
+    resume_operation as _resume_operation,
+    stop_operation as _request_stop_operation,
+    finish_operation as _reset_operation_state,
+    get_error_snapshot as _error_snapshot,
+    set_error_state as _activate_robot_error,
+    clear_error_state as _clear_robot_error_state,
+    update_plate_status,
+    update_calibration_guidance,
+    clear_calibration_accuracy,
+    set_calibration_accuracy
+)
 
 
 def _operation_status(run_id: int) -> str:
-    with OPERATION_STATE_LOCK:
-        if OPERATION_STATE.get("run_id") != run_id:
-            return "superseded"
-        return OPERATION_STATE.get("status", "idle")
+    """Get operation status for a specific run_id."""
+    current_run_id = get_operation_run_id()
+    if current_run_id != run_id:
+        return "superseded"
+    return get_operation_status()
 
 
 def _ensure_operation_active(run_id: int) -> None:
+    """Check if operation is active and raise appropriate exceptions."""
     status = _operation_status(run_id)
     if status == "paused":
         raise OperationPaused("Program paused.")
@@ -868,6 +746,7 @@ def _ensure_operation_active(run_id: int) -> None:
 
 
 async def _wait_for_operation_resume(run_id: int) -> None:
+    """Wait for operation to resume or abort if stopped."""
     while True:
         status = _operation_status(run_id)
         if status == "paused":
@@ -876,57 +755,22 @@ async def _wait_for_operation_resume(run_id: int) -> None:
         if status in {"stopping", "stopped", "idle", "superseded"}:
             raise OperationAbort("Program stopped.")
         return
-
-
-def _error_snapshot() -> dict:
-    with ROBOT_ERROR_LOCK:
-        return dict(ROBOT_ERROR_STATE)
-
-
-def _update_robot_error_state(**updates: Any) -> dict:
-    with ROBOT_ERROR_LOCK:
-        ROBOT_ERROR_STATE.update(updates)
-        return dict(ROBOT_ERROR_STATE)
-
-
-def _activate_robot_error(
-    error_type: str,
-    *,
-    message: str,
-    physical_pressed: bool,
-) -> dict:
-    with ROBOT_ERROR_LOCK:
-        is_new = (
-            not ROBOT_ERROR_STATE.get("active")
-            or ROBOT_ERROR_STATE.get("error_type") != error_type
-        )
-        ROBOT_ERROR_STATE.update(
-            {
-                "active": True,
-                "error_type": error_type,
-                "message": message,
-                "detected_at": time.time(),
-                "acknowledged": False,
-                "physical_pressed": physical_pressed,
-            }
-        )
-        snapshot = dict(ROBOT_ERROR_STATE)
     if is_new:
         _pause_operation(error_type, message)
     return snapshot
 
 
 def _acknowledge_robot_error() -> dict:
-    with ROBOT_ERROR_LOCK:
-        error_type = ROBOT_ERROR_STATE.get("error_type")
-        message = ROBOT_ERROR_STATE.get("message", "")
-    return _update_robot_error_state(
-        active=False,
-        acknowledged=True,
-        error_type=error_type,
-        message=message,
-        physical_pressed=False,
-    )
+    """Acknowledge the current robot error using the new state module."""
+    error_snapshot = state.get_error_snapshot()
+    if error_snapshot.get("active"):
+        state.set_error_state(
+            error_type=error_snapshot.get("error_type", ""),
+            message=error_snapshot.get("message", ""),
+            physical_pressed=False,
+            acknowledge_existing=True
+        )
+    return state.get_error_snapshot()
 
 
 def _coerce_truthy(value: Any) -> bool:
@@ -1655,16 +1499,13 @@ def _resolve_plate_test_targets(
                 "pixel": (float(px[0]), float(px[1])),
             }
         )
-    PLATE_STATUS.update(
-        {
-            "count": len(calibration_result.detections),
-            "ok": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
-            "stable": len(calibration_result.detections) >= SETTINGS.min_plate_markers,
-            "center_px": None,
-            "movement_px": None,
-            "timestamp": time.time(),
-            "message": f"Plate markers detected: {len(calibration_result.detections)}",
-        }
+    state.update_plate_status(
+        ok=len(calibration_result.detections) >= SETTINGS.min_plate_markers,
+        stable=len(calibration_result.detections) >= SETTINGS.min_plate_markers,
+        message=f"Plate markers detected: {len(calibration_result.detections)}",
+        count=len(calibration_result.detections),
+        center_px=None,
+        movement_px=None,
     )
     return targets, {
         "count": len(calibration_result.detections),
@@ -11353,7 +11194,7 @@ def register_callbacks(app: Dash) -> None:
             "awaiting_verification",
             "verifying",
         }
-        if ROBOT_CALIBRATION_GUIDANCE.get("status") in {
+        if state.get_calibration_guidance_snapshot().get("status") in {
             "running",
             "awaiting_verification",
             "verifying",
@@ -12294,21 +12135,18 @@ def register_callbacks(app: Dash) -> None:
         Input("robot-status-interval", "n_intervals"),
     )
     def _update_robot_calibration_guidance(_intervals: int) -> str:
-        return ROBOT_CALIBRATION_GUIDANCE.get("message", "")
+        return state.get_calibration_guidance_snapshot().get("message", "")
 
     def _build_robot_calibration_state_payload() -> dict[str, Any]:
+        guidance = state.get_calibration_guidance_snapshot()
         return {
-            "status": ROBOT_CALIBRATION_GUIDANCE.get("status", "idle"),
-            "message": ROBOT_CALIBRATION_GUIDANCE.get("message", ""),
-            "step": ROBOT_CALIBRATION_GUIDANCE.get("step", 0),
-            "verification_ready": ROBOT_CALIBRATION_GUIDANCE.get(
-                "verification_ready", False
-            ),
-            "accuracy": ROBOT_CALIBRATION_GUIDANCE.get("accuracy"),
-            "accuracy_ready": ROBOT_CALIBRATION_GUIDANCE.get("accuracy_ready", False),
-            "accuracy_passed": ROBOT_CALIBRATION_GUIDANCE.get(
-                "accuracy_passed", False
-            ),
+            "status": guidance.get("status", "idle"),
+            "message": guidance.get("message", ""),
+            "step": guidance.get("step", 0),
+            "verification_ready": guidance.get("verification_ready", False),
+            "accuracy": guidance.get("accuracy"),
+            "accuracy_ready": guidance.get("accuracy_ready", False),
+            "accuracy_passed": guidance.get("accuracy_passed", False),
         }
 
     @app.callback(

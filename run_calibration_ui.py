@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import logging
 
-from app.calibration_ui import create_app
+import sys
+sys.path.append('app')
+import calibration_ui
 
 
 def main() -> None:
@@ -31,7 +33,7 @@ def main() -> None:
     logging.getLogger('websockets').setLevel(logging.INFO)
     logging.getLogger('websockets.client').setLevel(logging.INFO)
 
-    app = create_app()
+    app = calibration_ui.create_app()
     app.run(
         host=args.host,
         port=args.port,

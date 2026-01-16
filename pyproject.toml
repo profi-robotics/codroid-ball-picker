@@ -23,6 +23,7 @@ dependencies = [
     "torchvision>=0.15.0",
     "nvidia-ml-py>=12.560.30",
     "psutil>=6.1.0",
+    "pydantic>=2.12.5",
 ]
 
 [tool.uv.sources]
