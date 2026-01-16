@@ -5,9 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 
+import importlib.util
 import sys
-sys.path.append('app')
-import calibration_ui
+
+# Load calibration_ui.py directly to avoid package/module naming conflict
+spec = importlib.util.spec_from_file_location("calibration_ui_main", "app/calibration_ui.py")
+calibration_ui = importlib.util.module_from_spec(spec)
+# Add to sys.modules to fix @dataclass decorator issues
+sys.modules["calibration_ui_main"] = calibration_ui
+spec.loader.exec_module(calibration_ui)
 
 
 def main() -> None:
