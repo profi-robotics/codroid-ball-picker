@@ -11184,10 +11184,10 @@ def register_callbacks(app: Dash) -> None:
         robot_conn_state: Optional[dict],
         calib_state: Optional[dict],
     ) -> Tuple[str, str, bool, str]:
-        state = plate_state or {}
-        count = state.get("count", 0)
-        ok = bool(state.get("ok"))
-        stable = bool(state.get("stable", ok))
+        plate_data = plate_state or {}
+        count = plate_data.get("count", 0)
+        ok = bool(plate_data.get("ok"))
+        stable = bool(plate_data.get("stable", ok))
         calib_status = (calib_state or {}).get("status")
         in_progress = calib_status in {
             "running",
