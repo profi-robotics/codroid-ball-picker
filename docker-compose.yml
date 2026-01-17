@@ -12,8 +12,18 @@ services:
     ports:
       - "8050:8050"
     devices:
-      - "/dev/bus/usb:/dev/bus/usb"   # OAK-D / USB devices
-      - "/dev/video0:/dev/video0"     # Optional: camera passthrough
+      - "/dev/bus/usb:/dev/bus/usb" # OAK-D / USB devices
+      - "/dev/video0:/dev/video0" # Optional: camera passthrough
     volumes:
-      - ./data:/app/data              # persist calibration/workspace data
-    command: ["uv", "run", "python", "run_calibration_ui.py", "--host", "0.0.0.0", "--port", "8050"]
+      - ./data:/app/data # persist calibration/workspace data
+    command:
+      [
+        "uv",
+        "run",
+        "python",
+        "run_codroid_picker.py",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8050",
+      ]

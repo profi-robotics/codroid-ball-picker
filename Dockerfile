@@ -12,16 +12,16 @@ WORKDIR /app
 
 # System deps for opencv, depthai, and general build tooling
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      curl \
-      git \
-      libglib2.0-0 \
-      libgl1-mesa-glx \
-      libusb-1.0-0 \
-      python3-dev \
-      python3-pip \
-      python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+  apt-get install -y --no-install-recommends \
+  curl \
+  git \
+  libglib2.0-0 \
+  libgl1-mesa-glx \
+  libusb-1.0-0 \
+  python3-dev \
+  python3-pip \
+  python3-venv \
+  && rm -rf /var/lib/apt/lists/*
 
 # Install uv (pinned)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --version ${UV_VERSION}
@@ -38,4 +38,4 @@ COPY . .
 EXPOSE 8050
 
 # Run the Dash UI
-CMD ["uv", "run", "python", "run_calibration_ui.py", "--host", "0.0.0.0", "--port", "8050"]
+CMD ["uv", "run", "python", "run_codroid_picker.py", "--host", "0.0.0.0", "--port", "8050"]

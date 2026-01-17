@@ -9,7 +9,7 @@ robot motion commands.
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
 - `robot/` – WebSocket client, gripper control (OnRobot 2FG7), and command catalog extracted from browser traffic.
 - `app/` – orchestration logic that ties vision outputs to robot commands, now powering the Dash UI.
-- `run_calibration_ui.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
+- `run_codroid_picker.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 - `docs/` – integration guides for gripper and other peripherals.
@@ -33,7 +33,7 @@ robot motion commands.
    ```
 5. Launch the Dash calibration console:
    ```bash
-   python run_calibration_ui.py --debug
+   python run_codroid_picker.py --debug
    ```
    Use the Setup drawer to start the camera stream, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart.
 
@@ -61,7 +61,7 @@ camera, detection, and robot flows together. It provides:
 
 Run it locally with:
 ```bash
-python run_calibration_ui.py --debug
+python run_codroid_picker.py --debug
 ```
 Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
 connectivity follow the `codroid-api` settings (env `CODROID_HOST` and

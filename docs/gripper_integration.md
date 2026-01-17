@@ -47,7 +47,7 @@ To install dependencies:
 uv install
 ```
 
-1. Launch the calibration UI: `python run_calibration_ui.py`
+1. Launch the calibration UI: `python run_codroid_picker.py`
 2. Click **Setup** in the header
 3. Scroll to the **OnRobot 2FG7 Gripper** section
 4. Enter the Compute Box IP address

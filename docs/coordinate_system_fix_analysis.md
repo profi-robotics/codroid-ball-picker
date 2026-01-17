@@ -69,14 +69,14 @@ Current Plate Frame -----r2, t2 adjustment----------> [should map to base]
 
 ### Changes Made
 
-#### 1. Default Coordinate System (`app/calibration_ui.py:95`)
+#### 1. Default Coordinate System (`app/main.py:95`)
 ```python
 # Changed from True to False
 PLATE_TEST_USE_BASE_COORDINATES = False
 ```
 Now defaults to coordinate system 5 as required.
 
-#### 2. Target Coordinate Storage (`app/calibration_ui.py:1343-1360`)
+#### 2. Target Coordinate Storage (`app/main.py:1343-1360`)
 Modified `_resolve_plate_test_coord5_targets()` to store BOTH coordinate frames:
 
 ```python
@@ -94,14 +94,14 @@ targets.append({
 - Use `reference_xy` with coordinate system 5 (static frame)
 - Use `adjusted_xy` with base coordinates (dynamic tracking)
 
-#### 3. Plate Pick Test Coordinate Selection (`app/calibration_ui.py:6378-6383`)
+#### 3. Plate Pick Test Coordinate Selection (`app/main.py:6378-6383`)
 ```python
 # Use reference coordinates for coord system 5 (static frame)
 # Use adjusted coordinates for base system (accounts for plate movement)
 coord_xy = target["reference_xy"] if not use_base_coordinates else target["adjusted_xy"]
 ```
 
-#### 4. Robot Calibration Verification (`app/calibration_ui.py:8020-8155`)
+#### 4. Robot Calibration Verification (`app/main.py:8020-8155`)
 Updated verification to use coordinate system 5:
 
 - Loads plate layout to compute coordinate system 5 positions
@@ -176,7 +176,7 @@ This adjustment is ONLY valid for base coordinate movements, not coordinate syst
 
 ## Related Files
 
-- `/Users/levko/repos/codroid-ball-picker/app/calibration_ui.py`: Main implementation
+- `/Users/levko/repos/codroid-ball-picker/app/main.py`: Main implementation
 - `/Users/levko/repos/codroid-ball-picker/data/markers/robot_calibration/calibration_plate_layout.json`: Plate layout definition
 - `/Users/levko/repos/codroid-ball-picker/vision/plate.py`: Plate detection and coordinate computation
 - `/Users/levko/repos/codroid-ball-picker/vision/workspace.py`: Workspace coordinate definitions

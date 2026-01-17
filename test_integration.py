@@ -19,15 +19,15 @@ except ImportError as e:
     print(f"   ✗ Import failed: {e}")
     sys.exit(1)
 
-# Test 2: Verify calibration_ui.py compiles
-print("\n2. Testing calibration_ui.py syntax...")
+# Test 2: Verify main.py compiles
+print("\n2. Testing main.py syntax...")
 try:
-    with open('app/calibration_ui.py', 'r') as f:
+    with open('app/main.py', 'r') as f:
         code = f.read()
         ast.parse(code)
-    print("   ✓ calibration_ui.py syntax is valid")
+    print("   ✓ main.py syntax is valid")
 except SyntaxError as e:
-    print(f"   ✗ Syntax error in calibration_ui.py: {e}")
+    print(f"   ✗ Syntax error in main.py: {e}")
     sys.exit(1)
 
 # Test 3: Verify onrobot package structure
@@ -61,11 +61,11 @@ else:
     print("   ✗ getCB() method not found")
     sys.exit(1)
 
-# Test 6: Verify gripper imports in calibration_ui
-print("\n6. Testing gripper imports in calibration_ui.py...")
+# Test 6: Verify gripper imports in main.py
+print("\n6. Testing gripper imports in main.py...")
 try:
     # Check that the file contains the correct imports
-    with open('app/calibration_ui.py', 'r') as f:
+    with open('app/main.py', 'r') as f:
         content = f.read()
         if 'from onrobot.device import Device as GripperDevice' in content:
             print("   ✓ GripperDevice import found")

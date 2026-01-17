@@ -1,12 +1,10 @@
 identifier = "codroid.bootstrap"
 app_version = "0.1.0"
 
-prepare_container = [
-    { type = "RUN", command = "uv install" },
-]
+prepare_container = [{ type = "RUN", command = "uv install" }]
 
 build_steps = []
 
-entrypoint = ["bash", "-c", "python run_calibration_ui.py --debug"]
+entrypoint = ["bash", "-c", "python run_codroid_picker.py --debug"]
 
 publish = false

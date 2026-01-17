@@ -27,7 +27,8 @@ class OperationState(BaseModel):
 class ErrorState(BaseModel):
     """Tracks robot error conditions (emergency stop, overspeed, etc)."""
     active: bool = False
-    error_type: Optional[str] = None  # emergency, overspeed, joint_protection, wrong_tool, drag
+    # emergency, overspeed, joint_protection, wrong_tool, drag
+    error_type: Optional[str] = None
     message: str = ""
     detected_at: Optional[float] = None
     acknowledged: bool = False
@@ -120,7 +121,7 @@ def begin_operation(source: str, label: str, message: Optional[str] = None) -> i
     with _operation_lock:
         if operation_state.status in {"running", "paused"}:
             raise RuntimeError("Another program is already running.")
-        
+
         operation_state.run_id += 1
         operation_state.status = "running"
         operation_state.source = source
@@ -129,7 +130,7 @@ def begin_operation(source: str, label: str, message: Optional[str] = None) -> i
         operation_state.started_at = time.time()
         operation_state.updated_at = time.time()
         operation_state.pause_reason = None
-        
+
         return operation_state.run_id
 
 
@@ -138,12 +139,12 @@ def finish_operation(run_id: int, *, status: str, message: str) -> None:
     with _operation_lock:
         if operation_state.run_id != run_id:
             return  # Operation was superseded
-            
+
         operation_state.status = status
         operation_state.message = message
         operation_state.updated_at = time.time()
         operation_state.pause_reason = None
-        
+
         if status == "idle":
             operation_state.source = ""
             operation_state.label = ""
@@ -251,7 +252,7 @@ def update_calibration_guidance(
 ) -> None:
     """Update robot calibration guidance state."""
     calibration_stepper_state.message = message
-    
+
     if step is not None:
         calibration_stepper_state.step = step
     if status is not None:
@@ -260,7 +261,7 @@ def update_calibration_guidance(
         calibration_stepper_state.verification_ready = verification_ready
     if modal_suppressed is not None:
         calibration_stepper_state.modal_suppressed = modal_suppressed
-    
+
     calibration_stepper_state.timestamp = time.time()
 
 
@@ -277,7 +278,7 @@ def set_calibration_accuracy(accuracy: Dict[str, float]) -> None:
     calibration_stepper_state.accuracy_ready = True
     calibration_stepper_state.accuracy_passed = all(
         v <= threshold for v, threshold in zip(
-            accuracy.values(), 
+            accuracy.values(),
             [2.0, 2.0, 2.0]  # mm thresholds for x, y, z
         )
     )
@@ -286,6 +287,20 @@ def set_calibration_accuracy(accuracy: Dict[str, float]) -> None:
 def get_calibration_guidance_snapshot() -> dict:
     """Get calibration guidance state snapshot."""
     return calibration_stepper_state.model_dump()
+
+
+def build_robot_calibration_state_payload() -> dict:
+    """Build robot calibration state payload for UI callbacks."""
+    guidance = get_calibration_guidance_snapshot()
+    return {
+        "status": guidance.get("status", "idle"),
+        "message": guidance.get("message", ""),
+        "step": guidance.get("step", 0),
+        "verification_ready": guidance.get("verification_ready", False),
+        "accuracy": guidance.get("accuracy"),
+        "accuracy_ready": guidance.get("accuracy_ready", False),
+        "accuracy_passed": guidance.get("accuracy_passed", False),
+    }
 
 
 # Plate tracking helpers
@@ -303,7 +318,7 @@ def update_plate_status(
     plate_tracking_state.stable = stable
     plate_tracking_state.message = message
     plate_tracking_state.timestamp = time.time()
-    
+
     if count is not None:
         plate_tracking_state.count = count
     if center_px is not None:

@@ -8,12 +8,13 @@ import logging
 import importlib.util
 import sys
 
-# Load calibration_ui.py directly to avoid package/module naming conflict
-spec = importlib.util.spec_from_file_location("calibration_ui_main", "app/calibration_ui.py")
-calibration_ui = importlib.util.module_from_spec(spec)
+# Load main.py directly to avoid package/module naming conflict
+spec = importlib.util.spec_from_file_location(
+    "codroid_picker_main", "app/main.py")
+codroid_picker = importlib.util.module_from_spec(spec)
 # Add to sys.modules to fix @dataclass decorator issues
-sys.modules["calibration_ui_main"] = calibration_ui
-spec.loader.exec_module(calibration_ui)
+sys.modules["codroid_picker_main"] = codroid_picker
+spec.loader.exec_module(codroid_picker)
 
 
 def main() -> None:
@@ -39,7 +40,7 @@ def main() -> None:
     logging.getLogger('websockets').setLevel(logging.INFO)
     logging.getLogger('websockets.client').setLevel(logging.INFO)
 
-    app = calibration_ui.create_app()
+    app = codroid_picker.create_app()
     app.run(
         host=args.host,
         port=args.port,

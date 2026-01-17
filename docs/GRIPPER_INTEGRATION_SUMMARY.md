@@ -25,7 +25,7 @@ Comprehensive documentation including:
 #### `robot/__init__.py`
 - Added exports for `GripperDevice` and `TwoFG7Gripper`
 
-#### `app/calibration_ui.py`
+#### `app/main.py`
 Multiple enhancements:
 
 **Imports:**
@@ -87,7 +87,7 @@ export ONROBOT_T_INDEX="0"
 
 ### Setup Phase
 
-1. Launch calibration UI: `python run_calibration_ui.py`
+1. Launch calibration UI: `python run_codroid_picker.py`
 2. Click **Setup** button in header
 3. Scroll to **OnRobot 2FG7 Gripper** section
 4. Enter Compute Box IP address (default: 192.168.101.180)
