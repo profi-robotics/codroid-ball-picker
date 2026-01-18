@@ -169,18 +169,18 @@ def _publish_raw_frame(frame: np.ndarray) -> None:
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float],
                         lock_af: bool = False, frame_hook: Optional[Callable] = None) -> str:
     """Start the camera stream with the specified configuration."""
+    stop_camera_stream()
+
+    # Get default values
+    from app.settings import DEFAULT_RESOLUTION, DEFAULT_FPS
+    resolution = (safe_int(width, DEFAULT_RESOLUTION[0]), safe_int(
+        height, DEFAULT_RESOLUTION[1]))
+    fps_value = safe_float(fps, DEFAULT_FPS)
+
+    # Default to publishing to RAW_STREAM if no hook is provided
+    hook = frame_hook if frame_hook is not None else _publish_raw_frame
+
     try:
-        stop_camera_stream()
-
-        # Get default values
-        from app.settings import DEFAULT_RESOLUTION, DEFAULT_FPS
-        resolution = (safe_int(width, DEFAULT_RESOLUTION[0]), safe_int(
-            height, DEFAULT_RESOLUTION[1]))
-        fps_value = safe_float(fps, DEFAULT_FPS)
-
-        # Default to publishing to RAW_STREAM if no hook is provided
-        hook = frame_hook if frame_hook is not None else _publish_raw_frame
-
         # Create and start stream
         stream = DepthAIFrameStream(
             StreamConfig(resolution=resolution,
@@ -195,7 +195,8 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
 
     except Exception as exc:
         LOGGER.error("Failed to start camera stream: %s", exc)
-        return f"Failed to start camera: {exc}"
+        # Re-raise the exception so the callback can handle it properly
+        raise
 
 
 def stop_camera_stream() -> None:

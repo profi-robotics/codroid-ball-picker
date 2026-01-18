@@ -136,3 +136,35 @@ def _detect_drag_not_allowed_status(status: dict) -> bool:
     if isinstance(nested, dict) and _status_flag(nested, drag_keys):
         return True
     return _alarm_contains(status, ("drag not allowed",))
+
+
+# Error state management wrappers
+def _activate_robot_error(
+    error_type: str,
+    *,
+    message: str,
+    physical_pressed: bool = False,
+) -> dict:
+    """Activate a robot error state and return the snapshot."""
+    from app.codroid_picker import state
+    state.set_error_state(error_type, message, physical_pressed=physical_pressed)
+    return state.get_error_snapshot()
+
+
+def _error_snapshot() -> dict:
+    """Get the current error state snapshot."""
+    from app.codroid_picker import state
+    return state.get_error_snapshot()
+
+
+def _update_robot_error_state(*, physical_pressed: bool) -> dict:
+    """Update the physical_pressed flag on an existing error and return snapshot."""
+    from app.codroid_picker import state
+    state.set_error_state(
+        state.error_state.error_type or "unknown",
+        state.error_state.message or "",
+        physical_pressed=physical_pressed,
+        acknowledge_existing=True,
+    )
+    return state.get_error_snapshot()
+

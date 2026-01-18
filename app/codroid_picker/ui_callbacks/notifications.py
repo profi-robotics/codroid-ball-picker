@@ -36,11 +36,25 @@ def register_notification_callbacks(app: Dash) -> None:
             if prev.get(name) == status:
                 return
             current[name] = status
-            color = "teal"
-            title = f"{name.capitalize()} connected"
-            if status in ("error", "off"):
-                color = "red" if status == "error" else "gray"
+
+            # Determine notification color and title based on status
+            if status == "live":
+                color = "teal"
+                title = f"{name.capitalize()} connected"
+            elif status == "unavailable":
+                color = "orange"
+                title = f"{name.capitalize()} unavailable"
+            elif status == "error":
+                color = "red"
+                title = f"{name.capitalize()} error"
+            elif status == "off":
+                color = "gray"
                 title = f"{name.capitalize()} disconnected"
+            else:
+                # Default for unknown statuses
+                color = "gray"
+                title = f"{name.capitalize()} status changed"
+
             notifications.append(
                 {
                     "action": "show",

@@ -9,8 +9,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from dash import html
-
 from app.codroid_picker.app_instance import registry
 
 if TYPE_CHECKING:
@@ -37,10 +35,24 @@ async def _with_robot_api(
 
 async def _ensure_robot_coord5_for_uri(uri: str | None) -> None:
     """Switch the robot to CoordinateId 5 via the provided URI."""
-    from app.codroid_picker.robot_motion import ensure_coordinate5_active
+    from app.codroid_picker.procedures import _ensure_coordinate5_active
 
     async def _activate(api: "CodroidAPI") -> None:
-        await ensure_coordinate5_active(api)
+        await _ensure_coordinate5_active(api)
 
     default_uri = registry().default_robot_uri
     await _with_robot_api(uri or default_uri, _activate)
+
+
+def _log_move_target(
+    label: str,
+    target_pose: dict,
+    *,
+    coordinate_id: int | None = None,
+) -> None:
+    """Log a robot move target for debugging purposes."""
+    coord_info = f" (coord={coordinate_id})" if coordinate_id is not None else ""
+    pos_str = ", ".join(f"{k}={v:.2f}" for k, v in target_pose.items() if isinstance(v, (int, float)))
+    LOGGER.debug("Move target [%s]%s: %s", label, coord_info, pos_str)
+
+

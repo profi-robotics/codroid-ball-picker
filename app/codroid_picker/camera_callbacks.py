@@ -18,7 +18,7 @@ import dash_mantine_components as dmc
 from dash import callback_context, Dash, html, Input, Output, State
 
 from app.codroid_picker.session import CALIBRATION_PROGRESS, SESSION
-from app.codroid_picker.streaming import OverlayResult, OverlayTask, start_camera_stream, stop_camera_stream
+from app.codroid_picker.streaming import OverlayResult, OverlayTask, start_camera_stream, stop_camera_stream, MJPEG_STREAM, FRAME_PROCESSOR
 from app.codroid_picker.utils import safe_float, safe_int, safe_path
 from app.settings import (DEFAULT_BOARD_PATH, DEFAULT_BUNDLE_PATH, DEFAULT_CAPTURE_DIR, DEFAULT_PLATE_PATH, SETTINGS)
 from vision.camera_check import list_oak_devices
@@ -87,32 +87,28 @@ def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tupl
 
 def _refresh_plate_status(frame: Any, plate_path: Path) -> None:
     """Refresh plate tracking status from frame."""
-    # Import parent module to access PLATE_STATUS
-    import app.codroid_picker as codroid_picker_module
-
+    from app.codroid_picker import state
     from vision.plate import track_plate
 
     try:
         result = track_plate(frame, plate_path)
-        codroid_picker_module.PLATE_STATUS.update({
-            "count": result.marker_count,
-            "ok": result.all_detected,
-            "stable": result.is_stable,
-            "center_px": result.center_px,
-            "movement_px": result.movement_px,
-            "timestamp": time.time(),
-            "message": result.status_message,
-        })
+        state.update_plate_status(
+            count=result.marker_count,
+            ok=result.all_detected,
+            stable=result.is_stable,
+            center_px=result.center_px,
+            movement_px=result.movement_px,
+            message=result.status_message,
+        )
     except Exception as exc:
-        codroid_picker_module.PLATE_STATUS.update({
-            "count": 0,
-            "ok": False,
-            "stable": False,
-            "center_px": None,
-            "movement_px": None,
-            "timestamp": time.time(),
-            "message": f"Plate tracking error: {exc}",
-        })
+        state.update_plate_status(
+            count=0,
+            ok=False,
+            stable=False,
+            center_px=None,
+            movement_px=None,
+            message=f"Plate tracking error: {exc}",
+        )
 
 
 def _format_detection_metrics() -> str:
@@ -217,6 +213,21 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                     {"status": "live", "message": status},
                     False,
+                )
+            except RuntimeError as exc:
+                # Handle specific case of no devices
+                if "No available devices" in str(exc):
+                    error = "No OAK-D camera detected. Ensure device is connected and powered on."
+                else:
+                    error = f"Camera error: {exc}"
+                stop_camera_stream()
+                return (
+                    error,
+                    "Camera: unavailable",
+                    "orange",
+                    False,
+                    {"status": "unavailable", "message": error},
+                    True,
                 )
             except Exception as exc:
                 stop_camera_stream()
@@ -437,11 +448,13 @@ def register_camera_callbacks(app: Dash) -> None:
 
         if frame is None:
             # Don't add placeholder to MJPEG stream - let video element show its poster image
-            # Only log every 30 calls to reduce noise
-            if _ticks % 30 == 0:
+            # Only log occasionally to reduce noise (every 300 intervals = ~30 seconds at default interval)
+            if _ticks % 300 == 0:
                 is_running = SESSION.camera_stream and SESSION.camera_stream.is_running()
-                logging.info(
-                    "No frame from camera. Stream running: %s", is_running)
+                if is_running:
+                    # Only log if stream claims to be running but we're not getting frames
+                    logging.warning(
+                        "No frame from camera despite stream running: %s", is_running)
             return (
                 "Camera stream is stopped.",
                 overlay_fps_text,
@@ -522,7 +535,10 @@ def register_camera_callbacks(app: Dash) -> None:
             "none": "Overlay: Off",
         }.get(requested_overlay, "Overlay: Auto")
         status_text = f"{mode_label} · {status_text}"
-        plate_state = PLATE_STATUS.copy()
+
+        # Get plate status from state module
+        from app.codroid_picker import state
+        plate_state = state.get_plate_status_snapshot()
 
         if tab == "calibration":
             if calibration_step == 0:

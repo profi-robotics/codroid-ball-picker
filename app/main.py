@@ -25,7 +25,7 @@ from app.codroid_picker.persistence import (
     _restore_persisted_state,
 )
 from app.codroid_picker.robot_callbacks import register_robot_callbacks
-from app.codroid_picker.session import SESSION
+from app.codroid_picker.session import SESSION, GripperDevice  # noqa: F401 - used via globals()
 # Import functions that were extracted to modules but are still accessed via codroid_picker_module
 from app.codroid_picker.streaming import (
     MJPEG_STREAM,
@@ -33,6 +33,87 @@ from app.codroid_picker.streaming import (
 )
 from app.codroid_picker.ui_callbacks import register_ui_callbacks
 from app.codroid_picker.video_routes import register_video_routes
+
+# noqa: F401 - The following imports are used dynamically via globals()
+from app.codroid_picker.procedures import (  # noqa: F401
+    _get_robot_session,
+    _current_coordinate_id,
+    _robot_to_workspace_mm,
+    _robot_calibration_path,
+    _robot_posture_ready,
+    _ensure_coordinate5_active,
+)
+from app.codroid_picker.error_detection import (  # noqa: F401
+    _detect_emergency_stop_status,
+    _detect_overspeed_status,
+    _detect_joint_protection_status,
+    _detect_wrong_tool_status,
+    _detect_drag_not_allowed_status,
+    _detect_rescue_mode_status,
+    _activate_robot_error,
+    _error_snapshot,
+    _update_robot_error_state,
+)
+from codroid_api import (  # noqa: F401
+    CodroidAPI,
+    RobotSession,
+    DEFAULT_FLANGE_BUTTON_PORTS,
+)
+from app.codroid_picker.utils.safe_types import (  # noqa: F401
+    safe_int as _safe_int,
+    safe_float as _safe_float,
+    safe_path as _safe_path,
+)
+from app.codroid_picker.session import TwoFG7Gripper  # noqa: F401
+from app.codroid_picker.robot_utils import (  # noqa: F401
+    _probe_robot,
+    _with_robot_api,
+    _ensure_robot_coord5_for_uri,
+    _log_move_target,
+)
+from app.codroid_picker.transforms import (  # noqa: F401
+    _coord5_to_workspace_mm,
+    _pose_from_coord5_mm,
+)
+from app.codroid_picker.persistence import (  # noqa: F401
+    _save_drop_target,
+)
+from app.codroid_picker.state import (  # noqa: F401
+    _begin_operation,
+    _finish_operation,
+    _operation_snapshot,
+)
+from app.codroid_picker.calibration_menu import (  # noqa: F401
+    _calibration_data_complete,
+    _calibration_metadata_entries,
+    _reset_calibration_assets,
+    _camera_calibration_path,
+    _refresh_calibration_menu_visibility,
+)
+from app.codroid_picker.gripper_utils import (  # noqa: F401
+    refresh_gripper_constants,
+)
+from app.codroid_picker.models import (  # noqa: F401
+    save_uploaded_model,
+)
+from app.codroid_picker.camera_calibration import (  # noqa: F401
+    get_latest_frame,
+    load_calibration_bundle,
+    load_workspace_definition,
+    compute_workspace_from_latest,
+    _clear_workspace_definition,
+)
+from app.codroid_picker.auto_operation import (  # noqa: F401
+    _auto_state_snapshot,
+    _format_detection_list,
+    _run_detection,
+)
+from app.settings import (  # noqa: F401
+    _save_settings,
+    _commit_settings,
+    set_asset_paths,
+    reload_defaults,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -137,7 +218,7 @@ globals_to_expose = [
 
     # Helper functions
     '_safe_float', '_safe_int', '_safe_path', '_model_options',
-    '_with_robot_api', '_get_robot_session',
+    '_probe_robot', '_with_robot_api', '_get_robot_session',
     '_current_coordinate_id', '_ensure_robot_coord5_for_uri',
     '_coord5_to_workspace_mm', '_robot_to_workspace_mm',
     '_pose_from_coord5_mm',
@@ -163,13 +244,13 @@ globals_to_expose = [
     '_detect_emergency_stop_status', '_detect_overspeed_status',
     '_detect_joint_protection_status', '_detect_wrong_tool_status',
     '_detect_drag_not_allowed_status', '_detect_rescue_mode_status',
-    '_activate_robot_error', '_error_snapshot',
+    '_activate_robot_error', '_error_snapshot', '_update_robot_error_state',
 
     # Auto operation functions
-    '_auto_state_snapshot',
+    '_auto_state_snapshot', '_format_detection_list', '_run_detection',
 
     # API classes
-    'CodroidAPI', 'RobotSession', 'GripperDevice',
+    'CodroidAPI', 'RobotSession', 'GripperDevice', 'TwoFG7Gripper',
 
     # Settings functions
     'set_asset_paths', 'reload_defaults',
