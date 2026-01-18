@@ -6,6 +6,74 @@ import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _notify(title: str, message: str, color: str, auto_close: int = 5000) -> dmc.Notification:
+    """Build a Notification with consistent defaults."""
+    import app.codroid_picker as codroid_picker_module
+    return codroid_picker_module.dmc.Notification(
+        action="show",
+        title=title,
+        message=message,
+        color=color,
+        autoClose=auto_close,
+    )
+
+
+def _run_robot_action_with_notification(
+    robot_uri: Optional[str],
+    action_fn,
+    *,
+    success_title: str,
+    success_message: str,
+    success_color: str,
+    failure_title: str,
+) -> Tuple[dict, dmc.Notification]:
+    """Execute a robot API action and return state/no_update plus notification."""
+    import app.codroid_picker as codroid_picker_module
+
+    async def _runner() -> Tuple[dict, dmc.Notification]:
+        try:
+            await codroid_picker_module._with_robot_api(
+                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
+                action_fn,
+            )
+            snapshot = codroid_picker_module._acknowledge_robot_error()
+            return snapshot, _notify(success_title, success_message, success_color)
+        except Exception as exc:  # noqa: BLE001
+            codroid_picker_module.LOGGER.exception(failure_title)
+            return (
+                codroid_picker_module.no_update,
+                _notify(failure_title, str(exc), "red", auto_close=7000),
+            )
+
+    return _runner()
+
+
+def _create_modal_update_callback(
+    error_type: str,
+    default_message: str,
+) -> Callable[[Optional[dict]], Tuple[bool, str]]:
+    """Create a reusable modal update callback for error modals.
+
+    Args:
+        error_type: The error type identifier (e.g., "overspeed")
+        default_message: Default message when none is provided
+
+    Returns:
+        A callback handler function that returns (opened, message).
+    """
+    def _handler(error_state: Optional[dict]) -> Tuple[bool, str]:
+        state = error_state or {}
+        active = bool(state.get("active")) and state.get("error_type") == error_type
+        message = state.get("message") or default_message
+        return active, message
+
+    return _handler
+
+
 def _create_simple_error_handler(
     error_type: str,
     clear_action_id: str,
@@ -44,52 +112,31 @@ def _create_simple_error_handler(
             await method()
 
         if trigger == clear_action_id:
-            try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _clear
-                )
-                snapshot = codroid_picker_module._acknowledge_robot_error()
+            snapshot, note = await _run_robot_action_with_notification(
+                robot_uri,
+                _clear,
+                success_title=f"{error_name} cleared",
+                success_message="Recovery sequence sent. Program remains paused.",
+                success_color="orange",
+                failure_title=f"Failed to clear {error_name.lower()}",
+            )
+            if snapshot is not codroid_picker_module.no_update:
                 codroid_picker_module._pause_operation(
                     error_type, f"Paused after {error_name.lower()} clear."
                 )
-                return (
-                    snapshot,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title=f"{error_name} cleared",
-                        message="Recovery sequence sent. Program remains paused.",
-                        color="orange",
-                        autoClose=5000,
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.LOGGER.exception(
-                    f"Failed to clear {error_name.lower()}")
-                return (
-                    codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title=f"{error_name} clear failed",
-                        message=str(exc),
-                        color="red",
-                        autoClose=7000,
-                    ),
-                )
+            return snapshot, note
+
         if trigger == stay_paused_action_id:
             snapshot = codroid_picker_module._acknowledge_robot_error()
             codroid_picker_module._pause_operation(
                 error_type,
                 f"Paused after {error_name.lower()} acknowledgment.",
             )
-            return (
-                snapshot,
-                codroid_picker_module.dmc.Notification(
-                    action="show",
-                    title=f"{error_name} acknowledged",
-                    message="Program remains paused.",
-                    color="yellow",
-                    autoClose=4500,
-                ),
+            return snapshot, _notify(
+                f"{error_name} acknowledged",
+                "Program remains paused.",
+                "yellow",
+                auto_close=4500,
             )
 
         return codroid_picker_module.no_update, codroid_picker_module.no_update
@@ -101,6 +148,7 @@ def register_error_handling_callbacks(app: Dash) -> None:
     """Register error handling modal and response callbacks."""
 
     # === Modal Updates ===
+    # Note: emergency_stop modal needs special handling for physical_pressed flag
 
     @app.callback(
         Output("emergency-stop-modal", "opened"),
@@ -118,61 +166,43 @@ def register_error_handling_callbacks(app: Dash) -> None:
         physical_pressed = bool(state.get("physical_pressed"))
         return active, message, physical_pressed
 
-    @app.callback(
+    # Use factory for standard 2-output modal callbacks
+    _overspeed_handler = _create_modal_update_callback(
+        "overspeed", "Overspeed alarm detected."
+    )
+    _joint_protection_handler = _create_modal_update_callback(
+        "joint_protection", "Joint protection warning detected."
+    )
+    _wrong_tool_handler = _create_modal_update_callback(
+        "wrong_tool", "Tool/payload mismatch detected."
+    )
+    _drag_not_allowed_handler = _create_modal_update_callback(
+        "drag_not_allowed", "Drag not allowed warning detected."
+    )
+
+    app.callback(
         Output("overspeed-modal", "opened"),
         Output("overspeed-modal-text", "children"),
         Input("robot-error-state", "data"),
-    )
-    def _update_overspeed_modal(
-        error_state: Optional[dict],
-    ) -> Tuple[bool, str]:
-        state = error_state or {}
-        active = bool(state.get("active")) and state.get(
-            "error_type") == "overspeed"
-        message = state.get("message") or "Overspeed alarm detected."
-        return active, message
+    )(_overspeed_handler)
 
-    @app.callback(
+    app.callback(
         Output("joint-protection-modal", "opened"),
         Output("joint-protection-modal-text", "children"),
         Input("robot-error-state", "data"),
-    )
-    def _update_joint_protection_modal(
-        error_state: Optional[dict],
-    ) -> Tuple[bool, str]:
-        state = error_state or {}
-        active = bool(state.get("active")) and state.get(
-            "error_type") == "joint_protection"
-        message = state.get("message") or "Joint protection warning detected."
-        return active, message
+    )(_joint_protection_handler)
 
-    @app.callback(
+    app.callback(
         Output("wrong-tool-modal", "opened"),
         Output("wrong-tool-modal-text", "children"),
         Input("robot-error-state", "data"),
-    )
-    def _update_wrong_tool_modal(
-        error_state: Optional[dict],
-    ) -> Tuple[bool, str]:
-        state = error_state or {}
-        active = bool(state.get("active")) and state.get(
-            "error_type") == "wrong_tool"
-        message = state.get("message") or "Tool/payload mismatch detected."
-        return active, message
+    )(_wrong_tool_handler)
 
-    @app.callback(
+    app.callback(
         Output("drag-not-allowed-modal", "opened"),
         Output("drag-not-allowed-modal-text", "children"),
         Input("robot-error-state", "data"),
-    )
-    def _update_drag_not_allowed_modal(
-        error_state: Optional[dict],
-    ) -> Tuple[bool, str]:
-        state = error_state or {}
-        active = bool(state.get("active")) and state.get(
-            "error_type") == "drag_not_allowed"
-        message = state.get("message") or "Drag not allowed warning detected."
-        return active, message
+    )(_drag_not_allowed_handler)
 
     # === Response Handlers ===
 
@@ -200,34 +230,14 @@ def register_error_handling_callbacks(app: Dash) -> None:
         async def _clear(api) -> None:
             await api.clear_emergency_stop()
 
-        try:
-            await codroid_picker_module._with_robot_api(
-                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _clear
-            )
-            snapshot = codroid_picker_module._acknowledge_robot_error()
-            return (
-                snapshot,
-                codroid_picker_module.dmc.Notification(
-                    action="show",
-                    title="Emergency stop acknowledged",
-                    message="Recovery sequence sent. Program remains paused.",
-                    color="red",
-                    autoClose=5000,
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            codroid_picker_module.LOGGER.exception(
-                "Failed to clear emergency stop")
-            return (
-                codroid_picker_module.no_update,
-                codroid_picker_module.dmc.Notification(
-                    action="show",
-                    title="Emergency stop clear failed",
-                    message=str(exc),
-                    color="red",
-                    autoClose=7000,
-                ),
-            )
+        return await _run_robot_action_with_notification(
+            robot_uri,
+            _clear,
+            success_title="Emergency stop acknowledged",
+            success_message="Recovery sequence sent. Program remains paused.",
+            success_color="red",
+            failure_title="Failed to clear emergency stop",
+        )
 
     @app.callback(
         Output("robot-error-state", "data", allow_duplicate=True),
@@ -260,81 +270,43 @@ def register_error_handling_callbacks(app: Dash) -> None:
             await api.clear_overspeed()
 
         if trigger == "overspeed-clear":
-            try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _clear
-                )
-                snapshot = codroid_picker_module._acknowledge_robot_error()
-                codroid_picker_module._pause_operation(
-                    "overspeed", "Paused after overspeed clear.")
-                return (
-                    snapshot,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Overspeed cleared",
-                        message="Recovery sequence sent. Program remains paused.",
-                        color="orange",
-                        autoClose=5000,
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.LOGGER.exception(
-                    "Failed to clear overspeed")
-                return (
-                    codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Overspeed clear failed",
-                        message=str(exc),
-                        color="red",
-                        autoClose=7000,
-                    ),
-                )
+            snapshot, note = await _run_robot_action_with_notification(
+                robot_uri,
+                _clear,
+                success_title="Overspeed cleared",
+                success_message="Recovery sequence sent. Program remains paused.",
+                success_color="orange",
+                failure_title="Failed to clear overspeed",
+            )
+            codroid_picker_module._pause_operation(
+                "overspeed", "Paused after overspeed clear.")
+            return snapshot, note
+
         if trigger == "overspeed-continue":
-            try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _clear
-                )
+            snapshot, note = await _run_robot_action_with_notification(
+                robot_uri,
+                _clear,
+                success_title="Overspeed cleared",
+                success_message="Recovery sequence sent. Program resumed.",
+                success_color="teal",
+                failure_title="Failed to clear overspeed",
+            )
+            if snapshot is not codroid_picker_module.no_update:
                 codroid_picker_module._resume_operation(
                     "Resuming after overspeed.")
-                snapshot = codroid_picker_module._acknowledge_robot_error()
-                return (
-                    snapshot,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Overspeed cleared",
-                        message="Recovery sequence sent. Program resumed.",
-                        color="teal",
-                        autoClose=5000,
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.LOGGER.exception(
-                    "Failed to clear overspeed")
-                return (
-                    codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Overspeed clear failed",
-                        message=str(exc),
-                        color="red",
-                        autoClose=7000,
-                    ),
-                )
+            return snapshot, note
+
         if trigger == "overspeed-stay-paused":
             snapshot = codroid_picker_module._acknowledge_robot_error()
             codroid_picker_module._pause_operation(
                 "overspeed", "Paused after overspeed acknowledgment.")
-            return (
-                snapshot,
-                codroid_picker_module.dmc.Notification(
-                    action="show",
-                    title="Overspeed acknowledged",
-                    message="Program remains paused.",
-                    color="yellow",
-                    autoClose=4500,
-                ),
+            return snapshot, _notify(
+                "Overspeed acknowledged",
+                "Program remains paused.",
+                "yellow",
+                auto_close=4500,
             )
+
         if trigger == "overspeed-reset":
             codroid_picker_module._request_stop_operation(
                 "Program canceled after overspeed.")
@@ -352,15 +324,10 @@ def register_error_handling_callbacks(app: Dash) -> None:
             codroid_picker_module._reset_operation_state(
                 "Program reset after overspeed.")
             snapshot = codroid_picker_module._acknowledge_robot_error()
-            return (
-                snapshot,
-                codroid_picker_module.dmc.Notification(
-                    action="show",
-                    title="Program reset",
-                    message="Overspeed acknowledged and program reset.",
-                    color="red",
-                    autoClose=5000,
-                ),
+            return snapshot, _notify(
+                "Program reset",
+                "Overspeed acknowledged and program reset.",
+                "red",
             )
 
         return codroid_picker_module.no_update, codroid_picker_module.no_update
@@ -419,36 +386,20 @@ def register_error_handling_callbacks(app: Dash) -> None:
             await api.enter_rescue_mode()
 
         if trigger == "wrong-tool-clear":
-            try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _clear
-                )
-                snapshot = codroid_picker_module._acknowledge_robot_error()
+            snapshot, note = await _run_robot_action_with_notification(
+                robot_uri,
+                _clear,
+                success_title="Tool error cleared",
+                success_message="Recovery sequence sent. Program remains paused.",
+                success_color="red",
+                failure_title="Failed to clear tool error",
+            )
+            if snapshot is not codroid_picker_module.no_update:
                 codroid_picker_module._pause_operation(
-                    "wrong_tool", "Paused after tool error clear.")
-                return (
-                    snapshot,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Tool error cleared",
-                        message="Recovery sequence sent. Program remains paused.",
-                        color="red",
-                        autoClose=5000,
-                    ),
+                    "wrong_tool", "Paused after tool error clear."
                 )
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.LOGGER.exception(
-                    "Failed to clear tool error")
-                return (
-                    codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Tool error clear failed",
-                        message=str(exc),
-                        color="red",
-                        autoClose=7000,
-                    ),
-                )
+            return snapshot, note
+
         if trigger == "wrong-tool-rescue":
             try:
                 await codroid_picker_module._with_robot_api(
@@ -456,12 +407,10 @@ def register_error_handling_callbacks(app: Dash) -> None:
                 )
                 return (
                     codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Rescue mode requested",
-                        message="Rescue mode command sent.",
-                        color="orange",
-                        autoClose=5000,
+                    _notify(
+                        "Rescue mode requested",
+                        "Rescue mode command sent.",
+                        "orange",
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -469,12 +418,11 @@ def register_error_handling_callbacks(app: Dash) -> None:
                     "Failed to enter rescue mode")
                 return (
                     codroid_picker_module.no_update,
-                    codroid_picker_module.dmc.Notification(
-                        action="show",
-                        title="Rescue mode failed",
-                        message=str(exc),
-                        color="red",
-                        autoClose=7000,
+                    _notify(
+                        "Rescue mode failed",
+                        str(exc),
+                        "red",
+                        auto_close=7000,
                     ),
                 )
 

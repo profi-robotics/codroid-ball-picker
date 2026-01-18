@@ -19,6 +19,7 @@ import numpy as np
 
 import app.settings as app_settings
 from app.codroid_picker.session import SESSION
+from app.codroid_picker.robot_helpers import safe_float as _safe_float
 from vision import plate, workspace
 
 if TYPE_CHECKING:
@@ -28,6 +29,27 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PLATE_PATH = app_settings.DEFAULT_PLATE_PATH
 SETTINGS = app_settings.SETTINGS
+
+
+def _get_robot_session():
+    """Get the robot session - imported locally to avoid circular deps."""
+    from app.codroid_picker.app_instance import registry
+    return registry().robot_session
+
+
+def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.RigidTransform:
+    """Compute rigid transform (rotation + translation) from one point set to another."""
+    from app.codroid_picker.procedures import _rigid_transform as proc_rigid_transform
+    return proc_rigid_transform(from_pts, to_pts)
+
+
+def _robot_to_workspace_mm(
+    workspace_def: workspace.WorkspaceDefinition,
+    robot_xyz: np.ndarray,
+) -> Optional[Tuple[float, float]]:
+    """Convert robot base coordinates to workspace coordinates."""
+    from app.codroid_picker.procedures import _robot_to_workspace_mm as proc_robot_to_workspace
+    return proc_robot_to_workspace(workspace_def, robot_xyz)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +158,59 @@ def _coord_frame_to_transform(frame: dict) -> workspace.RigidTransform:
 # ---------------------------------------------------------------------------
 
 
+def _extract_plate_robot_points(
+    min_points: int = 3,
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Extract plate and robot calibration points for transform computation.
+
+    This consolidates the duplicate point extraction logic used by
+    _coord5_transform() and _plate_to_robot_transform().
+
+    Args:
+        min_points: Minimum number of points required.
+
+    Returns:
+        Tuple of (plate_pts, robot_pts, origin_mm) or None if insufficient data.
+        - plate_pts: Nx3 array of plate points relative to origin
+        - robot_pts: Nx3 array of corresponding robot points
+        - origin_mm: Origin point in plate mm coordinates
+    """
+    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < min_points:
+        return None
+    try:
+        plate_layout = plate.load_plate_layout(DEFAULT_PLATE_PATH)
+        plate_points = plate_layout.robot_calibration_points()
+        if len(plate_points) < min_points:
+            return None
+        origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
+        plate_pts = np.asarray(
+            [
+                [
+                    float(pt.center_mm[0] - origin_mm[0]),
+                    float(pt.center_mm[1] - origin_mm[1]),
+                    0.0,
+                ]
+                for pt in plate_points[:min_points]
+            ],
+            dtype=np.float64,
+        )
+        robot_pts = np.asarray(
+            [
+                [
+                    float(pt["x"]),
+                    float(pt["y"]),
+                    float(pt["z"]),
+                ]
+                for pt in SESSION.robot_calibration_points[:min_points]
+            ],
+            dtype=np.float64,
+        )
+        return plate_pts, robot_pts, origin_mm
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to extract calibration points: %s", exc)
+        return None
+
+
 def _coord5_transform() -> Optional[workspace.RigidTransform]:
     """Get or compute the coord5 transform from calibration data."""
     session = _get_robot_session()
@@ -149,36 +224,14 @@ def _coord5_transform() -> Optional[workspace.RigidTransform]:
             LOGGER.debug("Failed to parse RobotCoordinate frame: %s", exc)
     if SESSION.coord5_transform is not None:
         return SESSION.coord5_transform
-    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+
+    # Extract points using shared helper
+    points = _extract_plate_robot_points(min_points=3)
+    if points is None:
         return None
+
+    plate_pts, robot_pts, _origin = points
     try:
-        plate_layout = plate.load_plate_layout(DEFAULT_PLATE_PATH)
-        plate_points = plate_layout.robot_calibration_points()
-        if len(plate_points) < 3:
-            raise RuntimeError("Calibration plate layout missing points.")
-        origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
-        plate_pts = np.asarray(
-            [
-                [
-                    float(pt.center_mm[0] - origin_mm[0]),
-                    float(pt.center_mm[1] - origin_mm[1]),
-                    0.0,
-                ]
-                for pt in plate_points[:3]
-            ],
-            dtype=np.float64,
-        )
-        robot_pts = np.asarray(
-            [
-                [
-                    float(pt["x"]),
-                    float(pt["y"]),
-                    float(pt["z"]),
-                ]
-                for pt in SESSION.robot_calibration_points[:3]
-            ],
-            dtype=np.float64,
-        )
         transform = _rigid_transform(plate_pts, robot_pts)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Failed to build coord5 transform: %s", exc)
@@ -339,36 +392,14 @@ def _plate_to_robot_transform(
         and SESSION.plate_origin_mm is not None
     ):
         return SESSION.plate_to_robot_transform, SESSION.plate_origin_mm
-    if not SESSION.robot_calibration_points or len(SESSION.robot_calibration_points) < 3:
+
+    # Extract points using shared helper
+    points = _extract_plate_robot_points(min_points=3)
+    if points is None:
         return None
+
+    plate_pts, robot_pts, origin_mm = points
     try:
-        plate_layout = plate.load_plate_layout(DEFAULT_PLATE_PATH)
-        plate_points = plate_layout.robot_calibration_points()
-        if len(plate_points) < 3:
-            return None
-        origin_mm = np.asarray(plate_points[0].center_mm, dtype=np.float64)
-        plate_pts = np.asarray(
-            [
-                [
-                    float(pt.center_mm[0] - origin_mm[0]),
-                    float(pt.center_mm[1] - origin_mm[1]),
-                    0.0,
-                ]
-                for pt in plate_points[:3]
-            ],
-            dtype=np.float64,
-        )
-        robot_pts = np.asarray(
-            [
-                [
-                    float(pt["x"]),
-                    float(pt["y"]),
-                    float(pt["z"]),
-                ]
-                for pt in SESSION.robot_calibration_points[:3]
-            ],
-            dtype=np.float64,
-        )
         transform = _rigid_transform(plate_pts, robot_pts)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Failed to build plate-to-robot transform: %s", exc)

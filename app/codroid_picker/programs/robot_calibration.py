@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
+from app.codroid_picker.procedures import _ensure_robot_coordinate
 from .base import ProgramResult, ProgramStatus, RobotProgram
 
 LOGGER = logging.getLogger(__name__)
@@ -326,40 +327,23 @@ class RobotCalibrationProgram(RobotProgram):
         timeout_s: float = 5.0,
         require: bool = True,
     ) -> None:
-        """Ensure robot is using the expected coordinate system."""
-        await robot_api.set_current_coordinate_id(expected_id)
-        deadline = time.monotonic() + timeout_s
-        resent = False
-        coord_id = None
+        """Ensure robot is using the expected coordinate system.
 
-        while time.monotonic() < deadline:
-            status = session.robot_status_snapshot()
-            if isinstance(status, dict):
-                coord_id = status.get("CoordinateId")
-            if coord_id is not None:
-                try:
-                    if int(coord_id) == expected_id:
-                        return
-                except (TypeError, ValueError):
-                    pass
-            if not resent and time.monotonic() > deadline - (timeout_s / 2):
-                await robot_api.set_current_coordinate_id(expected_id)
-                resent = True
-            await asyncio.sleep(0.1)
-
-        if not require:
-            LOGGER.warning(
-                "CoordinateId did not switch to %s within %.1fs (last=%s).",
+        Delegates to the shared _ensure_robot_coordinate helper in procedures.py.
+        """
+        try:
+            await _ensure_robot_coordinate(
+                robot_api,
                 expected_id,
-                timeout_s,
-                coord_id,
+                timeout_s=timeout_s,
+                require=require,
             )
-            return
-
-        raise RuntimeError(
-            "Calibration requires the robot to be on CoordinateId=0 (base). "
-            f"Current CoordinateId={coord_id}. Switch to 0 and retry."
-        )
+        except RuntimeError as exc:
+            # Provide calibration-specific error message
+            raise RuntimeError(
+                "Calibration requires the robot to be on CoordinateId=0 (base). "
+                f"Current coordinate could not be verified. Switch to 0 and retry. ({exc})"
+            ) from exc
 
     async def _await_flange_press_with_guard(
         self,

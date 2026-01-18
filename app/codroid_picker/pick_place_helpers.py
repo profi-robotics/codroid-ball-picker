@@ -166,23 +166,35 @@ def build_pick_poses(
     Returns:
         Tuple of (approach_pose, pick_pose) dicts.
     """
-    approach_pose = {
-        "x": float(coord5_xy[0]),
-        "y": float(coord5_xy[1]),
-        "z": float(approach_mm),
-        "a": float(orientation.get("a", 0.0)),
-        "b": float(orientation.get("b", 0.0)),
-        "c": float(orientation.get("c", 0.0)),
-    }
-    pick_pose = {
-        "x": float(coord5_xy[0]),
-        "y": float(coord5_xy[1]),
-        "z": float(pick_mm),
-        "a": float(orientation.get("a", 0.0)),
-        "b": float(orientation.get("b", 0.0)),
-        "c": float(orientation.get("c", 0.0)),
-    }
+    a = float(orientation.get("a", 0.0))
+    b = float(orientation.get("b", 0.0))
+    c = float(orientation.get("c", 0.0))
+
+    approach_pose = _build_pose(coord5_xy[0], coord5_xy[1], approach_mm, a, b, c)
+    pick_pose = _build_pose(coord5_xy[0], coord5_xy[1], pick_mm, a, b, c)
     return approach_pose, pick_pose
+
+
+def _build_pose(
+    x: float,
+    y: float,
+    z: float,
+    a: float = 0.0,
+    b: float = 0.0,
+    c: float = 0.0,
+) -> Dict[str, float]:
+    """Build a pose dictionary from coordinates and orientation.
+
+    This is the canonical pose builder used by all pick/place pose functions.
+    """
+    return {
+        "x": float(x),
+        "y": float(y),
+        "z": float(z),
+        "a": float(a),
+        "b": float(b),
+        "c": float(c),
+    }
 
 
 def build_drop_poses(
@@ -203,23 +215,16 @@ def build_drop_poses(
         Tuple of (approach_pose, drop_pose) dicts.
     """
     orient = orientation or (0.0, 0.0, 0.0)
+    base_z = float(drop_robot_xyz[2])
 
-    approach_pose = {
-        "x": float(drop_robot_xyz[0]),
-        "y": float(drop_robot_xyz[1]),
-        "z": float(drop_robot_xyz[2]) + approach_mm,
-        "a": float(orient[0]),
-        "b": float(orient[1]),
-        "c": float(orient[2]),
-    }
-    drop_pose = {
-        "x": float(drop_robot_xyz[0]),
-        "y": float(drop_robot_xyz[1]),
-        "z": float(drop_robot_xyz[2]) + drop_mm,
-        "a": float(orient[0]),
-        "b": float(orient[1]),
-        "c": float(orient[2]),
-    }
+    approach_pose = _build_pose(
+        drop_robot_xyz[0], drop_robot_xyz[1], base_z + approach_mm,
+        orient[0], orient[1], orient[2]
+    )
+    drop_pose = _build_pose(
+        drop_robot_xyz[0], drop_robot_xyz[1], base_z + drop_mm,
+        orient[0], orient[1], orient[2]
+    )
     return approach_pose, drop_pose
 
 

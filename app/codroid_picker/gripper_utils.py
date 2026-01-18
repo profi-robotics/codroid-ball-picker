@@ -12,6 +12,12 @@ import time
 from typing import Optional
 
 from app.codroid_picker.app_instance import registry
+from app.codroid_picker.robot_helpers import (
+    resolve_gripper_limits,
+    record_gripper_sync,
+    is_recently_synced,
+    safe_int,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,32 +59,12 @@ def _recent_gripper_sync(
     window_s: float = 0.75,
 ) -> bool:
     """Check if a gripper value was recently synced within the time window."""
-    session = registry().session
-    sync_data = session.gripper_sync
-    if not sync_data or value is None:
-        return False
-    try:
-        updated = float(sync_data.get("updated", 0.0))
-        if time.time() - updated > window_s:
-            return False
-        synced_value = sync_data.get(key)
-        if synced_value is None:
-            return False
-        return abs(float(value) - float(synced_value)) < 0.01
-    except (TypeError, ValueError):
-        return False
+    return is_recently_synced(key, value, window_s=window_s)
 
 
 def _record_gripper_sync(width: Optional[float], force: Optional[float]) -> None:
     """Record a gripper sync event with timestamp."""
-    session = registry().session
-    payload = dict(session.gripper_sync)
-    payload["updated"] = time.time()
-    if width is not None:
-        payload["width"] = width
-    if force is not None:
-        payload["force"] = force
-    session.gripper_sync = payload
+    record_gripper_sync(width=width, force=force)
 
 
 async def _await_grip_status(timeout_s: float) -> bool:
@@ -103,12 +89,7 @@ async def _await_grip_status(timeout_s: float) -> bool:
 
 def _safe_int(value: Optional[float], default: int) -> int:
     """Convert value to int, returning default if None or invalid."""
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    return safe_int(value, default)
 
 
 def _command_gripper(
@@ -164,51 +145,7 @@ def _command_gripper(
 
 def _resolve_gripper_limits() -> tuple[float, float]:
     """Get current gripper min/max width limits from session or device."""
-    session = registry().session
-    gripper_defaults = registry().gripper_defaults
-    min_width = session.gripper_min_width
-    max_width = session.gripper_max_width
-    if session.gripper is not None:
-        t_index = gripper_defaults["t_index"]
-        status_snapshot = session.gripper.get_status_snapshot(
-            t_index=t_index)
-        if status_snapshot:
-            snapshot_min = status_snapshot.get("min_external_width")
-            snapshot_max = status_snapshot.get("max_external_width")
-            if isinstance(snapshot_min, (int, float)) and snapshot_min >= 0:
-                min_width = float(snapshot_min)
-                session.gripper_min_width = min_width
-            if isinstance(snapshot_max, (int, float)) and snapshot_max >= 0:
-                max_width = float(snapshot_max)
-                session.gripper_max_width = max_width
-        if min_width is None:
-            try:
-                value = session.gripper.get_min_ext_width(t_index=t_index)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug("Failed to read gripper min width: %s", exc)
-            else:
-                if isinstance(value, (int, float)) and value >= 0:
-                    min_width = float(value)
-        if max_width is None:
-            try:
-                value = session.gripper.get_max_ext_width(t_index=t_index)
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug("Failed to read gripper max width: %s", exc)
-            else:
-                if isinstance(value, (int, float)) and value >= 0:
-                    max_width = float(value)
-    if min_width is None:
-        min_width = GRIPPER_CLOSE_WIDTH_DEFAULT
-    if max_width is None:
-        max_width = GRIPPER_OPEN_WIDTH_DEFAULT
-    if min_width > max_width:
-        LOGGER.warning(
-            "Gripper width limits inverted (min=%.1f, max=%.1f); swapping.",
-            min_width,
-            max_width,
-        )
-        min_width, max_width = max_width, min_width
-    return min_width, max_width
+    return resolve_gripper_limits()
 
 
 def _prepare_gripper_for_calibration() -> None:

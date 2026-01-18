@@ -241,6 +241,42 @@ def is_error_acknowledged() -> bool:
         return error_state.acknowledged
 
 
+def update_error_physical_pressed(physical_pressed: bool) -> dict:
+    """Update just the physical_pressed flag on current error state."""
+    with _error_lock:
+        error_state.physical_pressed = physical_pressed
+        return error_state.model_dump()
+
+
+def activate_error(
+    error_type: str,
+    message: str,
+    *,
+    physical_pressed: bool = False,
+) -> dict:
+    """Activate a new error and return the updated snapshot.
+
+    This is a higher-level helper that sets the error and returns
+    the snapshot in one atomic operation.
+    """
+    with _error_lock:
+        error_state.active = True
+        error_state.error_type = error_type
+        error_state.message = message
+        error_state.detected_at = time.time()
+        error_state.acknowledged = False
+        error_state.physical_pressed = physical_pressed
+        return error_state.model_dump()
+
+
+def acknowledge_error() -> dict:
+    """Mark current error as acknowledged and return snapshot."""
+    with _error_lock:
+        if error_state.active:
+            error_state.acknowledged = True
+        return error_state.model_dump()
+
+
 # Calibration stepper helpers
 def update_calibration_guidance(
     message: str,

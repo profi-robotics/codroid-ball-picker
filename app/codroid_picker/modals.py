@@ -10,6 +10,29 @@ from __future__ import annotations
 import dash_mantine_components as dmc
 
 
+def _modal_shell(
+    *,
+    modal_id: str,
+    title: str | None = None,
+    children=None,
+    size: str = "lg",
+    overlay: dict | None = None,
+    close_on_outside: bool = False,
+) -> dmc.Modal:
+    """Build a modal with common defaults used across the app."""
+    return dmc.Modal(
+        id=modal_id,
+        opened=False,
+        centered=True,
+        size=size,
+        title=title,
+        withCloseButton=False,
+        closeOnClickOutside=close_on_outside,
+        overlayProps=overlay or {"opacity": 0.65, "color": "#000"},
+        children=children,
+    )
+
+
 def build_robot_calibration_modal() -> dmc.Modal:
     """Build the robot calibration workflow modal."""
     return dmc.Modal(
@@ -114,14 +137,9 @@ def build_robot_calibration_modal() -> dmc.Modal:
 
 def build_emergency_stop_modal() -> dmc.Modal:
     """Build the emergency stop error modal."""
-    return dmc.Modal(
-        id="emergency-stop-modal",
-        opened=False,
-        centered=True,
+    return _modal_shell(
+        modal_id="emergency-stop-modal",
         size="xl",
-        withCloseButton=False,
-        closeOnClickOutside=False,
-        overlayProps={"opacity": 0.65, "color": "#000"},
         children=dmc.Stack(
             [
                 dmc.Text(

@@ -30,6 +30,11 @@ from app.codroid_picker.app_instance import (
     registry,
 )
 from app.codroid_picker.exceptions import OperationPaused, OperationAbort
+from app.codroid_picker.robot_helpers import (
+    resolve_gripper_limits as _resolve_gripper_limits,
+    is_gripper_connected,
+    safe_int,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -88,57 +93,10 @@ def resolve_gripper_limits(gripper: "TWOFG") -> Tuple[float, float]:
     """Get gripper min/max width limits.
 
     Returns (min_width, max_width) in mm.
+
+    Note: This is a wrapper around the shared helper for backwards compatibility.
     """
-    from app.codroid_picker.session import SESSION
-
-    gripper_defaults = get_gripper_defaults()
-    settings = get_settings()
-    t_index = gripper_defaults["t_index"]
-
-    min_width = SESSION.gripper_min_width
-    max_width = SESSION.gripper_max_width
-
-    # Try to get from gripper status snapshot
-    status_snapshot = gripper.get_status_snapshot(t_index=t_index)
-    if status_snapshot:
-        snapshot_min = status_snapshot.get("min_external_width")
-        snapshot_max = status_snapshot.get("max_external_width")
-        if isinstance(snapshot_min, (int, float)) and snapshot_min >= 0:
-            min_width = float(snapshot_min)
-            SESSION.gripper_min_width = min_width
-        if isinstance(snapshot_max, (int, float)) and snapshot_max >= 0:
-            max_width = float(snapshot_max)
-            SESSION.gripper_max_width = max_width
-
-    # Fallback to querying gripper directly
-    if min_width is None:
-        try:
-            value = gripper.get_min_ext_width(t_index=t_index)
-            if isinstance(value, (int, float)) and value >= 0:
-                min_width = float(value)
-        except Exception as exc:
-            LOGGER.debug("Failed to read gripper min width: %s", exc)
-
-    if max_width is None:
-        try:
-            value = gripper.get_max_ext_width(t_index=t_index)
-            if isinstance(value, (int, float)) and value >= 0:
-                max_width = float(value)
-        except Exception as exc:
-            LOGGER.debug("Failed to read gripper max width: %s", exc)
-
-    # Final fallbacks from profile
-    gripper_profile = settings.gripper_profile
-    if min_width is None:
-        min_width = gripper_profile.close_width_default
-    if max_width is None:
-        max_width = gripper_profile.open_width_default
-
-    # Ensure correct ordering
-    if min_width > max_width:
-        min_width, max_width = max_width, min_width
-
-    return min_width, max_width
+    return _resolve_gripper_limits(gripper)
 
 
 def command_gripper(

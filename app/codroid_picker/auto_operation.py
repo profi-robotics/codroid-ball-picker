@@ -562,6 +562,24 @@ def _detection_workspace_mm(
     return (float(workspace_mm[0]), float(workspace_mm[1]))
 
 
+def _try_set_coord5_from_base(detection: dict, base_xyz: np.ndarray) -> Optional[Tuple[float, float]]:
+    """Attempt to map a robot base XYZ to coord5 and annotate the detection.
+
+    Returns the coord5 (x,y) tuple if mapping succeeds, otherwise None.
+    """
+    coord5_xyz = _base_to_coord5(base_xyz)
+    if coord5_xyz is not None:
+        coord5_xy = (float(coord5_xyz[0]), float(coord5_xyz[1]))
+        detection["coord5_mm"] = coord5_xy
+        detection["robot_base_mm"] = (
+            float(base_xyz[0]),
+            float(base_xyz[1]),
+            float(base_xyz[2]),
+        )
+        return coord5_xy
+    return None
+
+
 def _detection_coord5_mm(
     detection: dict,
     workspace_def: Optional[workspace.WorkspaceDefinition],
@@ -586,27 +604,13 @@ def _detection_coord5_mm(
             dtype=np.float64,
         )
         base_xyz = transform.rotation @ plate_rel + transform.translation
-        coord5_xyz = _base_to_coord5(base_xyz)
-        if coord5_xyz is not None:
-            coord5_xy = (float(coord5_xyz[0]), float(coord5_xyz[1]))
-            detection["coord5_mm"] = coord5_xy
-            detection["robot_base_mm"] = (
-                float(base_xyz[0]),
-                float(base_xyz[1]),
-                float(base_xyz[2]),
-            )
+        coord5_xy = _try_set_coord5_from_base(detection, base_xyz)
+        if coord5_xy is not None:
             return coord5_xy
     base_xyz = _pixel_to_robot_base_xyz((float(center[0]), float(center[1])))
     if base_xyz is not None:
-        coord5_xyz = _base_to_coord5(base_xyz)
-        if coord5_xyz is not None:
-            coord5_xy = (float(coord5_xyz[0]), float(coord5_xyz[1]))
-            detection["coord5_mm"] = coord5_xy
-            detection["robot_base_mm"] = (
-                float(base_xyz[0]),
-                float(base_xyz[1]),
-                float(base_xyz[2]),
-            )
+        coord5_xy = _try_set_coord5_from_base(detection, base_xyz)
+        if coord5_xy is not None:
             return coord5_xy
     if workspace_def is None:
         return None

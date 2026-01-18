@@ -7,6 +7,7 @@ This module contains the main application shell components:
 
 from __future__ import annotations
 
+from typing import Optional
 from dash import html
 import dash_mantine_components as dmc
 
@@ -20,6 +21,85 @@ __all__ = [
     "build_header",
     "build_footer",
 ]
+
+
+# =============================================================================
+# UI Component Factories
+# =============================================================================
+
+
+def _create_slider_with_controls(
+    slider_id: str,
+    min_val: float,
+    max_val: float,
+    step: float,
+    default_val: float,
+    decrease_id: str,
+    increase_id: str,
+) -> dmc.Group:
+    """Create a slider with decrease/increase button controls.
+
+    This consolidates the repeated slider+controls pattern used for
+    gripper width, force, and speed controls.
+
+    Args:
+        slider_id: ID for the slider component
+        min_val: Minimum slider value
+        max_val: Maximum slider value
+        step: Slider step size
+        default_val: Default slider value
+        decrease_id: ID for the decrease button
+        increase_id: ID for the increase button
+
+    Returns:
+        A dmc.Group containing the slider and control buttons
+    """
+    slider = dmc.Slider(
+        id=slider_id,
+        min=min_val,
+        max=max_val,
+        step=step,
+        value=default_val,
+        labelAlwaysOn=False,
+        size="sm",
+        marks=[],
+        style={"minWidth": "220px"},
+    )
+    return dmc.Group(
+        [
+            dmc.ActionIcon("-", id=decrease_id,
+                           variant="light", color="gray", radius="xl", size="md"),
+            slider,
+            dmc.ActionIcon("+", id=increase_id,
+                           variant="light", color="gray", radius="xl", size="md"),
+        ],
+        gap="xs",
+        align="center",
+        justify="flex-start",
+        className="footer-slider-controls",
+    )
+
+
+def _create_control_row(
+    label: str,
+    controls: dmc.Group,
+) -> html.Div:
+    """Create a labeled control row for the footer.
+
+    Args:
+        label: Label text for the control row
+        controls: The controls group to display
+
+    Returns:
+        A div containing the label and controls
+    """
+    return html.Div(
+        [
+            dmc.Text(label, size="xs", fw=600),
+            controls,
+        ],
+        className="footer-fine-row",
+    )
 
 
 def build_header() -> dmc.AppShellHeader:
@@ -307,104 +387,42 @@ def _build_robot_speed_block() -> dmc.Stack:
 
 def _build_gripper_block() -> dmc.Stack:
     """Build the gripper control block with width/force/speed sliders."""
-    fine_width_slider = dmc.Slider(
-        id="footer-gripper-width",
-        min=0,
-        max=40,
+    # Use helper functions to create slider controls
+    width_controls = _create_slider_with_controls(
+        slider_id="footer-gripper-width",
+        min_val=0,
+        max_val=40,
         step=0.5,
-        value=10.0,
-        labelAlwaysOn=False,
-        size="sm",
-        marks=[],
-        style={"minWidth": "220px"},
+        default_val=10.0,
+        decrease_id="footer-gripper-width-decrease",
+        increase_id="footer-gripper-width-increase",
     )
-    fine_force_slider = dmc.Slider(
-        id="footer-gripper-force",
-        min=GRIPPER_FORCE_MIN,
-        max=GRIPPER_FORCE_MAX,
+    force_controls = _create_slider_with_controls(
+        slider_id="footer-gripper-force",
+        min_val=GRIPPER_FORCE_MIN,
+        max_val=GRIPPER_FORCE_MAX,
         step=5,
-        value=GRIPPER_FORCE_DEFAULT,
-        labelAlwaysOn=False,
-        size="sm",
-        marks=[],
-        style={"minWidth": "220px"},
+        default_val=GRIPPER_FORCE_DEFAULT,
+        decrease_id="footer-gripper-force-decrease",
+        increase_id="footer-gripper-force-increase",
     )
-    fine_speed_slider = dmc.Slider(
-        id="footer-gripper-speed",
-        min=10,
-        max=100,
+    speed_controls = _create_slider_with_controls(
+        slider_id="footer-gripper-speed",
+        min_val=10,
+        max_val=100,
         step=5,
-        value=60,
-        labelAlwaysOn=False,
-        size="sm",
-        marks=[],
-        style={"minWidth": "220px"},
-    )
-    width_controls = dmc.Group(
-        [
-            dmc.ActionIcon("-", id="footer-gripper-width-decrease",
-                           variant="light", color="gray", radius="xl", size="md"),
-            fine_width_slider,
-            dmc.ActionIcon("+", id="footer-gripper-width-increase",
-                           variant="light", color="gray", radius="xl", size="md"),
-        ],
-        gap="xs",
-        align="center",
-        justify="flex-start",
-        className="footer-slider-controls",
-    )
-    force_controls = dmc.Group(
-        [
-            dmc.ActionIcon("-", id="footer-gripper-force-decrease",
-                           variant="light", color="gray", radius="xl", size="md"),
-            fine_force_slider,
-            dmc.ActionIcon("+", id="footer-gripper-force-increase",
-                           variant="light", color="gray", radius="xl", size="md"),
-        ],
-        gap="xs",
-        align="center",
-        justify="flex-start",
-        className="footer-slider-controls",
-    )
-    speed_controls = dmc.Group(
-        [
-            dmc.ActionIcon("-", id="footer-gripper-speed-decrease",
-                           variant="light", color="gray", radius="xl", size="md"),
-            fine_speed_slider,
-            dmc.ActionIcon("+", id="footer-gripper-speed-increase",
-                           variant="light", color="gray", radius="xl", size="md"),
-        ],
-        gap="xs",
-        align="center",
-        justify="flex-start",
-        className="footer-slider-controls",
+        default_val=60,
+        decrease_id="footer-gripper-speed-decrease",
+        increase_id="footer-gripper-speed-increase",
     )
     return dmc.Stack(
         [
             dmc.Text("Gripper control", fw=600, size="sm"),
             dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
             dmc.Text(id="footer-gripper-meta", size="xs", c="dimmed"),
-            html.Div(
-                [
-                    dmc.Text("Width (mm)", size="xs", fw=600),
-                    width_controls,
-                ],
-                className="footer-fine-row",
-            ),
-            html.Div(
-                [
-                    dmc.Text("Force (N)", size="xs", fw=600),
-                    force_controls,
-                ],
-                className="footer-fine-row",
-            ),
-            html.Div(
-                [
-                    dmc.Text("Speed (%)", size="xs", fw=600),
-                    speed_controls,
-                ],
-                className="footer-fine-row",
-            ),
+            _create_control_row("Width (mm)", width_controls),
+            _create_control_row("Force (N)", force_controls),
+            _create_control_row("Speed (%)", speed_controls),
         ],
         gap=6,
         align="flex-start",

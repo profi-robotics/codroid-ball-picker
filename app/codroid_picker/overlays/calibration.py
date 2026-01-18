@@ -20,6 +20,44 @@ from .drawing import _draw_label, _draw_dotted_polyline, _workspace_corners_px
 SETTINGS = app_settings.SETTINGS
 
 
+def _draw_marker_detections(vis: np.ndarray, detections: dict, color: tuple[int, int, int]) -> None:
+    """Draw marker polygons and labels for a detection result."""
+    for marker_id, detection in detections.items():
+        corners = detection.corners.astype(int)
+        cv2.polylines(vis, [corners], True, color, 2)
+        center = np.mean(corners, axis=0).astype(int)
+        _draw_label(vis, str(marker_id), tuple(center), color)
+
+
+def _evaluate_plate_status(calibration_result) -> dict:
+    """Compute plate marker status metrics used by overlay and refresh helpers."""
+    detections = calibration_result.detections
+    count = len(detections)
+    min_required = SETTINGS.min_plate_markers
+    is_ok = count >= min_required
+
+    current_center = None
+    movement_px = None
+    if count > 0:
+        current_center = np.mean([
+            np.mean(det.corners, axis=0) for det in detections.values()
+        ], axis=0)
+        if SESSION.robot_calibration_baseline_px is not None:
+            movement_px = float(np.linalg.norm(
+                current_center - SESSION.robot_calibration_baseline_px
+            ))
+
+    stable = movement_px is None or movement_px <= SETTINGS.plate_movement_threshold_px
+    return {
+        "count": count,
+        "min_required": min_required,
+        "is_ok": is_ok,
+        "stable": stable,
+        "movement_px": movement_px,
+        "current_center": current_center,
+    }
+
+
 def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarray, str, str]:
     """Draw ChArUco board detection overlay."""
     vis = frame.copy()
@@ -87,14 +125,7 @@ def draw_workspace_overlay(
             status = "No workspace markers detected."
             return vis, status, "Workspace markers: 0/2"
 
-        # Draw detected markers
-        for marker_id, detection in detection_result.detections.items():
-            corners = detection.corners.astype(int)
-            cv2.polylines(vis, [corners], True, (0, 255, 0), 2)
-
-            # Draw marker ID
-            center = np.mean(corners, axis=0).astype(int)
-            _draw_label(vis, str(marker_id), tuple(center), (0, 255, 0))
+        _draw_marker_detections(vis, detection_result.detections, (0, 255, 0))
 
         if len(detection_result.detections) == 2:
             # Both markers detected, try to compute workspace
@@ -108,11 +139,11 @@ def draw_workspace_overlay(
                 _draw_dotted_polyline(vis, corners_px, (255, 255, 0), 2)
 
                 status = f"Workspace defined: {workspace_def.width_mm:.1f}×{workspace_def.height_mm:.1f} mm"
-                metric = f"Workspace markers: 2/2"
+                metric = "Workspace markers: 2/2"
 
             except Exception as exc:
                 status = f"Workspace computation failed: {exc}"
-                metric = f"Workspace markers: 2/2 (error)"
+                metric = "Workspace markers: 2/2 (error)"
         else:
             count = len(detection_result.detections)
             status = f"Partial workspace markers detected: {count}/2"
@@ -134,7 +165,6 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
         return vis, status, "Plate markers: --"
 
     try:
-        # Detect calibration plate
         calibration_result = plate.detect_calibration_plate(frame, layout_path)
 
         if len(calibration_result.detections) == 0:
@@ -147,54 +177,25 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
             )
             return vis, status, "Plate markers: 0"
 
-        # Draw detected markers
-        for marker_id, detection in calibration_result.detections.items():
-            corners = detection.corners.astype(int)
-            cv2.polylines(vis, [corners], True, (255, 0, 255), 2)
+        _draw_marker_detections(vis, calibration_result.detections, (255, 0, 255))
 
-            # Draw marker ID
-            center = np.mean(corners, axis=0).astype(int)
-            _draw_label(vis, str(marker_id), tuple(center), (255, 0, 255))
-
-        # Update plate status
-        count = len(calibration_result.detections)
-        from app.settings import SETTINGS
-        min_required = SETTINGS.min_plate_markers
-        is_ok = count >= min_required
-
-        if is_ok:
-            # Check for movement if we have a baseline
-            movement_px = None
-            if SESSION.robot_calibration_baseline_px is not None:
-                current_center = np.mean([
-                    np.mean(det.corners, axis=0)
-                    for det in calibration_result.detections.values()
-                ], axis=0)
-                movement_px = float(np.linalg.norm(
-                    current_center - SESSION.robot_calibration_baseline_px))
-
-            stable = movement_px is None or movement_px <= SETTINGS.plate_movement_threshold_px
-            status = f"Plate markers detected: {count} (stable: {'yes' if stable else 'no'})"
-
-            state.update_plate_status(
-                ok=True,
-                stable=stable,
-                message=status,
-                count=count,
-                movement_px=movement_px,
-                center_px=tuple(
-                    current_center) if 'current_center' in locals() else None
-            )
-        else:
-            status = f"Insufficient plate markers: {count}/{min_required}"
-            state.update_plate_status(
-                ok=False,
-                stable=False,
-                message=status,
-                count=count
-            )
-
+        status_data = _evaluate_plate_status(calibration_result)
+        count = status_data["count"]
         metric = f"Plate markers: {count}"
+
+        if status_data["is_ok"]:
+            status = f"Plate markers detected: {count} (stable: {'yes' if status_data['stable'] else 'no'})"
+        else:
+            status = f"Insufficient plate markers: {count}/{status_data['min_required']}"
+
+        state.update_plate_status(
+            ok=status_data["is_ok"],
+            stable=status_data["stable"],
+            message=status,
+            count=count,
+            movement_px=status_data["movement_px"],
+            center_px=tuple(status_data["current_center"]) if status_data["current_center"] is not None else None,
+        )
 
     except Exception as exc:
         status = f"Plate detection error: {exc}"
@@ -219,38 +220,25 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
             count=0
         )
 
-        # Detect calibration plate
         calibration_result = plate.detect_calibration_plate(frame, layout_path)
-        count = len(calibration_result.detections)
+        status_data = _evaluate_plate_status(calibration_result)
+        count = status_data["count"]
 
-        min_required = SETTINGS.min_plate_markers
-        is_ok = count >= min_required
-
-        if is_ok and count > 0:
-            # Check for movement if we have a baseline
-            current_center = np.mean([
-                np.mean(det.corners, axis=0)
-                for det in calibration_result.detections.values()
-            ], axis=0)
-
-            movement_px = None
-            if SESSION.robot_calibration_baseline_px is not None:
-                movement_px = float(np.linalg.norm(
-                    current_center - SESSION.robot_calibration_baseline_px))
-
-            stable = movement_px is None or movement_px <= SETTINGS.plate_movement_threshold_px
-            status = f"Plate markers: {count} (movement: {movement_px:.1f}px)" if movement_px else f"Plate markers: {count}"
-
+        if status_data["is_ok"] and count > 0:
+            if status_data["movement_px"] is not None:
+                status = f"Plate markers: {count} (movement: {status_data['movement_px']:.1f}px)"
+            else:
+                status = f"Plate markers: {count}"
             state.update_plate_status(
                 ok=True,
-                stable=stable,
+                stable=status_data["stable"],
                 message=status,
                 count=count,
-                movement_px=movement_px,
-                center_px=tuple(current_center)
+                movement_px=status_data["movement_px"],
+                center_px=tuple(status_data["current_center"]) if status_data["current_center"] is not None else None,
             )
         else:
-            status = f"Insufficient plate markers: {count}/{min_required}"
+            status = f"Insufficient plate markers: {count}/{status_data['min_required']}"
             state.update_plate_status(
                 ok=False,
                 stable=False,
@@ -258,11 +246,13 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
                 count=count
             )
 
-    except Exception as exc:
-        logging.warning("Plate status update failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("Plate status refresh skipped: %s", exc)
         state.update_plate_status(
             ok=False,
             stable=False,
             message=f"Plate status error: {exc}",
             count=0
         )
+
+

@@ -37,6 +37,7 @@ from app.codroid_picker.robot_motion import (
     drop_with_verify,
     ensure_coordinate_active,
 )
+from app.codroid_picker.pick_place_helpers import build_drop_poses
 
 LOGGER = logging.getLogger(__name__)
 
@@ -335,27 +336,19 @@ class AutoPickPlaceProgram(RobotProgram):
         if drop_target is None:
             raise RuntimeError("Drop target not defined")
 
-        def _drop_pose(z_offset: float) -> dict:
-            pose = {
-                "x": float(drop_target[0]),
-                "y": float(drop_target[1]),
-                "z": float(drop_target[2]) + z_offset,
-                "a": 0.0, "b": 0.0, "c": 0.0,
-            }
-            if SESSION.drop_target_orientation is not None:
-                orient = SESSION.drop_target_orientation
-                pose.update({
-                    "a": float(orient[0]),
-                    "b": float(orient[1]),
-                    "c": float(orient[2]),
-                })
-            return pose
+        # Use shared helper to build poses
+        approach_pose, drop_pose = build_drop_poses(
+            drop_robot_xyz=drop_target,
+            orientation=SESSION.drop_target_orientation,
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+        )
 
         # Move to approach
         await wait_for_operation_resume(self._run_id)
         await move_linear_follow_target(
             robot_api,
-            lambda: _drop_pose(approach_mm),
+            lambda: approach_pose,
             label="auto_drop_approach",
             coordinate_id=coordinate_id,
             run_id=self._run_id,
@@ -365,7 +358,7 @@ class AutoPickPlaceProgram(RobotProgram):
         await wait_for_operation_resume(self._run_id)
         await move_linear_follow_target(
             robot_api,
-            lambda: _drop_pose(drop_mm),
+            lambda: drop_pose,
             label="auto_drop_pose",
             coordinate_id=coordinate_id,
             run_id=self._run_id,
@@ -381,7 +374,7 @@ class AutoPickPlaceProgram(RobotProgram):
         await wait_for_operation_resume(self._run_id)
         await move_linear_follow_target(
             robot_api,
-            lambda: _drop_pose(approach_mm),
+            lambda: approach_pose,
             label="auto_drop_retreat",
             coordinate_id=coordinate_id,
             run_id=self._run_id,
@@ -405,25 +398,17 @@ class AutoPickPlaceProgram(RobotProgram):
         if drop_target is None:
             return
 
-        def _drop_pose(z_offset: float) -> dict:
-            pose = {
-                "x": float(drop_target[0]),
-                "y": float(drop_target[1]),
-                "z": float(drop_target[2]) + z_offset,
-                "a": 0.0, "b": 0.0, "c": 0.0,
-            }
-            if SESSION.drop_target_orientation is not None:
-                orient = SESSION.drop_target_orientation
-                pose.update({
-                    "a": float(orient[0]),
-                    "b": float(orient[1]),
-                    "c": float(orient[2]),
-                })
-            return pose
+        # Use shared helper to build poses
+        approach_pose, drop_pose = build_drop_poses(
+            drop_robot_xyz=drop_target,
+            orientation=SESSION.drop_target_orientation,
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+        )
 
         await move_linear_follow_target(
             robot_api,
-            lambda: _drop_pose(approach_mm),
+            lambda: approach_pose,
             label="auto_wait_approach",
             coordinate_id=coordinate_id,
             run_id=self._run_id,
@@ -431,7 +416,7 @@ class AutoPickPlaceProgram(RobotProgram):
 
         await move_linear_follow_target(
             robot_api,
-            lambda: _drop_pose(drop_mm),
+            lambda: drop_pose,
             label="auto_wait_drop",
             coordinate_id=coordinate_id,
             run_id=self._run_id,

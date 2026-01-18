@@ -43,6 +43,34 @@ def _alarm_contains(status: dict, keywords: Tuple[str, ...]) -> bool:
     return False
 
 
+def _detect_status_pattern(
+    status: dict,
+    flag_keys: Tuple[str, ...],
+    alarm_keywords: Tuple[str, ...],
+) -> bool:
+    """Generic pattern for detecting robot error states.
+
+    This consolidates the common logic used by all error detection functions:
+    1. Check for truthy flag keys in status
+    2. Check for truthy flag keys in nested robot_status
+    3. Check for alarm text containing keywords
+
+    Args:
+        status: Robot status dictionary.
+        flag_keys: Tuple of status flag keys to check.
+        alarm_keywords: Tuple of alarm text keywords to search for.
+
+    Returns:
+        True if any detection pattern matches.
+    """
+    if _status_flag(status, flag_keys):
+        return True
+    nested = status.get("robot_status")
+    if isinstance(nested, dict) and _status_flag(nested, flag_keys):
+        return True
+    return _alarm_contains(status, alarm_keywords)
+
+
 def _detect_emergency_stop_status(status: dict) -> bool:
     """Detect if the robot is in emergency stop state."""
     emergency_keys = (
@@ -53,13 +81,9 @@ def _detect_emergency_stop_status(status: dict) -> bool:
         "EmergencyStop",
         "EStop",
     )
-    if _status_flag(status, emergency_keys):
+    if _detect_status_pattern(status, emergency_keys, ("emergency", "e-stop", "estop")):
         return True
-    nested = status.get("robot_status")
-    if isinstance(nested, dict) and _status_flag(nested, emergency_keys):
-        return True
-    if _alarm_contains(status, ("emergency", "e-stop", "estop")):
-        return True
+    # Additional check for emergency + stop in payload text
     payload_text = str(status).lower()
     return "emergency" in payload_text and "stop" in payload_text
 
@@ -73,12 +97,7 @@ def _detect_overspeed_status(status: dict) -> bool:
         "speed_alarm",
         "overspeed_alarm",
     )
-    if _status_flag(status, overspeed_keys):
-        return True
-    nested = status.get("robot_status")
-    if isinstance(nested, dict) and _status_flag(nested, overspeed_keys):
-        return True
-    return _alarm_contains(status, ("overspeed", "over speed"))
+    return _detect_status_pattern(status, overspeed_keys, ("overspeed", "over speed"))
 
 
 def _detect_joint_protection_status(status: dict) -> bool:
@@ -90,12 +109,7 @@ def _detect_joint_protection_status(status: dict) -> bool:
         "jointCollision",
         "collision",
     )
-    if _status_flag(status, joint_keys):
-        return True
-    nested = status.get("robot_status")
-    if isinstance(nested, dict) and _status_flag(nested, joint_keys):
-        return True
-    return _alarm_contains(status, ("joint", "collision"))
+    return _detect_status_pattern(status, joint_keys, ("joint", "collision"))
 
 
 def _detect_wrong_tool_status(status: dict) -> bool:
@@ -107,12 +121,7 @@ def _detect_wrong_tool_status(status: dict) -> bool:
         "payload_error",
         "payloadError",
     )
-    if _status_flag(status, tool_keys):
-        return True
-    nested = status.get("robot_status")
-    if isinstance(nested, dict) and _status_flag(nested, tool_keys):
-        return True
-    return _alarm_contains(status, ("tool", "payload"))
+    return _detect_status_pattern(status, tool_keys, ("tool", "payload"))
 
 
 def _detect_rescue_mode_status(status: dict) -> bool:
@@ -130,12 +139,7 @@ def _detect_drag_not_allowed_status(status: dict) -> bool:
         "dragNotAllowed",
         "drag_not_allowed_warning",
     )
-    if _status_flag(status, drag_keys):
-        return True
-    nested = status.get("robot_status")
-    if isinstance(nested, dict) and _status_flag(nested, drag_keys):
-        return True
-    return _alarm_contains(status, ("drag not allowed",))
+    return _detect_status_pattern(status, drag_keys, ("drag not allowed",))
 
 
 # Error state management wrappers

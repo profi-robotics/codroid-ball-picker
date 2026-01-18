@@ -1,9 +1,44 @@
 """Rescue mode control callbacks for manual robot recovery."""
 
-from typing import Optional
+from typing import Callable, Optional
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State
+
+
+async def _execute_robot_action(
+    robot_uri: Optional[str],
+    action_fn: Callable,
+    success_title: str,
+    success_message: str,
+    failure_title: str,
+) -> dmc.Notification:
+    """Execute a robot API action and return appropriate notification.
+
+    This helper consolidates the try/except pattern used in rescue mode callbacks.
+    """
+    import app.codroid_picker as codroid_picker_module
+
+    try:
+        await codroid_picker_module._with_robot_api(
+            robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, action_fn
+        )
+        return codroid_picker_module.dmc.Notification(
+            action="show",
+            title=success_title,
+            message=success_message,
+            color="orange",
+            autoClose=5000,
+        )
+    except Exception as exc:  # noqa: BLE001
+        codroid_picker_module.LOGGER.exception(failure_title)
+        return codroid_picker_module.dmc.Notification(
+            action="show",
+            title=failure_title,
+            message=str(exc),
+            color="red",
+            autoClose=7000,
+        )
 
 
 def register_rescue_mode_callbacks(app: Dash) -> None:
@@ -45,27 +80,13 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         async def _enter(api) -> None:
             await api.enter_rescue_mode()
 
-        try:
-            await codroid_picker_module._with_robot_api(
-                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _enter
-            )
-            return codroid_picker_module.dmc.Notification(
-                action="show",
-                title="Rescue mode requested",
-                message="Rescue mode command sent.",
-                color="orange",
-                autoClose=5000,
-            )
-        except Exception as exc:  # noqa: BLE001
-            codroid_picker_module.LOGGER.exception(
-                "Failed to enter rescue mode")
-            return codroid_picker_module.dmc.Notification(
-                action="show",
-                title="Rescue mode failed",
-                message=str(exc),
-                color="red",
-                autoClose=7000,
-            )
+        return await _execute_robot_action(
+            robot_uri,
+            _enter,
+            success_title="Rescue mode requested",
+            success_message="Rescue mode command sent.",
+            failure_title="Rescue mode failed",
+        )
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),
@@ -93,27 +114,13 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         async def _exit(api) -> None:
             await api.exit_rescue_mode()
 
-        try:
-            await codroid_picker_module._with_robot_api(
-                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _exit
-            )
-            return codroid_picker_module.dmc.Notification(
-                action="show",
-                title="Rescue mode exit requested",
-                message="Exit command sent.",
-                color="orange",
-                autoClose=5000,
-            )
-        except Exception as exc:  # noqa: BLE001
-            codroid_picker_module.LOGGER.exception(
-                "Failed to exit rescue mode")
-            return codroid_picker_module.dmc.Notification(
-                action="show",
-                title="Exit rescue mode failed",
-                message=str(exc),
-                color="red",
-                autoClose=7000,
-            )
+        return await _execute_robot_action(
+            robot_uri,
+            _exit,
+            success_title="Rescue mode exit requested",
+            success_message="Exit command sent.",
+            failure_title="Exit rescue mode failed",
+        )
 
     @app.callback(
         Output("rescue-jog-status", "children"),

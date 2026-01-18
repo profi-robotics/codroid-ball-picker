@@ -20,6 +20,19 @@ from app.codroid_picker.components.calibration_tab import (
 from app.codroid_picker.session import SESSION
 from app.settings import SETTINGS
 
+
+def _panel_card(title: str, children, *, color: str = "dimmed") -> dmc.Card:
+    """Create a standard panel card with a title and stacked body."""
+    return dmc.Card(
+        [
+            dmc.Text(title, fw=600, size="lg", c=color),
+            dmc.Stack(children=children, gap="xs"),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
 # Gripper constants - refreshed dynamically
 GRIPPER_PROFILE = SETTINGS.gripper_profile
 GRIPPER_FORCE_MIN = GRIPPER_PROFILE.force_min
@@ -100,15 +113,10 @@ def build_tracking_mode_controls() -> dmc.Group:
 
 def build_detection_tab() -> dmc.Stack:
     """Build the detection tab with GPU status, model loader, and detection controls."""
-    gpu_card = dmc.Card(
-        [
-            dmc.Text("GPU Status", fw=600, size="lg"),
-            dmc.Stack(id="gpu-status-display", gap="xs",
-                      children=_format_gpu_status() if _format_gpu_status else []),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
+    gpu_card = _panel_card(
+        "GPU Status",
+        children=[dmc.Stack(id="gpu-status-display", gap="xs",
+                      children=_format_gpu_status() if _format_gpu_status else [])],
     )
 
     model_options = _model_options_fn() if _model_options_fn else []
@@ -546,4 +554,3 @@ def build_monitoring_tab() -> dmc.Stack:
     )
 
     return dmc.Stack([summary_card, detection_card, pick_card], gap="md")
-
