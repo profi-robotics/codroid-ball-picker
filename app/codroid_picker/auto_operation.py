@@ -81,11 +81,6 @@ def get_latest_frame():
     return codroid_picker_module.get_latest_frame()
 
 
-def _command_gripper(width_mm, state_name):
-    """Command the gripper to a specific width."""
-    import app.codroid_picker as codroid_picker_module
-    return codroid_picker_module._command_gripper(width_mm, state_name)
-
 
 def _estimate_detection_width_mm(detection, workspace_def):
     """Estimate detection width in mm based on bounding box and workspace scale.

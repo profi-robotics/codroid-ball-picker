@@ -192,5 +192,5 @@ def _apply_robot_calibration_results(
     session.plate_to_robot_transform = None
     session.plate_origin_mm = None
     save_workspace_definition(updated_ws, workspace_path)
-    accuracy = _record_robot_accuracy(mean_xy_error, max_xy_error)
+    accuracy = _record_robot_accuracy(float(mean_xy_error), float(max_xy_error))
     return transform, accuracy
