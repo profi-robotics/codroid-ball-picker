@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from app.codroid_picker import gripper_utils as gripper_utils_module
 from app.codroid_picker.app_instance import registry
-from app.codroid_picker.component_builders import set_builder_dependencies
+from app.codroid_picker.components import set_builder_dependencies
 
 
 def initialize_modules(

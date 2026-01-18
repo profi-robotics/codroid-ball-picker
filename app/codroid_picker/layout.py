@@ -9,7 +9,7 @@ from __future__ import annotations
 import dash_mantine_components as dmc
 from dash import dcc, html
 
-from app.codroid_picker.components.calibration_tab import build_camera_panel
+import app.settings as app_settings
 from app.codroid_picker.session import SESSION
 from app.settings import (
     SETTINGS,
@@ -18,8 +18,6 @@ from app.settings import (
     DEFAULT_ROBOT_CALIBRATION_PATH,
     DEFAULT_RESOLUTION,
     DEFAULT_FPS,
-    DEFAULT_ROBOT_URI,
-    DEFAULT_GRIPPER_IP,
 )
 from app.codroid_picker.state import _operation_snapshot, get_error_snapshot
 from app.codroid_picker.components import (
@@ -28,6 +26,7 @@ from app.codroid_picker.components import (
     build_application_tab,
     build_monitoring_tab,
     build_calibration_tab,
+    build_camera_panel,
 )
 from app.codroid_picker.modals import (
     build_robot_calibration_modal,
@@ -108,7 +107,7 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.TextInput(
                     id="robot-uri",
                     label="WebSocket URI",
-                    value=DEFAULT_ROBOT_URI,
+                    value=app_settings.DEFAULT_ROBOT_URI,
                 ),
                 dmc.NumberInput(
                     id="settings-robot-coordinate-id",
@@ -138,7 +137,7 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.TextInput(
                     id="gripper-cb-ip",
                     label="Compute Box IP Address",
-                    value=DEFAULT_GRIPPER_IP,
+                    value=app_settings.DEFAULT_GRIPPER_IP,
                     placeholder="192.168.101.95",
                     description="IP address of the OnRobot Compute Box",
                 ),

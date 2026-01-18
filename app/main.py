@@ -28,8 +28,6 @@ from app.codroid_picker.robot_callbacks import register_robot_callbacks
 from app.codroid_picker.session import SESSION
 # Import functions that were extracted to modules but are still accessed via codroid_picker_module
 from app.codroid_picker.streaming import (
-    _safe_int,
-    _safe_float,
     MJPEG_STREAM,
     RAW_STREAM,
 )

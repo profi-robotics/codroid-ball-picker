@@ -12,10 +12,15 @@ from __future__ import annotations
 import dash_mantine_components as dmc
 from dash import html
 
-from app.codroid_picker.components.common import (_encode_frame, _placeholder_frame)
+from app.codroid_picker.components.common import _encode_frame, _placeholder_frame
 from app.codroid_picker.session import SESSION
-from app.settings import (DEFAULT_BUNDLE_PATH, DEFAULT_ROBOT_CALIBRATION_PATH, DEFAULT_WORKSPACE_PATH,
-                          GRIPPER_PROFILE_OPTIONS, SETTINGS)
+from app.settings import (
+    DEFAULT_BUNDLE_PATH,
+    DEFAULT_ROBOT_CALIBRATION_PATH,
+    DEFAULT_WORKSPACE_PATH,
+    GRIPPER_PROFILE_OPTIONS,
+    SETTINGS,
+)
 
 __all__ = [
     "build_calibration_tab",
@@ -67,164 +72,99 @@ def _calibration_stepper_stack() -> dmc.Stepper:
                                         gap="xs",
                                     ),
                                 ],
-                                gap="sm",
+                                gap="md",
                             ),
+                            p="md",
                             withBorder=True,
-                            radius="md",
-                            p="sm",
-                            mb="sm",
-                        ),
-                        dmc.Text(id="camera-calib-frame-count", size="sm"),
-                        dmc.Progress(
-                            value=0, id="camera-calib-progress", size="lg", mb="sm"),
-                        dmc.Group(
-                            [
-                                dmc.Button(
-                                    "Capture frame",
-                                    id="camera-capture-frame",
-                                    variant="light",
-                                ),
-                                dmc.Button(
-                                    "Auto capture",
-                                    id="camera-capture-auto",
-                                    variant="filled",
-                                    color="teal",
-                                ),
-                                dmc.Button(
-                                    "Stop",
-                                    id="camera-capture-stop",
-                                    variant="outline",
-                                    color="red",
-                                ),
-                            ],
-                            gap="xs",
                         ),
                         dmc.Button(
-                            "Compute intrinsics",
-                            id="camera-compute-intrinsics",
-                            variant="filled",
-                            color="blue",
-                            mt="xs",
+                            "Calibrate",
+                            id="calibrate-camera",
+                            fullWidth=True,
+                            disabled=True,
+                            color="teal",
                         ),
-                        dmc.Text(id="camera-intrinsics-status",
-                                 size="sm", c="dimmed"),
-                        dmc.Alert(
-                            id="camera-calib-error",
-                            color="red",
-                            variant="light",
+                        dmc.Button(
+                            "Use saved calibration",
+                            id="use-existing-calibration",
+                            fullWidth=True,
+                            variant="outline",
+                            disabled=True,
+                        ),
+                        dmc.Box(
+                            id="camera-calibration-action",
+                            style={"minHeight": "0px"},
+                        ),
+                        dmc.Text(
+                            id="calibration-progress-text",
+                            size="sm",
+                            c="dimmed",
+                            style={"display": "none",
+                                   "marginBottom": "8px"},
+                        ),
+                        dmc.Progress(
+                            id="calibration-progress",
+                            value=0,
+                            size="sm",
+                            striped=True,
+                            animated=True,
                             style={"display": "none"},
                         ),
+                        dmc.Text(
+                            id="camera-calibration-metrics", size="sm"),
                     ],
-                    gap="xs",
+                    gap="md",
                 ),
-            ),
-            dmc.StepperStep(
-                label="Workspace definition",
-                description="Define working area boundaries",
-                children=build_workspace_step_content(),
             ),
             dmc.StepperStep(
                 label="Robot calibration",
-                description="Robot-camera coordinate transform",
+                description="Detect plate markers",
                 children=dmc.Stack(
                     [
                         dmc.Text(
-                            "Calibrate the robot-to-camera transform using the calibration plate.",
+                            "Detect the calibration plate and attach the homography.",
                             size="sm",
                             c="dimmed",
                         ),
-                        dmc.Card(
-                            dmc.Group(
-                                [
-                                    dmc.ThemeIcon(
-                                        dmc.Text("✕", size="lg"),
-                                        size="lg",
-                                        radius="md",
-                                        color="red",
-                                        id="plate-detected-icon",
-                                    ),
-                                    dmc.Stack(
-                                        [
-                                            dmc.Text("Calibration plate detected",
-                                                     size="sm", fw=600),
-                                            dmc.Text(
-                                                "Position the plate in view",
-                                                size="xs",
-                                                c="dimmed",
-                                            ),
-                                        ],
-                                        gap="xs",
-                                    ),
-                                ],
-                                gap="sm",
-                            ),
-                            withBorder=True,
-                            radius="md",
-                            p="sm",
-                            mb="sm",
-                        ),
-                        dmc.Button(
-                            "Auto calibrate",
-                            id="robot-auto-calibrate",
-                            variant="filled",
-                            color="teal",
-                        ),
-                        dmc.Text(id="robot-calib-status",
-                                 size="sm", c="dimmed"),
                         dmc.Alert(
-                            id="robot-calib-error",
-                            color="red",
+                            id="plate-detection-summary",
+                            title="Plate visibility",
+                            color="yellow",
+                            children="Waiting for plate markers...",
                             variant="light",
-                            style={"display": "none"},
-                        ),
-                    ],
-                    gap="xs",
-                ),
-            ),
-            dmc.StepperStep(
-                label="Verification",
-                description="Test calibration accuracy",
-                children=dmc.Stack(
-                    [
-                        dmc.Text(
-                            "Test the calibration by moving to known plate points.",
-                            size="sm",
-                            c="dimmed",
-                        ),
-                        dmc.NumberInput(
-                            id="verification-z-offset",
-                            label="Z offset (mm)",
-                            description="Z-height above calibration point; positive = higher.",
-                            value=50.0,
-                            min=0.0,
-                            max=200.0,
-                            step=5.0,
                         ),
                         dmc.Button(
-                            "Run verification sequence",
-                            id="run-verification",
+                            "Begin calibrating robot",
+                            id="start-robot-calibration",
                             variant="filled",
                             color="teal",
+                            disabled=True,
                         ),
-                        dmc.Text(id="verification-status",
+                        dmc.Button(
+                            "Use saved calibration",
+                            id="use-existing-robot-calibration",
+                            fullWidth=True,
+                            variant="outline",
+                            color="brand",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Run verification move",
+                            id="run-verification-inline",
+                            fullWidth=True,
+                            variant="outline",
+                            color="teal",
+                            disabled=True,
+                        ),
+                        dmc.Text(id="current-robot-position",
+                                 size="xs", c="dimmed"),
+                        dmc.Text(id="plate-action-status",
                                  size="sm", c="dimmed"),
-                    ],
-                    gap="xs",
-                ),
-            ),
-            dmc.StepperCompleted(
-                children=dmc.Stack(
-                    [
+                        dmc.Text(id="plate-metrics", size="sm"),
                         dmc.Text(
-                            "Calibration complete!",
-                            size="lg",
-                            fw=700,
-                            c="teal",
-                        ),
-                        dmc.Text(
-                            "The camera and robot are calibrated. You can now use the pick-and-place operations.",
+                            id="robot-calibration-status",
                             size="sm",
-                            c="dimmed",
+                            c="teal",
                         ),
                     ],
                     gap="xs",
@@ -381,7 +321,7 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                 id="camera-feed-container",
                 children=html.Img(
                     id="camera-feed",
-                    src="/video_feed",  # Use MJPEG stream
+                    src="/video_feed",  # Use MJPEG stream to avoid per-frame HTTP polling
                     style={
                         "width": "100%",
                         "height": "auto",

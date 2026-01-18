@@ -15,6 +15,7 @@ import dash_mantine_components as dmc
 import numpy as np
 from dash import dcc, html
 
+import app.settings as app_settings
 from app.settings import (
     SETTINGS,
     DEFAULT_BUNDLE_PATH,
@@ -22,12 +23,14 @@ from app.settings import (
     DEFAULT_ROBOT_CALIBRATION_PATH,
     DEFAULT_RESOLUTION,
     DEFAULT_FPS,
-    DEFAULT_ROBOT_URI,
-    DEFAULT_GRIPPER_IP,
     GRIPPER_PROFILE_OPTIONS,
 )
 from app.codroid_picker.state import _operation_snapshot, get_error_snapshot
 from app.codroid_picker.utils import placeholder_frame
+
+# Access dynamically created globals via module reference
+DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
+DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
 
 # Re-export commonly used items
 __all__ = [
