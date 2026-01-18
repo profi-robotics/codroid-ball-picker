@@ -459,8 +459,8 @@ def build_application_tab() -> dmc.Stack:
                 [
                     dmc.TabsList(
                         [
-                            dmc.TabsTab("Workspace", value="workspace"),
                             dmc.TabsTab("Pick & Place", value="pick-place"),
+                            dmc.TabsTab("Workspace", value="workspace"),
                         ],
                         style={
                             "width": "100%",
@@ -469,10 +469,10 @@ def build_application_tab() -> dmc.Stack:
                         },
                     ),
                     dmc.TabsPanel(
-                        build_workspace_step_content(), value="workspace"
+                        build_pick_place_tab(), value="pick-place"
                     ),
                     dmc.TabsPanel(
-                        build_pick_place_tab(), value="pick-place"
+                        build_workspace_step_content(), value="workspace"
                     ),
                 ],
                 id="application-tabs",
