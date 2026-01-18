@@ -19,7 +19,7 @@ import numpy as np
 
 import app.settings as app_settings
 from app.codroid_picker.session import SESSION
-from app.codroid_picker.robot_helpers import safe_float as _safe_float
+from app.codroid_picker.utils.safe_types import safe_float as _safe_float
 from vision import plate, workspace
 
 if TYPE_CHECKING:
@@ -33,20 +33,11 @@ SETTINGS = app_settings.SETTINGS
 # Import registry for accessing robot session
 from app.codroid_picker.app_instance import registry
 
-
-def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.RigidTransform:
-    """Compute rigid transform (rotation + translation) from one point set to another."""
-    from app.codroid_picker.procedures import _rigid_transform as proc_rigid_transform
-    return proc_rigid_transform(from_pts, to_pts)
-
-
-def _robot_to_workspace_mm(
-    workspace_def: workspace.WorkspaceDefinition,
-    robot_xyz: np.ndarray,
-) -> Optional[Tuple[float, float]]:
-    """Convert robot base coordinates to workspace coordinates."""
-    from app.codroid_picker.procedures import _robot_to_workspace_mm as proc_robot_to_workspace
-    return proc_robot_to_workspace(workspace_def, robot_xyz)
+# Import coordinate transform utilities from procedures
+from app.codroid_picker.procedures import (
+    _rigid_transform,
+    _robot_to_workspace_mm,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -22,24 +22,13 @@ from app.codroid_picker.state import (
     _operation_snapshot,
 )
 from app.codroid_picker.state import resume_operation as _resume_operation
+from app.codroid_picker.exceptions import OperationAbort, OperationPaused
 
 LOGGER = logging.getLogger(__name__)
 
 SETTINGS = app_settings.SETTINGS
 ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
 
-
-# ---------------------------------------------------------------------------
-# Exception types
-# ---------------------------------------------------------------------------
-
-
-class OperationAbort(RuntimeError):
-    """Raised when an operation is explicitly stopped."""
-
-
-class OperationPaused(RuntimeError):
-    """Raised when an operation is paused and needs to wait for resume."""
 
 
 # ---------------------------------------------------------------------------

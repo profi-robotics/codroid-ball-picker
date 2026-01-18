@@ -27,15 +27,13 @@ def register_auto_operation_callbacks(app: Dash) -> None:
     @app.callback(
         Output("auto-start", "disabled"),
         Output("auto-stop", "disabled"),
-        Output("auto-pause", "disabled"),
-        Output("auto-resume", "disabled"),
         Input("prerequisites-state", "data"),
         Input("auto-operation-state", "data"),
     )
     def _update_auto_buttons(
         prerequisites: Optional[dict],
         auto_state: Optional[dict],
-    ) -> Tuple[bool, bool, bool, bool]:
+    ) -> Tuple[bool, bool]:
         """Enable/disable auto operation buttons based on prerequisites and operation state."""
         prereqs = prerequisites or {}
         all_ready = all([
@@ -50,26 +48,19 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         state_data = auto_state or {}
         running = state_data.get("running", False)
-        paused = state_data.get("paused", False)
 
         # Start button: enabled only when all prerequisites met and not running
         start_disabled = not all_ready or running
         # Stop button: enabled only when running
         stop_disabled = not running
-        # Pause button: enabled when running and not paused
-        pause_disabled = not running or paused
-        # Resume button: enabled when paused
-        resume_disabled = not paused
 
-        return start_disabled, stop_disabled, pause_disabled, resume_disabled
+        return start_disabled, stop_disabled
 
     @app.callback(
         Output("auto-operation-state", "data"),
         Output("app-notifications", "children", allow_duplicate=True),
         Input("auto-start", "n_clicks"),
         Input("auto-stop", "n_clicks"),
-        Input("auto-pause", "n_clicks"),
-        Input("auto-resume", "n_clicks"),
         State("auto-operation-state", "data"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
@@ -77,12 +68,13 @@ def register_auto_operation_callbacks(app: Dash) -> None:
     async def _handle_auto_operation(
         start_clicks: int,
         stop_clicks: int,
-        pause_clicks: int,
-        resume_clicks: int,
         current_state: Optional[dict],
         robot_uri: Optional[str],
     ) -> Tuple[dict, dmc.Notification]:
-        """Handle auto operation start/stop/pause/resume."""
+        """Handle auto operation start/stop.
+
+        Note: Pause/resume is now handled by the program control buttons.
+        """
         import app.codroid_picker as codroid_picker_module
 
         ctx = callback_context
@@ -169,32 +161,6 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                         title="Auto Operation",
                         message="Auto pick & place operation stopped",
                         color="orange",
-                        action="show",
-                    ),
-                )
-            return no_update, no_update
-
-        elif trigger_id == "auto-pause":
-            if registry.pause("user_request"):
-                return (
-                    {"running": True, "paused": True, "message": "Auto operation paused"},
-                    dmc.Notification(
-                        title="Auto Operation",
-                        message="Auto pick & place operation paused",
-                        color="blue",
-                        action="show",
-                    ),
-                )
-            return no_update, no_update
-
-        elif trigger_id == "auto-resume":
-            if registry.resume():
-                return (
-                    {"running": True, "paused": False, "message": "Auto operation resumed"},
-                    dmc.Notification(
-                        title="Auto Operation",
-                        message="Auto pick & place operation resumed",
-                        color="green",
                         action="show",
                     ),
                 )

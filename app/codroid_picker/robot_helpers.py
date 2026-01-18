@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import time
 from typing import (
-    Any,
     Awaitable,
     Callable,
     Optional,
@@ -303,41 +302,7 @@ def is_recently_synced(
 
 
 # =============================================================================
-# Utility Functions
+# Utility Functions (re-exported from utils.safe_types)
 # =============================================================================
 
-
-def safe_int(value: Optional[float], default: int) -> int:
-    """Convert value to int, returning default if None or invalid.
-
-    Args:
-        value: Value to convert.
-        default: Default value if conversion fails.
-
-    Returns:
-        Integer value or default.
-    """
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def safe_float(value: Any, default: float) -> float:
-    """Convert value to float, returning default if None or invalid.
-
-    Args:
-        value: Value to convert.
-        default: Default value if conversion fails.
-
-    Returns:
-        Float value or default.
-    """
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from app.codroid_picker.utils.safe_types import safe_int, safe_float

@@ -96,19 +96,6 @@ def _current_coordinate_id(session: RobotSession) -> Optional[int]:
         return None
 
 
-def _posture_to_dict(posture: RobotPosture) -> dict:
-    """Convert RobotPosture to dictionary."""
-    return {
-        "x": float(posture.x),
-        "y": float(posture.y),
-        "z": float(posture.z),
-        "a": float(posture.a),
-        "b": float(posture.b),
-        "c": float(posture.c),
-        "timestamp": float(posture.timestamp),
-        "age_s": float(posture.age_seconds()),
-    }
-
 
 def _ensure_posture_axes(posture: dict, fallback: RobotPosture) -> dict:
     """Ensure posture dict has all axes, using fallback for missing ones."""

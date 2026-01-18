@@ -62,7 +62,6 @@ __all__ = [
     "GRIPPER_FORCE_DEFAULT",
     # Functions
     "placeholder_frame",
-    "_placeholder_frame",
     "_encode_frame",
 ]
 
@@ -71,8 +70,6 @@ GRIPPER_FORCE_MIN = SETTINGS.gripper_profile.force_min
 GRIPPER_FORCE_MAX = SETTINGS.gripper_profile.force_max
 GRIPPER_FORCE_DEFAULT = SETTINGS.gripper_profile.force_default
 
-# Keep underscore-prefixed alias for backward compatibility
-_placeholder_frame = placeholder_frame
 
 
 def _encode_frame(frame: np.ndarray) -> str:

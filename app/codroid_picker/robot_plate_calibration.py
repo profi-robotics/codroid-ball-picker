@@ -11,12 +11,11 @@ from typing import Tuple
 
 import numpy as np
 
-from vision import markers, plate, workspace
+from vision import plate, workspace
 
 from app.codroid_picker.app_instance import registry
 from app.codroid_picker.persistence import _plate_is_stable
 from app.codroid_picker.procedures import (
-    _workspace_pixel_to_mm,
     _record_robot_accuracy,
     _rigid_transform,
 )
@@ -26,51 +25,9 @@ LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Drop marker detection
-# ---------------------------------------------------------------------------
-
-
-def _detect_drop_marker(
-    frame: np.ndarray,
-    marker_id: int,
-) -> Tuple[markers.MarkerDetection, Tuple[float, float]]:
-    """Detect a drop marker in the frame and return its workspace coordinates."""
-    session = registry().session
-    detections = markers.detect_all_markers(frame)
-    if marker_id not in detections:
-        raise RuntimeError(f"Drop marker {marker_id} not detected.")
-    marker = detections[marker_id]
-    workspace_mm = None
-    if session.workspace_definition is not None:
-        workspace_mm = _workspace_pixel_to_mm(
-            session.workspace_definition, marker.center
-        )
-    if workspace_mm is None:
-        raise RuntimeError(
-            "Workspace is not defined; run workspace detection first."
-        )
-    return marker, workspace_mm
-
-
-# ---------------------------------------------------------------------------
 # Plate visibility/stability checks
 # ---------------------------------------------------------------------------
 
-
-def _ensure_plate_visible(
-    max_age_s: float = None,
-) -> None:
-    """Ensure the calibration plate markers are visible."""
-    settings = registry().settings
-    if max_age_s is None:
-        max_age_s = settings.plate_visibility_max_age_s
-    ok, message = _plate_is_stable(
-        max_age_s=max_age_s,
-        require_baseline=False,
-        allow_lost=False,
-    )
-    if not ok:
-        raise RuntimeError(message)
 
 
 def _ensure_plate_stable(

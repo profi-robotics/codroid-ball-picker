@@ -12,7 +12,7 @@ from __future__ import annotations
 import dash_mantine_components as dmc
 from dash import html
 
-from app.codroid_picker.components.common import _encode_frame, _placeholder_frame
+from app.codroid_picker.components.common import _encode_frame, placeholder_frame
 from app.codroid_picker.session import SESSION
 from app.settings import (
     DEFAULT_BUNDLE_PATH,
@@ -279,7 +279,7 @@ def build_workspace_step_content() -> dmc.Stack:
 def build_camera_panel(title: str = "Camera View") -> dmc.Card:
     """Build the camera feed panel with overlay controls."""
     placeholder_src = _encode_frame(
-        _placeholder_frame("Camera stream offline"))
+        placeholder_frame("Camera stream offline"))
     return dmc.Card(
         [
             dmc.Group(

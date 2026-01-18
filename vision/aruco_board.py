@@ -51,8 +51,3 @@ def load_charuco_board_spec(path: Path) -> CharucoBoardSpec:
         dictionary=data.get("dictionary", "DICT_4X4_50"),
     )
 
-
-def load_aruco_board_spec(path: Path) -> CharucoBoardSpec:
-    """Backward-compatible alias for older callers."""
-
-    return load_charuco_board_spec(path)

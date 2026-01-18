@@ -291,7 +291,7 @@ body {
 
 .footer-body-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  grid-template-columns: minmax(260px, 0.9fr) minmax(260px, 1.1fr);
   column-gap: 28px;
   row-gap: 12px;
   align-items: flex-start;

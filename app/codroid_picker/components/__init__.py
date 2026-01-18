@@ -33,7 +33,7 @@ from app.codroid_picker.components.tabs import (
 
 # Re-export common utilities
 from app.codroid_picker.components.common import (
-    _placeholder_frame,
+    placeholder_frame,
     _encode_frame,
     GRIPPER_FORCE_MIN,
     GRIPPER_FORCE_MAX,
@@ -58,7 +58,7 @@ __all__ = [
     "build_tracking_mode_controls",
     "set_builder_dependencies",
     # Common utilities
-    "_placeholder_frame",
+    "placeholder_frame",
     "_encode_frame",
     "GRIPPER_FORCE_MIN",
     "GRIPPER_FORCE_MAX",

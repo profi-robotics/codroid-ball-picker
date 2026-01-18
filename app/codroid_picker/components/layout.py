@@ -157,22 +157,24 @@ def build_header() -> dmc.AppShellHeader:
 def _build_stop_column() -> dmc.Stack:
     """Build the emergency stop and power controls column."""
     stop_button = dmc.Button(
-        "STOP",
+        children="STOP",
         id="safety-stop",
         color="red",
-        size="md",
+        size="lg",
         radius="xl",
         variant="filled",
         fullWidth=False,
         style={
-            "fontWeight": 800,
-            "letterSpacing": "0.06em",
-            "padding": "14px 26px",
-            "minWidth": "210px",
-            "fontSize": "16px",
+            "fontWeight": 900,
+            "letterSpacing": "0.08em",
+            "padding": "24px 32px",  # Larger padding for touchscreen
+            "minWidth": "220px",
+            "fontSize": "20px",
+            "height": "80px",  # Explicit height
             "backgroundImage": "repeating-linear-gradient(45deg, #ff4747 0, #ff4747 12px, #ffd447 12px, #ffd447 24px)",
-            "color": "#1f1f1f",
-            "border": "2px solid #8b0000",
+            "color": "#000000",  # Pure black for maximum contrast
+            "border": "3px solid #8b0000",
+            "textShadow": "0 0 2px rgba(255,255,255,0.5)",  # Subtle text outline for visibility
         },
     )
     power_toggle = dmc.Switch(
@@ -182,36 +184,11 @@ def _build_stop_column() -> dmc.Stack:
         color="red",
         size="md",
     )
-    rescue_button = dmc.Button(
-        "Enable rescue mode",
-        id="rescue-mode-enable",
-        color="orange",
-        variant="outline",
-        size="sm",
-        radius="md",
-    )
-    rescue_exit_button = dmc.Button(
-        "Exit rescue mode",
-        id="rescue-mode-exit",
-        color="orange",
-        variant="light",
-        size="sm",
-        radius="md",
-        style={"display": "none"},
-    )
-    rescue_status = dmc.Text(
-        id="rescue-mode-status",
-        size="xs",
-        c="dimmed",
-    )
     return dmc.Stack(
         [
             dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
             stop_button,
             power_toggle,
-            rescue_button,
-            rescue_exit_button,
-            rescue_status,
         ],
         gap=6,
         align="center",
@@ -219,7 +196,10 @@ def _build_stop_column() -> dmc.Stack:
 
 
 def _build_auto_control_column() -> dmc.Stack:
-    """Build the auto pick & place control column."""
+    """Build the auto pick & place control column.
+
+    Note: Pause/Resume functionality is now handled by the program control buttons.
+    """
     auto_start_button = dmc.Button(
         "Start Auto",
         id="auto-start",
@@ -258,53 +238,11 @@ def _build_auto_control_column() -> dmc.Stack:
             "minWidth": "110px",
         },
     )
-    auto_pause_button = dmc.Button(
-        "Pause",
-        id="auto-pause",
-        color="yellow",
-        size="sm",
-        radius="md",
-        variant="filled",
-        disabled=True,
-        leftSection=dmc.ActionIcon(
-            "⏸",
-            size="sm",
-            variant="transparent",
-            color="black",
-        ),
-        style={
-            "fontWeight": 700,
-            "minWidth": "90px",
-        },
-    )
-    auto_resume_button = dmc.Button(
-        "Resume",
-        id="auto-resume",
-        color="green",
-        size="sm",
-        radius="md",
-        variant="filled",
-        disabled=True,
-        leftSection=dmc.ActionIcon(
-            "▶",
-            size="sm",
-            variant="transparent",
-            color="white",
-        ),
-        style={
-            "fontWeight": 700,
-            "minWidth": "90px",
-        },
-    )
     return dmc.Stack(
         [
             dmc.Text("Auto pick & place", fw=700, size="sm", c="blue"),
             dmc.Group(
                 [auto_start_button, auto_stop_button],
-                gap="xs",
-            ),
-            dmc.Group(
-                [auto_pause_button, auto_resume_button],
                 gap="xs",
             ),
         ],
@@ -381,7 +319,7 @@ def _build_robot_speed_block() -> dmc.Stack:
         min=0,
         max=100,
         step=5,
-        value=25,
+        value=65,
         labelAlwaysOn=False,
         size="sm",
         marks=[
@@ -416,10 +354,37 @@ def _build_robot_speed_block() -> dmc.Stack:
         justify="flex-start",
         style={"flexGrow": 1},
     )
+
+    rescue_button = dmc.Button(
+        "Enable rescue mode",
+        id="rescue-mode-enable",
+        color="orange",
+        variant="outline",
+        size="sm",
+        radius="md",
+    )
+    rescue_exit_button = dmc.Button(
+        "Exit rescue mode",
+        id="rescue-mode-exit",
+        color="orange",
+        variant="light",
+        size="sm",
+        radius="md",
+        style={"display": "none"},
+    )
+    rescue_status = dmc.Text(
+        id="rescue-mode-status",
+        size="xs",
+        c="dimmed",
+    )
+
     return dmc.Stack(
         [
             dmc.Text("Robot speed", fw=600, size="sm"),
             robot_speed_controls,
+            rescue_button,
+            rescue_exit_button,
+            rescue_status,
         ],
         gap=4,
         align="flex-start",
@@ -427,9 +392,8 @@ def _build_robot_speed_block() -> dmc.Stack:
     )
 
 
-def _build_gripper_block() -> dmc.Stack:
-    """Build the gripper control block with width/force/speed sliders."""
-    # Use helper functions to create slider controls
+def _build_gripper_width_control() -> dmc.Stack:
+    """Build the gripper width control for the footer header (most frequently used)."""
     width_controls = _create_slider_with_controls(
         slider_id="footer-gripper-width",
         min_val=0,
@@ -439,6 +403,19 @@ def _build_gripper_block() -> dmc.Stack:
         decrease_id="footer-gripper-width-decrease",
         increase_id="footer-gripper-width-increase",
     )
+    return dmc.Stack(
+        [
+            dmc.Text("Gripper width", fw=700, size="sm", c="teal"),
+            dmc.Text(id="footer-gripper-status", size="xs", c="dimmed"),
+            width_controls,
+        ],
+        gap=4,
+        align="center",
+    )
+
+
+def _build_gripper_advanced_block() -> dmc.Stack:
+    """Build the gripper advanced controls block (Force & Speed) for footer body."""
     force_controls = _create_slider_with_controls(
         slider_id="footer-gripper-force",
         min_val=GRIPPER_FORCE_MIN,
@@ -459,16 +436,31 @@ def _build_gripper_block() -> dmc.Stack:
     )
     return dmc.Stack(
         [
-            dmc.Text("Gripper control", fw=600, size="sm"),
-            dmc.Text(id="footer-gripper-status", size="sm", c="dimmed"),
-            dmc.Text(id="footer-gripper-meta", size="xs", c="dimmed"),
-            _create_control_row("Width (mm)", width_controls),
-            _create_control_row("Force (N)", force_controls),
-            _create_control_row("Speed (%)", speed_controls),
+            dmc.Group(
+                [
+                    dmc.Text("Gripper advanced", fw=600, size="sm"),
+                    dmc.Text(id="footer-gripper-meta", size="xs", c="dimmed"),
+                ],
+                gap="xs",
+                align="center",
+            ),
+            dmc.Grid(
+                [
+                    dmc.GridCol(
+                        _create_control_row("Force (N)", force_controls),
+                        span=6,
+                    ),
+                    dmc.GridCol(
+                        _create_control_row("Speed (%)", speed_controls),
+                        span=6,
+                    ),
+                ],
+                gutter="md",
+            ),
         ],
         gap=6,
         align="flex-start",
-        style={"flexGrow": 1, "minWidth": "320px"},
+        style={"minWidth": "260px"},
     )
 
 
@@ -560,8 +552,9 @@ def build_footer() -> dmc.AppShellFooter:
     stop_column = _build_stop_column()
     auto_control_column = _build_auto_control_column()
     program_control_column = _build_program_control_column()
+    gripper_width_control = _build_gripper_width_control()
     robot_speed_block = _build_robot_speed_block()
-    gripper_block = _build_gripper_block()
+    gripper_advanced_block = _build_gripper_advanced_block()
     rescue_controls = _build_rescue_controls()
     status_group = _build_status_group()
 
@@ -575,12 +568,12 @@ def build_footer() -> dmc.AppShellFooter:
     )
 
     footer_grid = html.Div(
-        [robot_speed_block, gripper_block],
+        [robot_speed_block, gripper_advanced_block],
         className="footer-body-grid",
     )
 
     standard_controls = dmc.Group(
-        [auto_control_column, program_control_column],
+        [auto_control_column, program_control_column, gripper_width_control],
         id="robot-controls-standard",
         gap="lg",
         align="center",
