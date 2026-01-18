@@ -22,13 +22,7 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI, RobotSession
     from onrobot.twofg import TWOFG
 
-from app.codroid_picker.app_instance import (
-    get_settings,
-    get_gripper_defaults,
-    get_robot_coordinate_id,
-    get_robot_session,
-    registry,
-)
+from app.codroid_picker.app_instance import registry
 from app.codroid_picker.exceptions import OperationPaused, OperationAbort
 from app.codroid_picker.robot_helpers import (
     resolve_gripper_limits as _resolve_gripper_limits,
@@ -121,9 +115,9 @@ def command_gripper(
     """
     from app.codroid_picker.session import SESSION
 
-    gripper = registry.gripper or SESSION.gripper
-    gripper_defaults = get_gripper_defaults()
-    settings = get_settings()
+    gripper = registry().gripper or SESSION.gripper
+    gripper_defaults = registry().gripper_defaults
+    settings = registry().settings
     gripper_profile = settings.gripper_profile
 
     if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
@@ -193,8 +187,8 @@ async def drop_with_verify(
     """
     from app.codroid_picker.session import SESSION
 
-    gripper = registry.gripper or SESSION.gripper
-    gripper_defaults = get_gripper_defaults()
+    gripper = registry().gripper or SESSION.gripper
+    gripper_defaults = registry().gripper_defaults
 
     # Initial open command
     result = command_gripper(gripper_open_width, "opened")
@@ -255,7 +249,7 @@ async def drop_with_verify(
                 retry_width = gripper_open_width + 10.0
 
             LOGGER.info(f"Retrying with width: {retry_width} mm")
-            settings = get_settings()
+            settings = registry().settings
             result = command_gripper(
                 retry_width,
                 "opened (retry)",
@@ -309,7 +303,7 @@ async def execute_linear_move_with_hold(
         run_id: Operation run ID for pause/stop checking.
     """
     if coordinate_id is None:
-        coordinate_id = get_robot_coordinate_id()
+        coordinate_id = registry().robot_coordinate_id
 
     if run_id is not None:
         await wait_for_operation_resume(run_id)
@@ -364,7 +358,7 @@ async def await_motion_settle(
     Raises:
         RuntimeError: If timeout occurs without proper motion/settle.
     """
-    settings = get_settings()
+    settings = registry().settings
     timeout_s = timeout_s or settings.verification_move_timeout_s
     settle_s = settle_s or settings.verification_settle_s
     motion_eps_mm = motion_eps_mm or settings.verification_motion_eps_mm
@@ -455,16 +449,16 @@ async def move_linear_follow_target(
         The final target pose dict, or None if no target was ever fetched.
     """
     if coordinate_id is None:
-        coordinate_id = get_robot_coordinate_id()
+        coordinate_id = registry().robot_coordinate_id
 
-    settings = get_settings()
+    settings = registry().settings
     timeout_s = timeout_s or settings.pick_follow_timeout_s
     update_interval = update_interval or settings.pick_follow_update_interval_s
     segment_hold_s = segment_hold_s or settings.pick_follow_segment_hold_s
     settle_s = settle_s or settings.pick_follow_settle_s
     tolerance_mm = tolerance_mm or settings.pick_follow_tolerance_mm
 
-    session = get_robot_session()
+    session = registry().get_or_create_robot_session()
     last_target: Optional[dict] = None
 
     def _check_operation() -> None:
@@ -558,9 +552,9 @@ async def ensure_coordinate_active(
         coordinate_id: Coordinate system ID (defaults to calibrated ID).
     """
     if coordinate_id is None:
-        coordinate_id = get_robot_coordinate_id()
+        coordinate_id = registry().robot_coordinate_id
 
-    session = get_robot_session()
+    session = registry().get_or_create_robot_session()
     status = session.robot_status_snapshot()
 
     if isinstance(status, dict):
@@ -585,7 +579,7 @@ def log_move_target(
         coordinate_id: Coordinate system ID.
     """
     if coordinate_id is None:
-        coordinate_id = get_robot_coordinate_id()
+        coordinate_id = registry().robot_coordinate_id
 
     LOGGER.info(
         "Move target '%s' (coord=%d): x=%.2f y=%.2f z=%.2f a=%.2f b=%.2f c=%.2f",

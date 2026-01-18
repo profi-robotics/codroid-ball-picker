@@ -25,11 +25,7 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI, RobotSession
     from onrobot.twofg import TWOFG
 
-from app.codroid_picker.app_instance import (
-    get_gripper_defaults,
-    get_settings,
-    registry,
-)
+from app.codroid_picker.app_instance import registry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,8 +75,8 @@ def resolve_gripper_limits(
         Tuple of (min_width, max_width) in mm.
     """
     session = get_session()
-    gripper_defaults = get_gripper_defaults()
-    settings = get_settings()
+    gripper_defaults = registry().gripper_defaults
+    settings = registry().settings
     gripper_profile = settings.gripper_profile
 
     if gripper is None:
@@ -149,7 +145,7 @@ def is_gripper_connected(gripper: Optional["TWOFG"] = None) -> bool:
         True if gripper is connected, False otherwise.
     """
     session = get_session()
-    gripper_defaults = get_gripper_defaults()
+    gripper_defaults = registry().gripper_defaults
 
     if gripper is None:
         gripper = session.gripper

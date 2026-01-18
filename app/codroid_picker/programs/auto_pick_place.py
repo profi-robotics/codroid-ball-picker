@@ -22,13 +22,7 @@ from app.codroid_picker.programs.base import (
     OperationPaused,
     OperationAbort,
 )
-from app.codroid_picker.app_instance import (
-    get_robot_session,
-    get_settings,
-    get_robot_coordinate_id,
-    get_gripper_defaults,
-    registry,
-)
+from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
     ensure_operation_active,
     wait_for_operation_resume,
@@ -69,13 +63,13 @@ class AutoPickPlaceProgram(RobotProgram):
         from app.codroid_picker.session import SESSION
 
         # Check robot posture stream
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
         if not session.posture_seen():
             return False, "Robot posture stream not available."
 
         # Check gripper
-        gripper = registry.gripper or SESSION.gripper
-        gripper_defaults = get_gripper_defaults()
+        gripper = registry().gripper or SESSION.gripper
+        gripper_defaults = registry().gripper_defaults
         if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
             return False, "Gripper not connected."
 
@@ -105,8 +99,8 @@ class AutoPickPlaceProgram(RobotProgram):
         """Execute the auto pick and place loop."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
         workspace_def = SESSION.workspace_definition
 
         if workspace_def is None:
@@ -263,8 +257,8 @@ class AutoPickPlaceProgram(RobotProgram):
         """Execute a pick operation."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         # Determine gripper width
         gripper_close = settings.gripper_profile.close_width_default
@@ -329,8 +323,8 @@ class AutoPickPlaceProgram(RobotProgram):
         """Execute a drop operation."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         drop_target = SESSION.drop_target_robot
         if drop_target is None:
@@ -391,8 +385,8 @@ class AutoPickPlaceProgram(RobotProgram):
         """Move to drop position and optionally open gripper."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         drop_target = SESSION.drop_target_robot
         if drop_target is None:

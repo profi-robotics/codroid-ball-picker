@@ -23,11 +23,7 @@ from app.codroid_picker.programs.base import (
     ProgramResult,
 )
 from app.codroid_picker.exceptions import OperationPaused
-from app.codroid_picker.app_instance import (
-    get_robot_session,
-    get_settings,
-    get_robot_coordinate_id,
-)
+from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
     ensure_operation_active,
     wait_for_operation_resume,
@@ -67,11 +63,11 @@ class VerificationProgram(RobotProgram):
             return False, "Verification requires three calibration points."
 
         # Check robot posture stream
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
         if not session.posture_seen():
             return False, "Robot posture stream not available yet."
 
-        settings = get_settings()
+        settings = registry().settings
         posture = session.position_snapshot()
         age = posture.age_seconds()
         if age > settings.robot_posture_max_age_s:
@@ -84,8 +80,8 @@ class VerificationProgram(RobotProgram):
         from app.codroid_picker.session import SESSION
         from vision import plate
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         # Get calibration points
         points = SESSION.robot_calibration_points[:3]
@@ -94,7 +90,7 @@ class VerificationProgram(RobotProgram):
             min_z = min(float(pt.get("z", 0.0)) for pt in points)
             SESSION.robot_calibration_min_z = min_z
 
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
 
         # Power on and set coordinate system
         self.update_message("Verification move: powering on robot.")

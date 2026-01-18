@@ -31,6 +31,7 @@ from codroid_api import (
 from vision import workspace
 from app.codroid_picker.session import SESSION
 from app.codroid_picker import state
+from app.codroid_picker.app_instance import registry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,14 +48,12 @@ def _get_settings():
 
 def _robot_calibration_path() -> Path:
     """Return the currently configured robot calibration data path."""
-    settings = _get_settings()
-    return settings.DEFAULT_ROBOT_CALIBRATION_PATH
+    return registry().robot_calibration_path
 
 
 def _get_robot_coordinate_id() -> int:
     """Get the robot coordinate ID for calibrated operations."""
-    settings = _get_settings()
-    return settings.ROBOT_COORDINATE_ID
+    return registry().robot_coordinate_id
 
 
 # ==============================================================================
@@ -63,13 +62,7 @@ def _get_robot_coordinate_id() -> int:
 
 def _get_robot_session() -> RobotSession:
     """Get or create the robot session."""
-    if SESSION.robot_session is None:
-        SESSION.robot_session = RobotSession(
-            CodroidSettings(),
-            flange_button_port=DEFAULT_FLANGE_BUTTON_PORT,
-            flange_button_ports=DEFAULT_FLANGE_BUTTON_PORTS,
-        )
-    return SESSION.robot_session
+    return registry().get_or_create_robot_session()
 
 
 def _robot_posture_ready(

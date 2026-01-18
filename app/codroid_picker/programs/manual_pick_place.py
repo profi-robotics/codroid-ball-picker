@@ -23,13 +23,7 @@ from app.codroid_picker.programs.base import (
     OperationPaused,
     OperationAbort,
 )
-from app.codroid_picker.app_instance import (
-    get_robot_session,
-    get_settings,
-    get_robot_coordinate_id,
-    get_gripper_defaults,
-    registry,
-)
+from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
     ensure_operation_active,
     wait_for_operation_resume,
@@ -106,13 +100,13 @@ class ManualPickPlaceProgram(RobotProgram):
         from app.codroid_picker.session import SESSION
 
         # Check robot posture stream
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
         if not session.posture_seen():
             return False, "Robot posture stream not available."
 
         # Check gripper
-        gripper = registry.gripper or SESSION.gripper
-        gripper_defaults = get_gripper_defaults()
+        gripper = registry().gripper or SESSION.gripper
+        gripper_defaults = registry().gripper_defaults
         if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
             return False, "Gripper not connected."
 
@@ -165,8 +159,8 @@ class ManualPickPlaceProgram(RobotProgram):
         """Execute a pick operation with dynamic target tracking."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         # Power on and ensure coordinate system
         self.update_message("Powering on robot...")
@@ -250,8 +244,8 @@ class ManualPickPlaceProgram(RobotProgram):
         """Execute a drop operation."""
         from app.codroid_picker.session import SESSION
 
-        settings = get_settings()
-        coordinate_id = get_robot_coordinate_id()
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
 
         # Power on and ensure coordinate system
         self.update_message("Powering on robot...")
@@ -328,8 +322,8 @@ class ManualPickPlaceProgram(RobotProgram):
         LOGGER.info(f"Gripper open result: {result}")
 
         # Wait for gripper to finish
-        gripper = registry.gripper
-        gripper_defaults = get_gripper_defaults()
+        gripper = registry().gripper
+        gripper_defaults = registry().gripper_defaults
         if gripper is not None and gripper.isConnected(t_index=gripper_defaults["t_index"]):
             max_polls = 20  # 2 seconds max
             for _ in range(max_polls):
@@ -369,13 +363,13 @@ class ManualPickPlaceProgram(RobotProgram):
         coordinate_id: int,
     ) -> None:
         """Execute a linear move with position updates from pose_fn."""
-        settings = get_settings()
+        settings = registry().settings
         timeout_s = settings.verification_move_timeout_s
         settle_s = settings.verification_settle_s
         motion_eps_mm = settings.verification_motion_eps_mm
         heartbeat_interval = 0.2
 
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
         start_time = time.monotonic()
         last_pos = session.position_snapshot()
         moved = False

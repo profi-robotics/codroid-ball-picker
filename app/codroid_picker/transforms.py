@@ -30,11 +30,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_PLATE_PATH = app_settings.DEFAULT_PLATE_PATH
 SETTINGS = app_settings.SETTINGS
 
-
-def _get_robot_session():
-    """Get the robot session - imported locally to avoid circular deps."""
-    from app.codroid_picker.app_instance import registry
-    return registry().robot_session
+# Import registry for accessing robot session
+from app.codroid_picker.app_instance import registry
 
 
 def _rigid_transform(from_pts: np.ndarray, to_pts: np.ndarray) -> workspace.RigidTransform:
@@ -213,7 +210,7 @@ def _extract_plate_robot_points(
 
 def _coord5_transform() -> Optional[workspace.RigidTransform]:
     """Get or compute the coord5 transform from calibration data."""
-    session = _get_robot_session()
+    session = registry().robot_session
     frame = session.coordinate_frame_snapshot()
     if isinstance(frame, dict) and frame:
         try:

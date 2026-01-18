@@ -301,56 +301,6 @@ class AppRegistry:
         self._check_initialized()
         return self._raw_stream
 
-    # -------------------------------------------------------------------------
-    # Legacy Static Methods (for backward compatibility)
-    # -------------------------------------------------------------------------
-
-    @staticmethod
-    def get_settings() -> Any:
-        """Get the app settings module.
-
-        Returns the SETTINGS object from app.settings.
-
-        .. deprecated::
-            Use registry().settings instead.
-        """
-        from app import settings
-
-        return settings.SETTINGS
-
-    @staticmethod
-    def get_gripper_defaults() -> dict:
-        """Get gripper default configuration.
-
-        .. deprecated::
-            Use registry().gripper_defaults instead.
-        """
-        from app import settings
-
-        return settings.GRIPPER_DEFAULTS
-
-    @staticmethod
-    def get_robot_coordinate_id() -> int:
-        """Get the robot coordinate ID for calibrated operations.
-
-        .. deprecated::
-            Use registry().robot_coordinate_id instead.
-        """
-        from app import settings
-
-        return settings.ROBOT_COORDINATE_ID
-
-    @staticmethod
-    def get_default_robot_uri() -> str:
-        """Get the default robot URI.
-
-        .. deprecated::
-            Use registry().default_robot_uri instead.
-        """
-        from app import settings
-
-        return settings.DEFAULT_ROBOT_URI
-
 
 # Module-level singleton accessor
 def registry() -> AppRegistry:
@@ -369,31 +319,3 @@ def registry() -> AppRegistry:
     """
     return AppRegistry()
 
-
-def get_registry() -> AppRegistry:
-    """Get the application registry singleton.
-
-    .. deprecated::
-        Use registry() instead.
-    """
-    return registry()
-
-
-def get_robot_session() -> "RobotSession":
-    """Convenience function to get or create the robot session."""
-    return registry().get_or_create_robot_session()
-
-
-def get_settings() -> Any:
-    """Convenience function to get the settings object."""
-    return registry().get_settings()
-
-
-def get_gripper_defaults() -> dict:
-    """Convenience function to get gripper defaults."""
-    return registry().get_gripper_defaults()
-
-
-def get_robot_coordinate_id() -> int:
-    """Convenience function to get robot coordinate ID."""
-    return registry().get_robot_coordinate_id()

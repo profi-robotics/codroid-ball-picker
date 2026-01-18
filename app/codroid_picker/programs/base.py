@@ -37,9 +37,7 @@ from app.codroid_picker.robot_motion import (
     ensure_coordinate_active,
     log_move_target,
 )
-from app.codroid_picker.app_instance import (
-    get_robot_session,
-)
+from app.codroid_picker.app_instance import registry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -396,7 +394,7 @@ class RobotProgram(ABC):
         """
         if self._robot_api is None:
             raise RuntimeError("Robot API not available")
-        session = get_robot_session()
+        session = registry().get_or_create_robot_session()
         await await_motion_settle(
             self._robot_api,
             session,

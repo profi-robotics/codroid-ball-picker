@@ -51,95 +51,40 @@ class OperationPaused(RuntimeError):
 # Lazy imports to avoid circular dependencies
 # ---------------------------------------------------------------------------
 
+# Import from procedures
+from app.codroid_picker.procedures import (
+    _get_robot_session,
+    _current_coordinate_id,
+    _workspace_pixel_to_mm,
+    _robot_to_workspace_mm,
+    _pixel_to_robot_base_xyz,
+    _ensure_coordinate5_active,
+)
 
-def _get_robot_session():
-    from app.codroid_picker.procedures import _get_robot_session as get_session
-    return get_session()
+# Import from robot_motion
+from app.codroid_picker.robot_motion import (
+    _operation_status,
+    ensure_operation_active as _ensure_operation_active,
+    wait_for_operation_resume as _wait_for_operation_resume,
+    move_linear_follow_target as _move_linear_follow_target,
+)
 
+# Import from overlays
+from app.codroid_picker.overlays import _workspace_corners_px
 
-def _current_coordinate_id(session):
-    from app.codroid_picker.procedures import _current_coordinate_id as get_coord_id
-    return get_coord_id(session)
+# Import from transforms
+from app.codroid_picker.transforms import (
+    _pixel_to_plate_mm,
+    _plate_to_robot_transform,
+    _base_to_coord5,
+    _workspace_to_coord5_mm,
+    _pose_from_workspace_mm,
+    _pose_from_workspace_coord5_mm,
+    _pose_from_coord5_mm,
+)
 
-
-def _workspace_pixel_to_mm(workspace_def, center):
-    from app.codroid_picker.procedures import _workspace_pixel_to_mm as pixel_to_mm
-    return pixel_to_mm(workspace_def, center)
-
-
-def _robot_to_workspace_mm(workspace_def, robot_xyz):
-    from app.codroid_picker.procedures import _robot_to_workspace_mm as robot_to_ws
-    return robot_to_ws(workspace_def, robot_xyz)
-
-
-def _pixel_to_robot_base_xyz(pixel):
-    from app.codroid_picker.procedures import _pixel_to_robot_base_xyz as pixel_to_robot
-    return pixel_to_robot(pixel)
-
-
-def _operation_status(run_id: int) -> str:
-    from app.codroid_picker.robot_motion import _operation_status as op_status
-    return op_status(run_id)
-
-
-def _ensure_operation_active(run_id: int) -> None:
-    from app.codroid_picker.robot_motion import ensure_operation_active
-    ensure_operation_active(run_id)
-
-
-async def _wait_for_operation_resume(run_id: int) -> None:
-    from app.codroid_picker.robot_motion import wait_for_operation_resume
-    await wait_for_operation_resume(run_id)
-
-
-async def _move_linear_follow_target(robot_api, target_fetch, **kwargs):
-    from app.codroid_picker.robot_motion import move_linear_follow_target
-    return await move_linear_follow_target(robot_api, target_fetch, **kwargs)
-
-
-async def _ensure_coordinate5_active(robot_api):
-    from app.codroid_picker.procedures import _ensure_coordinate5_active as ensure_coord5
-    return await ensure_coord5(robot_api)
-
-
-def _workspace_corners_px(workspace_def):
-    from app.codroid_picker.overlays import _workspace_corners_px as corners_px
-    return corners_px(workspace_def)
-
-
-def _pixel_to_plate_mm(pixel):
-    from app.codroid_picker.transforms import _pixel_to_plate_mm as pixel_to_plate
-    return pixel_to_plate(pixel)
-
-
-def _plate_to_robot_transform():
-    from app.codroid_picker.transforms import _plate_to_robot_transform as plate_transform
-    return plate_transform()
-
-
-def _base_to_coord5(base_xyz):
-    from app.codroid_picker.transforms import _base_to_coord5 as base_to_c5
-    return base_to_c5(base_xyz)
-
-
-def _workspace_to_coord5_mm(workspace_def, workspace_xy):
-    from app.codroid_picker.transforms import _workspace_to_coord5_mm as ws_to_c5
-    return ws_to_c5(workspace_def, workspace_xy)
-
-
-def _pose_from_workspace_mm(workspace_def, x_mm, y_mm, z_offset_mm):
-    from app.codroid_picker.transforms import _pose_from_workspace_mm as pose_ws
-    return pose_ws(workspace_def, x_mm, y_mm, z_offset_mm)
-
-
-def _pose_from_workspace_coord5_mm(workspace_def, x_mm, y_mm, z_offset_mm):
-    from app.codroid_picker.transforms import _pose_from_workspace_coord5_mm as pose_c5
-    return pose_c5(workspace_def, x_mm, y_mm, z_offset_mm)
-
-
-def _pose_from_coord5_mm(x_mm, y_mm, z_offset_mm):
-    from app.codroid_picker.transforms import _pose_from_coord5_mm as pose_c5_direct
-    return pose_c5_direct(x_mm, y_mm, z_offset_mm)
+# Import registry for settings access
+from app.codroid_picker.app_instance import registry
 
 
 def get_latest_frame():
@@ -200,19 +145,6 @@ async def _with_robot_api(uri, action):
     import app.codroid_picker as codroid_picker_module
     return await codroid_picker_module._with_robot_api(uri, action)
 
-
-# ---------------------------------------------------------------------------
-# Settings/Constants accessors
-# ---------------------------------------------------------------------------
-
-
-def _get_gripper_defaults():
-    """Get current gripper width defaults."""
-    profile = SETTINGS.gripper_profile
-    return {
-        "open": profile.open_width_default,
-        "close": profile.close_width_default,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -758,9 +690,9 @@ async def _auto_pick_place_loop(
     LOGGER.info("_auto_pick_place_loop: Coordinate 5 active")
     SESSION.auto_waiting_at_drop = False
 
-    gripper_defaults = _get_gripper_defaults()
-    GRIPPER_OPEN_WIDTH_DEFAULT = gripper_defaults["open"]
-    GRIPPER_CLOSE_WIDTH_DEFAULT = gripper_defaults["close"]
+    gripper_profile = SETTINGS.gripper_profile
+    GRIPPER_OPEN_WIDTH_DEFAULT = gripper_profile.open_width_default
+    GRIPPER_CLOSE_WIDTH_DEFAULT = gripper_profile.close_width_default
 
     def _drop_poses(
         approach_mm: float,
