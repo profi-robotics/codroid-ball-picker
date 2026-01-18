@@ -175,11 +175,15 @@ def register_state_sync_callbacks(app: Dash) -> None:
         Output("rescue-mode-enable", "disabled"),
         Output("rescue-mode-exit", "style"),
         Input("robot-rescue-state", "data"),
+        Input("robot-connection-state", "data"),
     )
     def _toggle_rescue_controls(
         rescue_state: Optional[dict],
+        robot_state: Optional[dict],
     ) -> Tuple[dict, dict, str, bool, dict]:
         active = bool((rescue_state or {}).get("active"))
+        robot_connected = (robot_state or {}).get("status") == "online"
+
         if active:
             return (
                 {"display": "none"},
@@ -191,8 +195,8 @@ def register_state_sync_callbacks(app: Dash) -> None:
         return (
             {"display": "flex"},
             {"display": "none"},
-            "Rescue mode idle.",
-            False,
+            "Rescue mode idle." if robot_connected else "Rescue mode unavailable (robot not connected).",
+            not robot_connected,  # Disabled when robot not connected
             {"display": "none"},
         )
 

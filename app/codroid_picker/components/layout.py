@@ -147,6 +147,7 @@ def _build_auto_control_column() -> dmc.Stack:
         size="sm",
         radius="md",
         variant="filled",
+        disabled=True,
         leftSection=dmc.ActionIcon(
             "▶",
             size="sm",
@@ -165,6 +166,7 @@ def _build_auto_control_column() -> dmc.Stack:
         size="sm",
         radius="md",
         variant="filled",
+        disabled=True,
         leftSection=dmc.ActionIcon(
             "■",
             size="sm",

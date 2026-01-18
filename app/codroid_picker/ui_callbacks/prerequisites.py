@@ -24,11 +24,13 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         Input("camera-interval", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         Input("gripper-connection-state", "data"),
+        Input("robot-connection-state", "data"),
     )
     def _update_prerequisites(
         _n: int,
         _monitor: int,
         gripper_state: Optional[dict],
+        robot_state: Optional[dict],
     ) -> dict:
         """Update prerequisites state based on current system status.
 
@@ -41,6 +43,7 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
             "camera_calibrated": session.calibration_bundle is not None,
             "workspace_defined": session.workspace_definition is not None,
             "robot_calibrated": session.robot_calibration_min_z is not None,
+            "robot_connected": (robot_state or {}).get("status") == "online",
             "model_loaded": session.model_loaded,
             "gripper_ready": (gripper_state or {}).get("status") == "online",
             "drop_target_defined": session.drop_target_mm is not None,

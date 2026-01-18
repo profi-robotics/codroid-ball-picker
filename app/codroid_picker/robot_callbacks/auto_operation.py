@@ -32,6 +32,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
             prereqs.get("camera_calibrated", False),
             prereqs.get("workspace_defined", False),
             prereqs.get("robot_calibrated", False),
+            prereqs.get("robot_connected", False),
             prereqs.get("model_loaded", False),
             prereqs.get("gripper_ready", False),
             prereqs.get("drop_target_defined", False),

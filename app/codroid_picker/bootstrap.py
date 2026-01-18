@@ -81,17 +81,19 @@ def auto_load_model(settings, activate_model_fn, logger) -> None:
     """Auto-load model on startup if one is configured.
 
     Args:
-        settings: Settings object with active_model path.
+        settings: Settings object with last_model path.
         activate_model_fn: Function to activate a model.
         logger: Logger instance for status messages.
     """
     from pathlib import Path
 
-    if not settings.active_model:
+    # Check for last_model since that's what gets persisted
+    model_setting = settings.active_model or settings.last_model
+    if not model_setting:
         return
 
     try:
-        model_path = Path(settings.active_model)
+        model_path = Path(model_setting)
         if model_path.exists():
             activate_model_fn(model_path)
             logger.info(f"Auto-loaded model on startup: {model_path.name}")

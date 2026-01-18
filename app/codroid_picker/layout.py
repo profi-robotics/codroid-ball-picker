@@ -573,6 +573,7 @@ def build_layout() -> dmc.MantineProvider:
                         "camera_calibrated": False,
                         "workspace_defined": False,
                         "robot_calibrated": False,
+                        "robot_connected": False,
                         "model_loaded": False,
                         "gripper_ready": False,
                         "drop_target_defined": False,

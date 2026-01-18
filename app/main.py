@@ -326,6 +326,7 @@ def create_app() -> Dash:
     register_video_routes(app)
 
     # Auto-load model on startup if one is configured
+    # This happens after app creation in case model loading needs app context
     bootstrap.auto_load_model(SETTINGS, activate_model, LOGGER)
 
     return app
