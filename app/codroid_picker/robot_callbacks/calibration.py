@@ -373,8 +373,29 @@ def register_calibration_callbacks(app: Dash) -> None:
             codroid_picker_module.SESSION.robot_calibration_points = []
             codroid_picker_module.LOGGER.info(
                 f"Starting robot plate calibration with URI: {robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI}")
-            robot_points, _coord_frame = await codroid_picker_module._run_robot_plate_calibration(
-                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, plate_layout)
+
+            # Use RobotCalibrationProgram via registry
+            from app.codroid_picker.programs import (
+                get_registry,
+                RobotCalibrationProgram,
+                RobotCalibrationConfig,
+            )
+            from app.codroid_picker.programs.base import ProgramStatus
+
+            registry = get_registry()
+            robot_api = await codroid_picker_module._get_robot_api(
+                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI
+            )
+            program = RobotCalibrationProgram(
+                plate_layout=plate_layout,
+                config=RobotCalibrationConfig(),
+            )
+            result = await registry.start_instance(program, robot_api)
+
+            if result.status != ProgramStatus.COMPLETED:
+                raise RuntimeError(result.message)
+
+            robot_points = program.result.robot_points
             codroid_picker_module.LOGGER.info(
                 f"Robot plate calibration completed. Captured {len(robot_points)} points.")
 

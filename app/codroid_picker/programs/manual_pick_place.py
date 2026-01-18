@@ -223,8 +223,7 @@ class ManualPickPlaceProgram(RobotProgram):
         ) if self._pick_approach_pose_fn else approach_pose
         if retreat_pose is None:
             retreat_pose = approach_pose
-        await self._execute_move_with_hold(
-            robot_api,
+        await self.move_with_hold(
             retreat_pose,
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
@@ -296,8 +295,7 @@ class ManualPickPlaceProgram(RobotProgram):
         self.update_message("Moving to drop approach...")
         log_move_target("drop_approach", drop_approach,
                         coordinate_id=coordinate_id)
-        await self._execute_move_with_hold(
-            robot_api,
+        await self.move_with_hold(
             drop_approach,
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
@@ -307,8 +305,7 @@ class ManualPickPlaceProgram(RobotProgram):
         await wait_for_operation_resume(self._run_id)
         self.update_message("Moving to drop position...")
         log_move_target("drop_pose", drop_pose, coordinate_id=coordinate_id)
-        await self._execute_move_with_hold(
-            robot_api,
+        await self.move_with_hold(
             drop_pose,
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
@@ -335,10 +332,9 @@ class ManualPickPlaceProgram(RobotProgram):
                 await asyncio.sleep(0.1)
 
         # Retreat
-        await wait_for_operation_resume(self._run_id)
-        self.update_message("Retreating from drop...")
-        await self._execute_move_with_hold(
-            robot_api,
+        log_move_target("drop_retreat", drop_approach,
+                        coordinate_id=coordinate_id)
+        await self.move_with_hold(
             drop_approach,
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
@@ -415,31 +411,3 @@ class ManualPickPlaceProgram(RobotProgram):
         await robot_api.clear_target_position()
         await robot_api.stop_command()
 
-    async def _execute_move_with_hold(
-        self,
-        robot_api: "CodroidAPI",
-        target: dict,
-        *,
-        coordinate_id: int,
-        hold_seconds: float = 2.0,
-    ) -> None:
-        """Execute a linear move and hold with heartbeats."""
-        heartbeat_interval = 0.2
-
-        await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
-        await robot_api.set_target_cpos(
-            robot_api.attach_coordinate_to_cpos(
-                robot_api.build_target_cpos(**target),
-                coordinate_id=coordinate_id,
-            )
-        )
-        await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
-
-        deadline = time.monotonic() + hold_seconds
-        while time.monotonic() < deadline:
-            ensure_operation_active(self._run_id)
-            await robot_api.send_command_heartbeat()
-            await asyncio.sleep(heartbeat_interval)
-
-        await robot_api.clear_target_position()
-        await robot_api.stop_command()

@@ -242,7 +242,7 @@ def _build_auto_control_column() -> dmc.Stack:
     auto_stop_button = dmc.Button(
         "Stop Auto",
         id="auto-stop",
-        color="orange",
+        color="red",
         size="sm",
         radius="md",
         variant="filled",
@@ -258,11 +258,53 @@ def _build_auto_control_column() -> dmc.Stack:
             "minWidth": "110px",
         },
     )
+    auto_pause_button = dmc.Button(
+        "Pause",
+        id="auto-pause",
+        color="yellow",
+        size="sm",
+        radius="md",
+        variant="filled",
+        disabled=True,
+        leftSection=dmc.ActionIcon(
+            "⏸",
+            size="sm",
+            variant="transparent",
+            color="black",
+        ),
+        style={
+            "fontWeight": 700,
+            "minWidth": "90px",
+        },
+    )
+    auto_resume_button = dmc.Button(
+        "Resume",
+        id="auto-resume",
+        color="green",
+        size="sm",
+        radius="md",
+        variant="filled",
+        disabled=True,
+        leftSection=dmc.ActionIcon(
+            "▶",
+            size="sm",
+            variant="transparent",
+            color="white",
+        ),
+        style={
+            "fontWeight": 700,
+            "minWidth": "90px",
+        },
+    )
     return dmc.Stack(
         [
             dmc.Text("Auto pick & place", fw=700, size="sm", c="blue"),
             dmc.Group(
                 [auto_start_button, auto_stop_button],
+                gap="xs",
+            ),
+            dmc.Group(
+                [auto_pause_button, auto_resume_button],
                 gap="xs",
             ),
         ],

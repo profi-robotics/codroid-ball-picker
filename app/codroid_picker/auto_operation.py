@@ -2,7 +2,7 @@
 Auto pick-and-place operation logic.
 
 This module provides functions for running detection, target filtering,
-and the main auto pick-and-place loop.
+and helper utilities for the auto pick-and-place program.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
@@ -20,13 +20,8 @@ from app.codroid_picker.session import SESSION
 import app.settings as app_settings
 from app.codroid_picker.state import (
     _operation_snapshot,
-    _pause_operation,
-    _finish_operation,
 )
 from app.codroid_picker.state import resume_operation as _resume_operation
-
-if TYPE_CHECKING:
-    from codroid_api import CodroidAPI
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,15 +53,12 @@ from app.codroid_picker.procedures import (
     _workspace_pixel_to_mm,
     _robot_to_workspace_mm,
     _pixel_to_robot_base_xyz,
-    _ensure_coordinate5_active,
 )
 
 # Import from robot_motion
 from app.codroid_picker.robot_motion import (
     _operation_status,
-    ensure_operation_active as _ensure_operation_active,
     wait_for_operation_resume as _wait_for_operation_resume,
-    move_linear_follow_target as _move_linear_follow_target,
 )
 
 # Import from overlays
@@ -79,12 +71,7 @@ from app.codroid_picker.transforms import (
     _base_to_coord5,
     _workspace_to_coord5_mm,
     _pose_from_workspace_mm,
-    _pose_from_workspace_coord5_mm,
-    _pose_from_coord5_mm,
 )
-
-# Import registry for settings access
-from app.codroid_picker.app_instance import registry
 
 
 def get_latest_frame():
@@ -138,12 +125,6 @@ def _estimate_detection_width_mm(detection, workspace_def):
         return size_px / px_per_mm
     except Exception:
         return None
-
-
-async def _with_robot_api(uri, action):
-    """Run an action with a robot API connection."""
-    import app.codroid_picker as codroid_picker_module
-    return await codroid_picker_module._with_robot_api(uri, action)
 
 
 
@@ -280,22 +261,6 @@ def _refresh_follow_detections() -> list[dict]:
         SESSION.last_detection_error = str(exc)
         LOGGER.warning("Follow detection update failed: %s", exc)
         return SESSION.detections or []
-
-
-# ---------------------------------------------------------------------------
-# Auto state management
-# ---------------------------------------------------------------------------
-
-
-def _set_auto_state(message: str, *, running: bool) -> None:
-    """Update the auto operation state."""
-    SESSION.auto_message = message
-    SESSION.auto_running = running
-
-
-def _auto_state_snapshot() -> dict:
-    """Get a snapshot of the current auto operation state."""
-    return {"running": SESSION.auto_running, "message": SESSION.auto_message}
 
 
 # ---------------------------------------------------------------------------
@@ -669,316 +634,3 @@ async def _auto_wait_for_clear(
         await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
 
 
-async def _auto_pick_place_loop(
-    robot_api: "CodroidAPI",
-    *,
-    run_id: int,
-) -> None:
-    """Main auto pick-and-place loop."""
-    LOGGER.info(f"_auto_pick_place_loop: Starting with run_id={run_id}")
-    workspace_def = SESSION.workspace_definition
-    if workspace_def is None:
-        raise RuntimeError("Workspace is not defined.")
-    LOGGER.info("_auto_pick_place_loop: Workspace defined")
-    if SESSION.drop_target_mm is None:
-        raise RuntimeError("Drop position is not defined.")
-    LOGGER.info(
-        f"_auto_pick_place_loop: Drop target defined at {SESSION.drop_target_mm}")
-    await robot_api.power_on()
-    LOGGER.info("_auto_pick_place_loop: Robot powered on")
-    await _ensure_coordinate5_active(robot_api)
-    LOGGER.info("_auto_pick_place_loop: Coordinate 5 active")
-    SESSION.auto_waiting_at_drop = False
-
-    gripper_profile = SETTINGS.gripper_profile
-    GRIPPER_OPEN_WIDTH_DEFAULT = gripper_profile.open_width_default
-    GRIPPER_CLOSE_WIDTH_DEFAULT = gripper_profile.close_width_default
-
-    def _drop_poses(
-        approach_mm: float,
-        drop_mm: float,
-    ) -> Tuple[dict, dict]:
-        drop_target_mm = SESSION.drop_target_mm
-        if drop_target_mm is None:
-            raise RuntimeError("Drop position is not defined.")
-        if (
-            SESSION.drop_target_robot is not None
-            and SESSION.drop_target_coord_id == ROBOT_COORDINATE_ID
-        ):
-            base = SESSION.drop_target_robot
-            drop_pose = _pose_from_coord5_mm(
-                float(base[0]), float(base[1]), float(base[2]) + drop_mm
-            )
-            drop_approach = _pose_from_coord5_mm(
-                float(base[0]),
-                float(base[1]),
-                float(base[2]) + approach_mm,
-            )
-        else:
-            drop_pose = _pose_from_workspace_coord5_mm(
-                workspace_def, drop_target_mm[0], drop_target_mm[1], drop_mm
-            )
-            drop_approach = _pose_from_workspace_coord5_mm(
-                workspace_def, drop_target_mm[0], drop_target_mm[1], approach_mm
-            )
-        if SESSION.drop_target_orientation is not None:
-            orient = SESSION.drop_target_orientation
-            drop_pose.update(
-                {"a": float(orient[0]), "b": float(
-                    orient[1]), "c": float(orient[2])}
-            )
-            drop_approach.update(
-                {"a": float(orient[0]), "b": float(
-                    orient[1]), "c": float(orient[2])}
-            )
-        return drop_pose, drop_approach
-
-    async def _auto_move_to_drop(
-        *,
-        approach_mm: float,
-        drop_mm: float,
-    ) -> None:
-        drop_pose, drop_approach = _drop_poses(approach_mm, drop_mm)
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: drop_approach,
-            label="auto_drop_approach",
-            run_id=run_id,
-        )
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: drop_pose,
-            label="auto_drop_pose",
-            run_id=run_id,
-        )
-
-    async def _auto_drop_only(
-        *,
-        approach_mm: float,
-        drop_mm: float,
-    ) -> None:
-        await _auto_move_to_drop(approach_mm=approach_mm, drop_mm=drop_mm)
-        _command_gripper(GRIPPER_OPEN_WIDTH_DEFAULT, "opened")
-        SESSION.robot_has_object = False
-        SESSION.auto_waiting_at_drop = True
-
-    while True:
-        LOGGER.info("_auto_pick_place_loop: Starting new iteration")
-        try:
-            _ensure_operation_active(run_id)
-        except OperationPaused:
-            LOGGER.info(
-                "_auto_pick_place_loop: Operation paused, waiting for resume")
-            await _wait_for_operation_resume(run_id)
-            continue
-        config = SESSION.auto_config or {}
-        target_label = str(
-            config.get("target_label", SETTINGS.auto_target_label)
-        )
-        drop_ignore_radius_mm = float(
-            config.get(
-                "drop_ignore_radius_mm", SETTINGS.auto_drop_ignore_radius_mm
-            )
-        )
-        approach_mm = float(
-            config.get("approach_mm", SETTINGS.auto_approach_mm)
-        )
-        pick_mm = float(config.get("pick_mm", SETTINGS.auto_pick_mm))
-        drop_mm = float(config.get("drop_mm", SETTINGS.auto_drop_mm))
-        estimate_width = bool(
-            config.get("estimate_width", SETTINGS.auto_estimate_width)
-        )
-
-        frame, _depth = get_latest_frame()
-        detections = SESSION.detections or []
-        LOGGER.info(
-            f"_auto_pick_place_loop: Got {len(detections)} detections from SESSION")
-        stale_age = time.monotonic() - SESSION.auto_detection_updated_at
-        LOGGER.info(
-            f"_auto_pick_place_loop: Detection age={stale_age:.2f}s, using SESSION detections directly")
-
-        LOGGER.info(
-            f"_auto_pick_place_loop: About to filter targets with label='{target_label}'")
-        targets = _auto_filter_targets(
-            detections,
-            workspace_def,
-            target_label=target_label,
-            drop_target_mm=SESSION.drop_target_mm,
-            drop_ignore_radius_mm=drop_ignore_radius_mm,
-        )
-        LOGGER.info(
-            f"_auto_pick_place_loop: Filtered to {len(targets)} targets (label={target_label})")
-        if not targets:
-            LOGGER.info(
-                f"_auto_pick_place_loop: No targets found, auto_waiting_at_drop={SESSION.auto_waiting_at_drop}")
-            if not SESSION.auto_waiting_at_drop:
-                LOGGER.info(
-                    "_auto_pick_place_loop: Moving to drop position (no object in gripper)")
-                await _auto_drop_only(
-                    approach_mm=approach_mm,
-                    drop_mm=drop_mm,
-                )
-            LOGGER.info(
-                f"_auto_pick_place_loop: Sleeping {SETTINGS.auto_idle_sleep_s}s before next check")
-            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-            continue
-
-        target = _auto_select_nearest_target(targets, workspace_def)
-        if target is None:
-            LOGGER.warning(
-                "_auto_pick_place_loop: Failed to select nearest target")
-            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-            continue
-        LOGGER.info(
-            f"_auto_pick_place_loop: Selected target with label={target.get('label')}")
-        target_xy = _detection_workspace_mm(target, workspace_def)
-        if target_xy is None:
-            LOGGER.warning(
-                "_auto_pick_place_loop: Target missing workspace coordinates")
-            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-            continue
-        target_coord5 = _detection_coord5_mm(target, workspace_def)
-        if target_coord5 is None:
-            LOGGER.warning(
-                "_auto_pick_place_loop: Target missing coord5 coordinates")
-            await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-            continue
-        LOGGER.info(
-            f"_auto_pick_place_loop: Target at workspace {target_xy[:2]}, coord5 {target_coord5[:2]}")
-
-        tracker_detection = target
-        tracker_workspace = target_xy
-        tracker_coord5 = target_coord5
-        SESSION.auto_waiting_at_drop = False
-
-        LOGGER.info("_auto_pick_place_loop: Starting pick & place operation")
-        gripper_open_val = GRIPPER_OPEN_WIDTH_DEFAULT
-        gripper_close_val = GRIPPER_CLOSE_WIDTH_DEFAULT
-        if estimate_width:
-            width_guess = _estimate_detection_width_mm(
-                target, workspace_def
-            )
-            if width_guess is not None:
-                gripper_close_val = max(
-                    gripper_close_val, width_guess * 0.9
-                )
-                gripper_open_val = max(
-                    gripper_open_val, width_guess + 5.0
-                )
-
-        async def _safety_check() -> None:
-            frame, _depth = get_latest_frame()
-            detections = SESSION.detections or []
-            if _auto_intrusion_present(
-                detections,
-                workspace_def,
-                target_xy=target_xy,
-                drop_target_mm=SESSION.drop_target_mm,
-                drop_ignore_radius_mm=drop_ignore_radius_mm,
-                target_match_mm=SETTINGS.auto_intrusion_match_mm,
-            ):
-                _pause_operation(
-                    "workspace_intrusion",
-                    "Workspace intrusion detected. Paused.",
-                )
-                await _auto_wait_for_clear(
-                    run_id,
-                    workspace_def=workspace_def,
-                    target_xy=target_xy,
-                    drop_target_mm=SESSION.drop_target_mm,
-                    drop_ignore_radius_mm=drop_ignore_radius_mm,
-                )
-
-        def _fetch_pose(z_offset_mm: float) -> Optional[dict]:
-            if tracker_coord5 is None:
-                return None
-            return _pose_from_coord5_mm(
-                tracker_coord5[0],
-                tracker_coord5[1],
-                z_offset_mm,
-            )
-
-        LOGGER.info("_auto_pick_place_loop: About to move to pick approach")
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: _fetch_pose(approach_mm),
-            label="auto_pick_approach",
-            run_id=run_id,
-            safety_check=_safety_check,
-        )
-        LOGGER.info(
-            "_auto_pick_place_loop: Pick approach completed, moving to pick pose")
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: _fetch_pose(pick_mm),
-            label="auto_pick_pose",
-            run_id=run_id,
-            safety_check=_safety_check,
-        )
-        LOGGER.info(
-            "_auto_pick_place_loop: Pick pose completed, closing gripper")
-        _command_gripper(gripper_close_val, "closed")
-        SESSION.robot_has_object = True
-        retreat_pose = _fetch_pose(approach_mm)
-        if retreat_pose is not None:
-            LOGGER.info("_auto_pick_place_loop: About to retreat from pick")
-            await _move_linear_follow_target(
-                robot_api,
-                lambda: retreat_pose,
-                label="auto_pick_retreat",
-                run_id=run_id,
-                safety_check=_safety_check,
-            )
-            LOGGER.info("_auto_pick_place_loop: Pick retreat completed")
-        SESSION.last_pick_mm = tracker_workspace
-
-        LOGGER.info("_auto_pick_place_loop: About to move to drop")
-        drop_pose, drop_approach = _drop_poses(approach_mm, drop_mm)
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: drop_approach,
-            label="auto_drop_approach",
-            run_id=run_id,
-            safety_check=_safety_check,
-        )
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: drop_pose,
-            label="auto_drop_pose",
-            run_id=run_id,
-            safety_check=_safety_check,
-        )
-        _command_gripper(gripper_open_val, "opened")
-        SESSION.robot_has_object = False
-        await _move_linear_follow_target(
-            robot_api,
-            lambda: drop_approach,
-            label="auto_drop_retreat",
-            run_id=run_id,
-            safety_check=_safety_check,
-        )
-        SESSION.auto_waiting_at_drop = True
-        LOGGER.info(
-            "_auto_pick_place_loop: Pick & place cycle completed, looping to find next target")
-
-
-async def _auto_operation_task(run_id: int, robot_uri: Optional[str]) -> None:
-    """Task wrapper for auto pick-and-place operation."""
-    DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
-    try:
-        await _with_robot_api(
-            robot_uri or DEFAULT_ROBOT_URI,
-            lambda api: _auto_pick_place_loop(api, run_id=run_id),
-        )
-        message = "Auto pick & place completed."
-        _set_auto_state(message, running=False)
-        _finish_operation(run_id, status="idle", message=message)
-    except OperationAbort as exc:
-        message = f"Auto pick & place stopped: {exc}"
-        _set_auto_state(message, running=False)
-        _finish_operation(run_id, status="stopped", message=message)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("Auto pick & place failed")
-        message = f"Auto pick & place failed: {exc}"
-        _set_auto_state(message, running=False)
-        _finish_operation(run_id, status="idle", message=message)

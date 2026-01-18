@@ -104,7 +104,6 @@ from app.codroid_picker.camera_calibration import (  # noqa: F401
     _clear_workspace_definition,
 )
 from app.codroid_picker.auto_operation import (  # noqa: F401
-    _auto_state_snapshot,
     _format_detection_list,
     _run_detection,
 )
@@ -247,7 +246,7 @@ globals_to_expose = [
     '_activate_robot_error', '_error_snapshot', '_update_robot_error_state',
 
     # Auto operation functions
-    '_auto_state_snapshot', '_format_detection_list', '_run_detection',
+    '_format_detection_list', '_run_detection',
 
     # API classes
     'CodroidAPI', 'RobotSession', 'GripperDevice', 'TwoFG7Gripper',
