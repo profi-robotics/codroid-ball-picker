@@ -319,20 +319,7 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
             dmc.Text(id="camera-fps", size="sm", c="dimmed"),
             html.Div(
                 id="camera-feed-container",
-                children=html.Img(
-                    id="camera-feed",
-                    src="/video_feed",  # Use MJPEG stream to avoid per-frame HTTP polling
-                    style={
-                        "width": "100%",
-                        "height": "auto",
-                        "maxHeight": "100%",
-                        "objectFit": "contain",
-                        "borderRadius": "16px",
-                        "border": "1px solid rgba(240, 65, 0, 0.25)",
-                        "marginTop": "8px",
-                        "backgroundColor": "#0b0f14",
-                    },
-                ),
+                children=[],  # Will be populated by callback based on camera connection state
                 style={"position": "relative",
                        "height": "100%", "overflow": "hidden"}
             ),

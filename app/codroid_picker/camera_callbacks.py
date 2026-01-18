@@ -252,6 +252,84 @@ def register_camera_callbacks(app: Dash) -> None:
         )
 
     @app.callback(
+        Output("camera-feed-container", "children"),
+        Input("camera-connection-state", "data"),
+    )
+    def _update_camera_placeholder(camera_state: Optional[dict]) -> html.Div:
+        """Show placeholder when camera is not connected, otherwise show video feed."""
+        status = (camera_state or {}).get("status", "off")
+
+        if status == "live":
+            # Camera is connected - show the video feed
+            return html.Img(
+                id="camera-feed",
+                src="/video_feed",
+                style={
+                    "width": "100%",
+                    "height": "auto",
+                    "maxHeight": "100%",
+                    "objectFit": "contain",
+                    "borderRadius": "16px",
+                    "border": "1px solid rgba(240, 65, 0, 0.25)",
+                    "marginTop": "8px",
+                    "backgroundColor": "#0b0f14",
+                },
+            )
+        else:
+            # Camera not connected - show placeholder
+            message = (camera_state or {}).get("message", "Camera not connected")
+            icon = "📷" if status == "off" else "⚠️"
+            color = "#666" if status == "off" else "#ff8c00"
+
+            return html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(icon, style={"fontSize": "64px", "marginBottom": "16px"}),
+                            html.Div(
+                                "Camera Not Connected" if status == "off" else "Camera Unavailable",
+                                style={
+                                    "fontSize": "20px",
+                                    "fontWeight": 600,
+                                    "color": color,
+                                    "marginBottom": "8px",
+                                }
+                            ),
+                            html.Div(
+                                message,
+                                style={
+                                    "fontSize": "14px",
+                                    "color": "#888",
+                                    "textAlign": "center",
+                                    "maxWidth": "400px",
+                                }
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "alignItems": "center",
+                            "justifyContent": "center",
+                            "height": "100%",
+                            "minHeight": "400px",
+                        }
+                    )
+                ],
+                id="camera-feed",
+                style={
+                    "width": "100%",
+                    "height": "auto",
+                    "borderRadius": "16px",
+                    "border": "1px solid rgba(240, 65, 0, 0.25)",
+                    "marginTop": "8px",
+                    "backgroundColor": "#0b0f14",
+                    "display": "flex",
+                    "alignItems": "center",
+                    "justifyContent": "center",
+                },
+            )
+
+    @app.callback(
         Output("camera-calibration-action", "children"),
         Output("calibration-progress-store", "data"),
         Input("calibrate-camera", "n_clicks"),
