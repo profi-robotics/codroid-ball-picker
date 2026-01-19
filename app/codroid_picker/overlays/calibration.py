@@ -29,6 +29,30 @@ def _draw_marker_detections(vis: np.ndarray, detections: dict, color: tuple[int,
         _draw_label(vis, str(marker_id), tuple(center), color)
 
 
+def _draw_plate_calibration_points(vis: np.ndarray, calibration_result) -> None:
+    """Draw robot calibration point locations on the plate overlay."""
+    points = calibration_result.plate.robot_calibration_points()
+    if not points:
+        return
+    try:
+        inv_h = np.linalg.inv(calibration_result.homography)
+    except np.linalg.LinAlgError:
+        return
+    point_mm = np.array(
+        [pt.center_mm for pt in points[:3]],
+        dtype=np.float64,
+    ).reshape(-1, 1, 2)
+    point_px = cv2.perspectiveTransform(point_mm, inv_h).reshape(-1, 2)
+    if not np.all(np.isfinite(point_px)):
+        return
+    color = (0, 255, 255)
+    for idx, pt in enumerate(point_px, start=1):
+        center = tuple(np.round(pt).astype(int))
+        cv2.circle(vis, center, 8, color, 2)
+        label_pos = (center[0] + 10, center[1] - 10)
+        _draw_label(vis, f"P{idx}", label_pos, color)
+
+
 def _evaluate_plate_status(calibration_result) -> dict:
     """Compute plate marker status metrics used by overlay and refresh helpers."""
     detections = calibration_result.detections
@@ -176,6 +200,7 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
             return vis, status, "Plate markers: 0"
 
         _draw_marker_detections(vis, calibration_result.detections, (255, 0, 255))
+        _draw_plate_calibration_points(vis, calibration_result)
 
         status_data = _evaluate_plate_status(calibration_result)
         count = status_data["count"]
@@ -253,5 +278,4 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
             message=f"Plate status error: {exc}",
             count=0
         )
-
 

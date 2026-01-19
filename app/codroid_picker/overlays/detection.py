@@ -2,18 +2,53 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Tuple
 
 import cv2
 import numpy as np
 
 from app.codroid_picker.session import SESSION
+from app.settings import SETTINGS
 from .drawing import _draw_label
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _refresh_detections(frame: np.ndarray) -> None:
+    """Refresh detections at a throttled cadence."""
+    if not SESSION.model_loaded or SESSION.yolo_model is None:
+        return
+
+    now = time.monotonic()
+    if now - SESSION.auto_detection_updated_at < SETTINGS.auto_detection_stale_s:
+        return
+
+    from app.codroid_picker.auto_operation import _run_detection
+
+    try:
+        detections = _run_detection(
+            frame,
+            SESSION.detection_confidence,
+            SESSION.detection_iou,
+            SESSION.detection_max,
+            SESSION.detection_classes,
+        )
+        SESSION.detections = detections
+        SESSION.last_detection_error = None
+    except Exception as exc:  # noqa: BLE001
+        SESSION.last_detection_error = str(exc)
+        LOGGER.debug("Detection refresh failed: %s", exc)
+    finally:
+        SESSION.auto_detection_updated_at = now
 
 
 def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     """Draw object detection overlay."""
     vis = frame.copy()
+
+    _refresh_detections(frame)
 
     if not SESSION.detections:
         status = "No objects detected."
@@ -24,9 +59,11 @@ def draw_detection_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
 
         for detection in SESSION.detections:
             # Extract detection data
-            box = detection.get('box')
-            confidence = detection.get('confidence', 0.0)
-            class_name = detection.get('class_name', 'unknown')
+            box = detection.get("bbox") or detection.get("box")
+            confidence = detection.get("confidence", 0.0)
+            class_name = detection.get("label") or detection.get(
+                "class_name", "unknown"
+            )
 
             if box is not None:
                 x1, y1, x2, y2 = map(int, box)

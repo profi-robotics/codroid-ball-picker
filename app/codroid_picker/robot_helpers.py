@@ -85,6 +85,8 @@ def resolve_gripper_limits(
 
     min_width = session.gripper_min_width
     max_width = session.gripper_max_width
+    profile_min = gripper_profile.close_width_default
+    profile_max = gripper_profile.open_width_default
 
     if gripper is not None:
         # Try to get from gripper status snapshot (cached)
@@ -100,27 +102,35 @@ def resolve_gripper_limits(
                 session.gripper_max_width = max_width
 
         # Fallback to querying gripper directly
-        if min_width is None:
+        if min_width is None or (max_width is not None and min_width >= max_width):
             try:
                 value = gripper.get_min_ext_width(t_index=t_index)
                 if isinstance(value, (int, float)) and value >= 0:
                     min_width = float(value)
+                    session.gripper_min_width = min_width
             except Exception as exc:
                 LOGGER.debug("Failed to read gripper min width: %s", exc)
 
-        if max_width is None:
+        if (
+            max_width is None
+            or (min_width is not None and max_width <= min_width)
+            or max_width <= profile_min
+        ):
             try:
                 value = gripper.get_max_ext_width(t_index=t_index)
                 if isinstance(value, (int, float)) and value >= 0:
                     max_width = float(value)
+                    session.gripper_max_width = max_width
             except Exception as exc:
                 LOGGER.debug("Failed to read gripper max width: %s", exc)
 
     # Final fallbacks from profile
     if min_width is None:
-        min_width = gripper_profile.close_width_default
-    if max_width is None:
-        max_width = gripper_profile.open_width_default
+        min_width = profile_min
+    if max_width is None or (min_width is not None and max_width <= min_width):
+        max_width = profile_max
+    if max_width <= min_width:
+        max_width = min_width + 10.0
 
     # Ensure correct ordering
     if min_width > max_width:

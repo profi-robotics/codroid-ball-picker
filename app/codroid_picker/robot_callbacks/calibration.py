@@ -234,7 +234,6 @@ def register_calibration_callbacks(app: Dash) -> None:
             status="awaiting_verification",
             step=5,
             verification_ready=True,
-            modal_suppressed=False,
         )
         from app.codroid_picker.state import build_robot_calibration_state_payload
         return build_robot_calibration_state_payload()
@@ -396,6 +395,7 @@ def register_calibration_callbacks(app: Dash) -> None:
                 step=1,
                 status="running",
                 verification_ready=False,
+                modal_suppressed=False,
             )
             codroid_picker_module.SESSION.robot_calibration_points = []
             codroid_picker_module.LOGGER.info(
@@ -478,7 +478,6 @@ def register_calibration_callbacks(app: Dash) -> None:
                 status="accuracy_ready",
                 step=4,
                 verification_ready=False,
-                modal_suppressed=False,
             )
             return {
                 "status": "accuracy_ready",
@@ -558,7 +557,6 @@ def register_calibration_callbacks(app: Dash) -> None:
             status="verifying",
             step=5,
             verification_ready=False,
-            modal_suppressed=False,
         )
 
         async def _run_verification(api) -> dict:

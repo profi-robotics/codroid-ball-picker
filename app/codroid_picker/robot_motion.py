@@ -134,6 +134,16 @@ def command_gripper(
                 if safe_width < current_width:
                     safe_width = current_width
 
+        label_lower = action_label.lower()
+        if "open" in label_lower and safe_width <= min_width and max_width > min_width:
+            LOGGER.warning(
+                "Open width %.1f <= min width %.1f; using max width %.1f",
+                safe_width,
+                min_width,
+                max_width,
+            )
+            safe_width = max_width
+
         safe_width = min(max(safe_width, min_width), max_width)
 
         applied_force = force if force is not None else gripper_profile.force_default

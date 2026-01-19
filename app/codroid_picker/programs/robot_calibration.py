@@ -254,12 +254,13 @@ class RobotCalibrationProgram(RobotProgram):
         """Update the robot calibration guidance UI."""
         import app.codroid_picker as ui
 
+        guidance = ui.state.get_calibration_guidance_snapshot()
         ui._set_robot_guidance(
             message,
             step=step,
             status=status,
             verification_ready=False,
-            modal_suppressed=False,
+            modal_suppressed=guidance.get("modal_suppressed", False),
         )
 
     def _ensure_plate_baseline(self) -> bool:

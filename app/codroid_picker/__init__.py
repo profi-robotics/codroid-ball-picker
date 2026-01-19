@@ -36,6 +36,14 @@ _LAZY_EXPORTS = {
         "app.codroid_picker.persistence",
         "_update_robot_calibration_meta",
     ),
+    "_resolve_plate_test_targets": (
+        "app.codroid_picker.plate_targets",
+        "_resolve_plate_test_targets",
+    ),
+    "_resolve_plate_test_coord5_targets": (
+        "app.codroid_picker.plate_targets",
+        "_resolve_plate_test_coord5_targets",
+    ),
     # Robot plate calibration
     "_apply_robot_calibration_results": (
         "app.codroid_picker.robot_plate_calibration",

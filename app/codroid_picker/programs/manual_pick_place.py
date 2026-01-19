@@ -28,6 +28,7 @@ from app.codroid_picker.robot_motion import (
     ensure_operation_active,
     wait_for_operation_resume,
     command_gripper,
+    resolve_gripper_limits,
     ensure_coordinate_active,
     log_move_target,
 )
@@ -233,7 +234,8 @@ class ManualPickPlaceProgram(RobotProgram):
         if self._on_pick_complete:
             self._on_pick_complete()
 
-        self.finish(status="idle", message="Pick complete.")
+        if self._action != "pick_drop":
+            self.finish(status="idle", message="Pick complete.")
         return ProgramResult(
             status=ProgramStatus.COMPLETED,
             message="Pick complete.",
@@ -315,6 +317,20 @@ class ManualPickPlaceProgram(RobotProgram):
         await wait_for_operation_resume(self._run_id)
         self.update_message("Opening gripper...")
         open_width = self._gripper_open_width or settings.gripper_profile.open_width_default
+        if self._gripper_close_width is not None:
+            close_width = self._gripper_close_width
+        else:
+            close_width = settings.gripper_profile.close_width_default
+        if open_width <= close_width:
+            _min_width, max_width = resolve_gripper_limits()
+            if max_width > open_width:
+                LOGGER.warning(
+                    "Open width %.1f <= close width %.1f; using max width %.1f",
+                    open_width,
+                    close_width,
+                    max_width,
+                )
+                open_width = max_width
         result = command_gripper(open_width, "opened")
         LOGGER.info(f"Gripper open result: {result}")
 
@@ -410,4 +426,3 @@ class ManualPickPlaceProgram(RobotProgram):
 
         await robot_api.clear_target_position()
         await robot_api.stop_command()
-
