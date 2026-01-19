@@ -397,3 +397,20 @@ def _pause_operation(reason: str, message: str) -> None:
 def _update_operation_message(message: str, *, label: Optional[str] = None) -> None:
     """Legacy alias for update_operation_message()."""
     return update_operation_message(message, label=label)
+
+
+def _request_stop_operation(message: str) -> None:
+    """Legacy helper to request stop for the active operation."""
+    return stop_operation(message)
+
+
+def _reset_operation_state(message: str) -> None:
+    """Reset operation state to idle with a message."""
+    with _operation_lock:
+        operation_state.status = "idle"
+        operation_state.source = ""
+        operation_state.label = ""
+        operation_state.message = message
+        operation_state.started_at = None
+        operation_state.updated_at = time.time()
+        operation_state.pause_reason = None

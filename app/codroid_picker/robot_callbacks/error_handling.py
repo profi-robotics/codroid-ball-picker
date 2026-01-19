@@ -40,7 +40,10 @@ def _run_robot_action_with_notification(
                 robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
                 action_fn,
             )
-            snapshot = codroid_picker_module._acknowledge_robot_error()
+            from app.codroid_picker import state
+
+            state.clear_error_state()
+            snapshot = state.get_error_snapshot()
             return snapshot, _notify(success_title, success_message, success_color)
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.exception(failure_title)

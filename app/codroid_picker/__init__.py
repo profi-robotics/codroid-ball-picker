@@ -116,6 +116,8 @@ _LAZY_EXPORTS = {
         "app.codroid_picker.state",
         "_update_operation_message",
     ),
+    "_request_stop_operation": ("app.codroid_picker.state", "_request_stop_operation"),
+    "_reset_operation_state": ("app.codroid_picker.state", "_reset_operation_state"),
     "_resume_operation": ("app.codroid_picker.state", "resume_operation"),
     # Calibration menu helpers
     "_calibration_data_complete": (

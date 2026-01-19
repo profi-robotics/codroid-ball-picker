@@ -17,7 +17,7 @@ import numpy as np
 from vision import calibration, workspace
 from app.codroid_picker.app_instance import registry
 from app.settings import _commit_settings
-from app.codroid_picker.procedures import _load_robot_calibration
+from app.codroid_picker.procedures import _load_robot_calibration, _save_robot_calibration
 from app.codroid_picker.models import activate_model
 
 if TYPE_CHECKING:
@@ -203,7 +203,7 @@ def _update_robot_calibration_meta(robot_points: list[dict]) -> None:
         session.robot_calibration_min_z = None
     session.plate_to_robot_transform = None
     session.plate_origin_mm = None
-    _load_robot_calibration(robot_points)
+    _save_robot_calibration(robot_points)
 
 
 # ---------------------------------------------------------------------------

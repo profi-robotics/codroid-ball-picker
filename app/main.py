@@ -233,6 +233,9 @@ def _initialize_app() -> None:
         gpu_status_fn=format_gpu_status,
         model_options_fn=_model_options,
     )
+    from app.codroid_picker.programs import register_all_programs
+
+    register_all_programs()
 
     # Restore persisted state on module load
     _restore_persisted_state()

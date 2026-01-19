@@ -39,7 +39,6 @@ def register_all_programs() -> None:
     registry.register(ManualPickPlaceProgram)
     registry.register(AutoPickPlaceProgram)
     registry.register(PlateTestProgram)
-    registry.register(RobotCalibrationProgram)
 
 
 __all__ = [

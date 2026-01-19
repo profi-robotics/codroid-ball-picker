@@ -140,6 +140,26 @@ def register_calibration_callbacks(app: Dash) -> None:
         )
 
     @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-calibration-modal-close", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _suppress_robot_calibration_modal(_clicks: int) -> dict:
+        import app.codroid_picker as codroid_picker_module
+        from app.codroid_picker import state
+
+        guidance = state.get_calibration_guidance_snapshot()
+        codroid_picker_module._set_robot_guidance(
+            guidance.get("message", ""),
+            step=guidance.get("step"),
+            status=guidance.get("status"),
+            verification_ready=guidance.get("verification_ready"),
+            modal_suppressed=True,
+        )
+        from app.codroid_picker.state import build_robot_calibration_state_payload
+        return build_robot_calibration_state_payload()
+
+    @app.callback(
         Output("robot-calibration-accuracy-panel", "style"),
         Output("robot-calibration-accuracy-text", "children"),
         Output("robot-calibration-accuracy-text", "c"),
@@ -226,6 +246,13 @@ def register_calibration_callbacks(app: Dash) -> None:
     )
     def _reset_calibration_after_accuracy(_clicks: int) -> dict:
         import app.codroid_picker as codroid_picker_module
+        from app.codroid_picker.programs import get_registry
+
+        registry = get_registry()
+        if registry.active_program_name == "robot_calibration":
+            if registry.is_program_running:
+                registry.stop()
+            registry.clear()
 
         codroid_picker_module._clear_robot_accuracy_guidance()
         codroid_picker_module._set_robot_guidance(
