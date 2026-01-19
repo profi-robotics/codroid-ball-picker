@@ -23,19 +23,59 @@ from app.codroid_picker.programs.base import ProgramStatus
 
 def register_auto_operation_callbacks(app: Dash) -> None:
     """Register auto operation callbacks with the Dash app."""
+    import logging
+    LOGGER = logging.getLogger(__name__)
+
+    # Guard against duplicate registration
+    if hasattr(app, '_auto_operation_callbacks_registered'):
+        LOGGER.info("Auto operation callbacks already registered, skipping")
+        return
+    app._auto_operation_callbacks_registered = True
+
+    LOGGER.info("Registering auto operation callbacks")
+
+    prereq_labels = [
+        ("camera_calibrated", "Camera"),
+        ("workspace_defined", "Workspace"),
+        ("robot_calibrated", "Robot calib"),
+        ("robot_connected", "Robot online"),
+        ("model_loaded", "Model"),
+        ("gripper_ready", "Gripper"),
+        ("drop_target_defined", "Drop target"),
+    ]
 
     @app.callback(
         Output("auto-start", "disabled"),
         Output("auto-stop", "disabled"),
+        Output("auto-prereq-badges", "children"),
         Input("prerequisites-state", "data"),
         Input("auto-operation-state", "data"),
+        prevent_initial_call=False,
     )
     def _update_auto_buttons(
         prerequisites: Optional[dict],
         auto_state: Optional[dict],
-    ) -> Tuple[bool, bool]:
-        """Enable/disable auto operation buttons based on prerequisites and operation state."""
+    ) -> Tuple[bool, bool, list]:
+        """Enable/disable auto operation buttons and surface unmet prerequisites."""
+        import logging
+        LOGGER = logging.getLogger(__name__)
+
         prereqs = prerequisites or {}
+        LOGGER.info(f"Auto prerequisites callback fired: prereqs={prereqs}")
+
+        # Build badge items
+        badge_items = [
+            dmc.Badge(
+                label,
+                color="green" if prereqs.get(key, False) else "gray",
+                variant="light",
+                size="xs",
+                radius="sm",
+            )
+            for key, label in prereq_labels
+        ]
+
+        # Check if all prerequisites are met
         all_ready = all([
             prereqs.get("camera_calibrated", False),
             prereqs.get("workspace_defined", False),
@@ -54,7 +94,22 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         # Stop button: enabled only when running
         stop_disabled = not running
 
-        return start_disabled, stop_disabled
+        # Build status text with missing items
+        missing = [label for key, label in prereq_labels if not prereqs.get(key, False)]
+        status_text = dmc.Text(
+            "Ready for auto run" if not missing else f"Missing: {', '.join(missing)}",
+            size="xs",
+            c="green" if not missing else "red",
+        )
+
+        prereq_children = [
+            status_text,
+            dmc.Group(badge_items, gap=6, align="center", wrap="wrap", justify="center"),
+        ]
+
+        LOGGER.info(f"Auto prerequisites callback returning {len(prereq_children)} children, missing={missing}")
+
+        return start_disabled, stop_disabled, prereq_children
 
     @app.callback(
         Output("auto-operation-state", "data"),
@@ -184,14 +239,14 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         # Build state from registry
         active = registry.active_program
         if active is None or active.name != "auto_pick_place":
-            snapshot = {"running": False, "paused": False, "message": ""}
+            snapshot = {"running": False, "paused": False}
         else:
             snapshot = {
                 "running": active.is_running,
                 "paused": active.status == ProgramStatus.PAUSED,
-                "message": active.message or "",
             }
 
         if current_state == snapshot:
             return no_update
         return snapshot
+

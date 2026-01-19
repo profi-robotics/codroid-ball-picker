@@ -35,7 +35,7 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-   Use the Setup drawer to start the camera stream, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart.
+   Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart.
 
 ## Application Settings
 
@@ -177,4 +177,5 @@ Auto mode uses YOLO detections to continuously pick the nearest target:
 - Set the **Target class** (default `orange`) and **Drop ignore radius** in the Pick & Place tab.
 - Teach a drop position first; auto waits at the drop when no targets are visible.
 - The robot pauses if any other detection enters the workspace and resumes once clear.
+- Auto uses the shared **Tracking mode** controls; segmented tracking keeps the last known target when it is obscured.
 - Coordinate mapping uses the saved plate homography from robot calibration; re-run plate calibration if coord5 overlays drift.

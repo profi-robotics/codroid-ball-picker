@@ -35,9 +35,15 @@ from .workspace import register_workspace_callbacks
 
 def register_robot_callbacks(app: Dash) -> None:
     """Register all robot-related callbacks with the app."""
+    import logging
+    LOGGER = logging.getLogger(__name__)
+
     # Guard against duplicate registration
     if hasattr(app, '_robot_callbacks_registered'):
+        LOGGER.info("Robot callbacks already registered, skipping duplicate registration")
         return
+
+    LOGGER.info("Starting robot callback registration")
     app._robot_callbacks_registered = True
 
     register_auto_operation_callbacks(app)

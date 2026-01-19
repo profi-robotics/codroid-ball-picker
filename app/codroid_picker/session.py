@@ -52,6 +52,10 @@ class UISession:
             "pick_mm": SETTINGS.auto_pick_mm,
             "drop_mm": SETTINGS.auto_drop_mm,
             "estimate_width": SETTINGS.auto_estimate_width,
+            "tracking_mode": SETTINGS.tracking_mode,
+            "segment_min_mm": SETTINGS.segment_min,
+            "segment_max_mm": SETTINGS.segment_max,
+            "segment_fraction": SETTINGS.segment_fraction,
         }
     )
     auto_detection_updated_at: float = 0.0
@@ -120,6 +124,18 @@ def _refresh_session_auto_config_defaults() -> None:
             "drop_mm": SETTINGS.auto_drop_mm,
             "estimate_width": bool(
                 SESSION.auto_config.get("estimate_width", SETTINGS.auto_estimate_width)
+            ),
+            "tracking_mode": SESSION.auto_config.get(
+                "tracking_mode", SETTINGS.tracking_mode
+            ),
+            "segment_min_mm": SESSION.auto_config.get(
+                "segment_min_mm", SETTINGS.segment_min
+            ),
+            "segment_max_mm": SESSION.auto_config.get(
+                "segment_max_mm", SETTINGS.segment_max
+            ),
+            "segment_fraction": SESSION.auto_config.get(
+                "segment_fraction", SETTINGS.segment_fraction
             ),
         }
     )

@@ -430,6 +430,8 @@ async def move_linear_follow_target(
     segment_hold_s: Optional[float] = None,
     settle_s: Optional[float] = None,
     tolerance_mm: Optional[float] = None,
+    settle_on_stall: bool = False,
+    stall_eps_mm: Optional[float] = None,
     require_posture: bool = True,
     run_id: Optional[int] = None,
     safety_check: Optional[Callable[[], Awaitable[None]]] = None,
@@ -450,6 +452,8 @@ async def move_linear_follow_target(
         segment_hold_s: Time to hold each segment.
         settle_s: Time to consider position stable.
         tolerance_mm: Distance tolerance for position matching.
+        settle_on_stall: Treat a stall (no motion) as a settled move.
+        stall_eps_mm: Motion threshold used to detect stalls.
         require_posture: Whether to require posture stream.
         run_id: Operation run ID for pause/stop checking.
         safety_check: Optional async callback for safety checks.
@@ -466,9 +470,13 @@ async def move_linear_follow_target(
     segment_hold_s = segment_hold_s or settings.pick_follow_segment_hold_s
     settle_s = settle_s or settings.pick_follow_settle_s
     tolerance_mm = tolerance_mm or settings.pick_follow_tolerance_mm
+    stall_eps_mm = stall_eps_mm or settings.verification_motion_eps_mm
 
     session = registry().get_or_create_robot_session()
     last_target: Optional[dict] = None
+    last_posture: Optional[np.ndarray] = None
+    last_motion_time: Optional[float] = None
+    motion_seen = False
 
     def _check_operation() -> None:
         if run_id is not None:
@@ -489,14 +497,21 @@ async def move_linear_follow_target(
         return initial_target
 
     LOGGER.info(f"move_linear_follow_target '{label}': Starting follow loop")
+    LOGGER.info(f"move_linear_follow_target '{label}': Setting target pos type to cpos")
     await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+    LOGGER.info(f"move_linear_follow_target '{label}': Target pos type set, entering main loop")
 
     stable_since: Optional[float] = None
     deadline = time.monotonic() + timeout_s
     consecutive_none_count = 0
     target_acquired = False  # True once we've successfully tracked a target
+    iteration_count = 0
 
     while True:
+        iteration_count += 1
+        if iteration_count % 10 == 1:  # Log every 10 iterations
+            LOGGER.debug(f"move_linear_follow_target '{label}': Iteration {iteration_count}")
+
         _check_operation()
         now = time.monotonic()
 
@@ -506,6 +521,9 @@ async def move_linear_follow_target(
             break
 
         target = target_fetch()
+        if iteration_count <= 2:  # Log first 2 target fetches
+            LOGGER.info(f"move_linear_follow_target '{label}': Fetched target: {target}")
+
         if target is not None:
             last_target = target
             consecutive_none_count = 0  # Reset counter on successful fetch
@@ -526,44 +544,100 @@ async def move_linear_follow_target(
             # We never acquired a target - this is a real error
             raise RuntimeError("No target available for follow move.")
 
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Setting target cpos")
         await robot_api.set_target_cpos(
             robot_api.attach_coordinate_to_cpos(
                 robot_api.build_target_cpos(**last_target),
                 coordinate_id=coordinate_id,
             )
         )
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Setting robot command to move_target_linear")
         await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Robot command set, entering heartbeat loop")
 
         segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
+        heartbeat_count = 0
         while time.monotonic() < segment_deadline:
+            heartbeat_count += 1
+            if iteration_count <= 2 and heartbeat_count == 1:
+                LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat loop iteration {heartbeat_count}, checking operation")
             _check_operation()
+            if iteration_count <= 2 and heartbeat_count == 1:
+                LOGGER.info(f"move_linear_follow_target '{label}': Operation check passed, running safety check")
             if safety_check is not None:
                 await safety_check()
+            if iteration_count <= 2 and heartbeat_count == 1:
+                LOGGER.info(f"move_linear_follow_target '{label}': About to send command heartbeat")
             await robot_api.send_command_heartbeat()
+            if iteration_count <= 2 and heartbeat_count == 1:
+                LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat sent, about to sleep for {min(update_interval, 0.05)}s")
             await asyncio.sleep(min(update_interval, 0.05))
+            if iteration_count <= 2 and heartbeat_count == 1:
+                LOGGER.info(f"move_linear_follow_target '{label}': Sleep complete, continuing heartbeat loop")
+
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat loop complete ({heartbeat_count} heartbeats), checking position")
 
         if session.posture_seen():
             posture = session.position_snapshot()
             curr_xyz = np.array(
                 [posture.x, posture.y, posture.z], dtype=np.float64)
+            if last_posture is not None:
+                move_delta = np.linalg.norm(curr_xyz - last_posture)
+                if move_delta > stall_eps_mm:
+                    motion_seen = True
+                    last_motion_time = now
+                elif (
+                    settle_on_stall
+                    and motion_seen
+                    and last_motion_time is not None
+                    and now - last_motion_time >= settle_s
+                ):
+                    LOGGER.info(
+                        "move_linear_follow_target '%s': Motion stalled for %.2fs",
+                        label,
+                        now - last_motion_time,
+                    )
+                    break
+            last_posture = curr_xyz
             target_xyz = np.array([
                 float(last_target["x"]),
                 float(last_target["y"]),
                 float(last_target["z"]),
             ], dtype=np.float64)
 
-            if np.linalg.norm(curr_xyz - target_xyz) <= tolerance_mm:
+            distance = np.linalg.norm(curr_xyz - target_xyz)
+            if iteration_count <= 2:
+                LOGGER.info(f"move_linear_follow_target '{label}': Position check - distance: {distance:.2f}mm, tolerance: {tolerance_mm}mm")
+
+            if distance <= tolerance_mm:
                 if stable_since is None:
                     stable_since = now
+                    if iteration_count <= 2:
+                        LOGGER.info(f"move_linear_follow_target '{label}': Position within tolerance, starting stability timer")
                 elif now - stable_since >= settle_s:
+                    LOGGER.info(f"move_linear_follow_target '{label}': Position stable for {settle_s}s, move complete")
                     break
             else:
                 stable_since = None
+        else:
+            if iteration_count <= 2:
+                LOGGER.warning(f"move_linear_follow_target '{label}': No posture data available")
 
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Sleeping for {update_interval}s before next iteration")
         await asyncio.sleep(update_interval)
+        if iteration_count <= 2:
+            LOGGER.info(f"move_linear_follow_target '{label}': Sleep complete, starting iteration {iteration_count + 1}")
 
+    LOGGER.info(f"move_linear_follow_target '{label}': Main loop exited after {iteration_count} iterations")
     await robot_api.clear_target_position()
+    LOGGER.info(f"move_linear_follow_target '{label}': Cleared target position")
     await robot_api.stop_command()
+    LOGGER.info(f"move_linear_follow_target '{label}': Stopped command, move complete")
     return last_target
 
 

@@ -185,6 +185,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Output("camera-interval", "disabled"),
         Input("camera-enable", "checked"),
         Input("auto-init", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
         Input("camera-lock-af", "checked"),
         State("camera-width", "value"),
         State("camera-height", "value"),
@@ -193,14 +194,30 @@ def register_camera_callbacks(app: Dash) -> None:
     def _toggle_camera(
         checked: bool,
         _init: int,
+        _monitor: int,
         lock_af: Optional[bool],
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
     ) -> Tuple[str, str, str, bool, dict, bool]:
         trigger = callback_context.triggered_id
-        desired_checked = checked
-        stream_running = SESSION.camera_stream is not None and SESSION.camera_stream.is_running()
+        stream_running = (
+            SESSION.camera_stream is not None
+            and SESSION.camera_stream.is_running()
+        )
+        checked_value = stream_running if checked is None else bool(checked)
+        desired_checked = checked_value
+
+        def _describe_stream() -> str:
+            stream = SESSION.camera_stream
+            if stream is None:
+                return "Camera stream stopped."
+            res_w, res_h = stream.config.resolution
+            fps_val = stream.config.fps
+            device_id = stream.device_id() or "unknown"
+            return (
+                f"Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, MXID {device_id})."
+            )
 
         if trigger == "camera-lock-af" and stream_running:
             try:
@@ -231,6 +248,16 @@ def register_camera_callbacks(app: Dash) -> None:
             desired_checked = True
         if desired_checked:
             try:
+                if stream_running:
+                    status = _describe_stream()
+                    return (
+                        status,
+                        "Camera: live",
+                        "brand",
+                        True,
+                        {"status": "live", "message": status},
+                        False,
+                    )
                 status = start_camera_stream(width, height, fps, bool(lock_af))
                 return (
                     status,
@@ -251,7 +278,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     error,
                     "Camera: unavailable",
                     "orange",
-                    False,
+                    True,
                     {"status": "unavailable", "message": error},
                     True,
                 )
@@ -262,7 +289,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     error,
                     "Camera: error",
                     "yellow",
-                    False,
+                    True,
                     {"status": "error", "message": error},
                     True,
                 )

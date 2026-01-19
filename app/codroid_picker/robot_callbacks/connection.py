@@ -18,6 +18,7 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("robot-test", "n_clicks"),
         Input("robot-disconnect", "n_clicks"),
         Input("auto-init", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
@@ -25,15 +26,17 @@ def register_connection_callbacks(app: Dash) -> None:
         _clicks: int,
         _disconnect_clicks: int,
         _init: int,
+        _monitor: int,
         uri: str,
     ) -> Tuple[str, str, str, dict]:
         import app.codroid_picker as codroid_picker_module
 
         trigger = callback_context.triggered_id
         session = codroid_picker_module._get_robot_session()
+        resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
         if trigger == "robot-disconnect":
             await session.close()
-            codroid_picker_module.SESSION.robot_connection_attempted = False
+            codroid_picker_module.SESSION.robot_connection_attempted = True
             codroid_picker_module.SESSION.robot_last_connection_error = None
             session.clear_position()
             codroid_picker_module._set_robot_guidance(
@@ -44,10 +47,9 @@ def register_connection_callbacks(app: Dash) -> None:
             )
             status = "Robot disconnected."
             return status, "Robot: offline", "gray", {"status": "offline", "message": status}
-        if trigger == "auto-init":
-            if session.is_connected(uri or codroid_picker_module.DEFAULT_ROBOT_URI):
-                target = session.resolve_robot_target(
-                    uri or codroid_picker_module.DEFAULT_ROBOT_URI)
+        if trigger in {"auto-init", "monitor-interval"}:
+            if session.is_connected(resolved_uri):
+                target = session.resolve_robot_target(resolved_uri)
                 status = f"Robot connected to {target['host']}:{target['port']}."
                 codroid_picker_module.SESSION.robot_connection_attempted = True
                 codroid_picker_module.SESSION.robot_last_connection_error = None
@@ -58,7 +60,7 @@ def register_connection_callbacks(app: Dash) -> None:
                     return error, "Robot: error", "yellow", {"status": "error", "message": error}
                 return no_update, no_update, no_update, no_update
         try:
-            response = await codroid_picker_module._probe_robot(uri)
+            response = await codroid_picker_module._probe_robot(resolved_uri)
             if not response:
                 raise RuntimeError("Robot probe returned no response.")
             host = response.get("host", "unknown")
@@ -326,10 +328,10 @@ def register_connection_callbacks(app: Dash) -> None:
     @app.callback(
         Output("robot-power-state", "data"),
         Input("robot-status-interval", "n_intervals"),
-        State("robot-connection-state", "data"),
+        Input("robot-connection-state", "data"),
         State("robot-uri", "value"),
         State("robot-power-state", "data"),
-        prevent_initial_call=True,
+        prevent_initial_call=False,
     )
     async def _sync_robot_power_state(
         _intervals: int,
@@ -342,8 +344,10 @@ def register_connection_callbacks(app: Dash) -> None:
         if (robot_state or {}).get("status") != "online":
             return no_update
         now = time.time()
-        if now - codroid_picker_module.SESSION.robot_status_last_poll < 1.0:
-            return no_update
+        # Skip throttle on first poll (current_state is None or empty)
+        if current_state and current_state.get("value") is not None:
+            if now - codroid_picker_module.SESSION.robot_status_last_poll < 1.0:
+                return no_update
 
         async def _poll(api) -> None:
             await api.read_system_data()
@@ -370,7 +374,7 @@ def register_connection_callbacks(app: Dash) -> None:
         Output("robot-power-toggle", "checked"),
         Input("robot-power-state", "data"),
         State("robot-power-toggle", "checked"),
-        prevent_initial_call=True,
+        prevent_initial_call=False,
     )
     def _sync_power_toggle(
         power_state: Optional[dict],

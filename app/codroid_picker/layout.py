@@ -60,7 +60,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.Switch(
                             id="camera-enable",
                             label="Enable live camera stream",
-                            checked=False,
+                            checked=True,
                             color="teal",
                         ),
                     ],
@@ -553,6 +553,14 @@ def build_layout() -> dmc.MantineProvider:
                     data={
                         "target_label": SETTINGS.auto_target_label,
                         "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
+                        "approach_mm": SETTINGS.auto_approach_mm,
+                        "pick_mm": SETTINGS.auto_pick_mm,
+                        "drop_mm": SETTINGS.auto_drop_mm,
+                        "estimate_width": SETTINGS.auto_estimate_width,
+                        "tracking_mode": SETTINGS.tracking_mode,
+                        "segment_min_mm": SETTINGS.segment_min,
+                        "segment_max_mm": SETTINGS.segment_max,
+                        "segment_fraction": SETTINGS.segment_fraction,
                     },
                 ),
                 dcc.Store(

@@ -238,6 +238,14 @@ def _build_auto_control_column() -> dmc.Stack:
             "minWidth": "110px",
         },
     )
+    prereq_summary = dmc.Stack(
+        [
+            dmc.Text("Loading prerequisites status...", size="xs", c="dimmed", id="auto-prereq-placeholder"),
+        ],
+        id="auto-prereq-badges",
+        gap=2,
+        align="center",
+    )
     return dmc.Stack(
         [
             dmc.Text("Auto pick & place", fw=700, size="sm", c="blue"),
@@ -245,6 +253,7 @@ def _build_auto_control_column() -> dmc.Stack:
                 [auto_start_button, auto_stop_button],
                 gap="xs",
             ),
+            prereq_summary,
         ],
         gap=6,
         align="center",
@@ -313,7 +322,7 @@ def _build_program_control_column() -> dmc.Stack:
 
 
 def _build_robot_speed_block() -> dmc.Stack:
-    """Build the robot speed control block."""
+    """Build the robot speed slider and rescue mode buttons."""
     robot_speed_slider = dmc.Slider(
         id="robot-speed-slider",
         min=0,
@@ -372,18 +381,31 @@ def _build_robot_speed_block() -> dmc.Stack:
         radius="md",
         style={"display": "none"},
     )
+    rescue_buttons = dmc.Group(
+        [rescue_button, rescue_exit_button],
+        gap="xs",
+        align="center",
+        justify="flex-end",
+    )
     rescue_status = dmc.Text(
         id="rescue-mode-status",
         size="xs",
         c="dimmed",
     )
 
+    controls_row = dmc.Group(
+        [robot_speed_controls, rescue_buttons],
+        gap="md",
+        align="center",
+        justify="space-between",
+        wrap="wrap",
+        style={"width": "100%"},
+    )
+
     return dmc.Stack(
         [
             dmc.Text("Robot speed", fw=600, size="sm"),
-            robot_speed_controls,
-            rescue_button,
-            rescue_exit_button,
+            controls_row,
             rescue_status,
         ],
         gap=4,

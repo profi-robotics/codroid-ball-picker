@@ -44,15 +44,19 @@ def register_controls_callbacks(app: Dash) -> None:
         robot_uri: Optional[str],
     ) -> dict:
         import app.codroid_picker as codroid_picker_module
+        from app.codroid_picker.programs import get_registry
 
         if value is None:
             return no_update
         rate = max(0.0, min(1.0, float(value) / 100.0))
         now = time.time()
-        if abs(rate - codroid_picker_module.SESSION.robot_speed_rate) < 0.001:
-            return no_update
 
         codroid_picker_module.SESSION.robot_speed_rate = rate
+
+        registry = get_registry()
+        active_program = registry.active_program
+        active_api = active_program.robot_api if active_program and active_program.robot_api else None
+
         if (robot_state or {}).get("status") != "online":
             codroid_picker_module.LOGGER.info(
                 "Robot speed requested: %.0f%% (robot offline)", value
@@ -63,9 +67,12 @@ def register_controls_callbacks(app: Dash) -> None:
             await api.set_manual_move_rate(rate)
 
         try:
-            await codroid_picker_module._with_robot_api(
-                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _set_speed
-            )
+            if active_api is not None:
+                await active_api.set_manual_move_rate(rate)
+            else:
+                await codroid_picker_module._with_robot_api(
+                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _set_speed
+                )
             codroid_picker_module.SESSION.robot_speed_last_set = now
             codroid_picker_module.SESSION.last_action = f"Robot speed set to {rate:.2f}"
             codroid_picker_module.LOGGER.info(

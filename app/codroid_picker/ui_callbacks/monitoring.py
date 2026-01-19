@@ -26,6 +26,10 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Input("plate-test-approach-height", "value"),
         Input("plate-test-pick-height", "value"),
         Input("plate-test-drop-height", "value"),
+        Input("shared-tracking-mode", "value"),
+        Input("shared-segment-min", "value"),
+        Input("shared-segment-max", "value"),
+        Input("shared-segment-fraction", "value"),
     )
     def _update_auto_config(
         target_label: Optional[str],
@@ -33,6 +37,10 @@ def register_monitoring_callbacks(app: Dash) -> None:
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
+        tracking_mode: Optional[str],
+        segment_min: Optional[float],
+        segment_max: Optional[float],
+        segment_fraction: Optional[float],
     ) -> dict:
         """Update auto operation configuration from UI inputs."""
         import app.codroid_picker as codroid_picker_module
@@ -58,6 +66,16 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 SESSION.auto_config.get(
                     "estimate_width", codroid_picker_module.SETTINGS.auto_estimate_width
                 )
+            ),
+            "tracking_mode": (tracking_mode or codroid_picker_module.SETTINGS.tracking_mode).strip().lower(),
+            "segment_min_mm": codroid_picker_module._safe_float(
+                segment_min, codroid_picker_module.SETTINGS.segment_min
+            ),
+            "segment_max_mm": codroid_picker_module._safe_float(
+                segment_max, codroid_picker_module.SETTINGS.segment_max
+            ),
+            "segment_fraction": codroid_picker_module._safe_float(
+                segment_fraction, codroid_picker_module.SETTINGS.segment_fraction
             ),
         }
         SESSION.auto_config.update(config)
