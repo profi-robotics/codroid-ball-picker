@@ -543,6 +543,7 @@ class AutoPickPlaceProgram(RobotProgram):
         SESSION.robot_has_object = False
 
         # Retreat
+        await wait_for_operation_resume(self._run_id)
         log_move_target("drop_retreat", approach_pose, coordinate_id=coordinate_id)
         await self.move_with_hold(
             approach_pose,
@@ -576,12 +577,14 @@ class AutoPickPlaceProgram(RobotProgram):
             drop_mm=drop_mm,
         )
 
+        await wait_for_operation_resume(self._run_id)
         await self.move_with_hold(
             approach_pose,
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
         )
 
+        await wait_for_operation_resume(self._run_id)
         await self.move_with_hold(
             drop_pose,
             coordinate_id=coordinate_id,
