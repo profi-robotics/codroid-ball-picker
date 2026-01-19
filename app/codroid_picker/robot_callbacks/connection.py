@@ -117,8 +117,10 @@ def register_connection_callbacks(app: Dash) -> None:
         # Enable or test gripper
         try:
             if codroid_picker_module.SESSION.gripper_device is None or codroid_picker_module.SESSION.gripper_device.Global_cbip != cb_ip:
-                # Create new connection with 10 second timeout
-                device = codroid_picker_module.GripperDevice(Global_cbip=cb_ip, timeout=10)
+                # Create new connection
+                # Note: GripperDevice uses XML-RPC with default socket timeout (likely 60s)
+                # Timeout cannot be configured via constructor parameters
+                device = codroid_picker_module.GripperDevice(Global_cbip=cb_ip)
                 cb = device.getCB()
 
                 if cb is None:

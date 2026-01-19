@@ -314,7 +314,7 @@ def register_settings_callbacks(app: Dash) -> None:
         codroid_picker_module.DEFAULT_ROBOT_URI = app_settings.DEFAULT_ROBOT_URI
         codroid_picker_module.GRIPPER_DEFAULTS = app_settings.GRIPPER_DEFAULTS
         codroid_picker_module.DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
-        codroid_picker_module._refresh_gripper_constants()
+        codroid_picker_module.refresh_gripper_constants()
         _refresh_session_auto_config_defaults()
         codroid_picker_module.set_asset_paths(
             calibration_bundle_path=calib_path_val,

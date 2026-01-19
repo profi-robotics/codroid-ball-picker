@@ -5,10 +5,11 @@ Dash calibration UI for the Codroid bring-up workflow.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
-from dash import Dash, Input, Output, State
+from dash import Dash, Input, Output, State, no_update
 
 import app.settings as app_settings
 from app.codroid_picker import bootstrap
@@ -42,6 +43,10 @@ from app.codroid_picker.procedures import (  # noqa: F401
     _robot_calibration_path,
     _robot_posture_ready,
     _ensure_coordinate5_active,
+    _set_robot_guidance,
+    _clear_robot_accuracy_guidance,
+    _load_robot_calibration,
+    _acknowledge_robot_error,
 )
 from app.codroid_picker.error_detection import (  # noqa: F401
     _detect_emergency_stop_status,
@@ -82,6 +87,9 @@ from app.codroid_picker.state import (  # noqa: F401
     _begin_operation,
     _finish_operation,
     _operation_snapshot,
+    _pause_operation,
+    _update_operation_message,
+    resume_operation as _resume_operation,
 )
 from app.codroid_picker.calibration_menu import (  # noqa: F401
     _calibration_data_complete,
@@ -92,6 +100,11 @@ from app.codroid_picker.calibration_menu import (  # noqa: F401
 )
 from app.codroid_picker.gripper_utils import (  # noqa: F401
     refresh_gripper_constants,
+    _record_gripper_sync,
+    _recent_gripper_sync,
+    _restore_calibration_gripper_width,
+    _resolve_gripper_limits,
+    _command_gripper,
 )
 from app.codroid_picker.models import (  # noqa: F401
     save_uploaded_model,
@@ -106,6 +119,10 @@ from app.codroid_picker.camera_calibration import (  # noqa: F401
 from app.codroid_picker.auto_operation import (  # noqa: F401
     _format_detection_list,
     _run_detection,
+)
+from app.codroid_picker.overlay_tasks import (  # noqa: F401
+    _select_overlay_task,
+    _run_charuco_task,
 )
 from app.settings import (  # noqa: F401
     _save_settings,
@@ -165,33 +182,57 @@ ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT_DIR / "assets"
 
-# Initialize all submodules with their dependencies
+# Guard to prevent double initialization during hot-reload
+_INITIALIZED = False
 
-bootstrap.initialize_modules(
-    # Core state objects
-    session=SESSION,
-    settings=SETTINGS,
-    gripper_defaults=GRIPPER_DEFAULTS,
-    robot_coordinate_id=ROBOT_COORDINATE_ID,
-    # Path constants
-    drop_target_path=DROP_TARGET_PATH,
-    bundle_path=DEFAULT_BUNDLE_PATH,
-    workspace_path=DEFAULT_WORKSPACE_PATH,
-    robot_calibration_path=DEFAULT_ROBOT_CALIBRATION_PATH,
-    model_dir=DEFAULT_MODEL_DIR,
-    default_robot_uri=DEFAULT_ROBOT_URI,
-    # Stream references
-    mjpeg_stream=MJPEG_STREAM,
-    raw_stream=RAW_STREAM,
-    # Logger
-    logger=LOGGER,
-    # Component builder dependencies
-    gpu_status_fn=format_gpu_status,
-    model_options_fn=_model_options,
-)
 
-# Restore persisted state on module load
-_restore_persisted_state()
+def _initialize_app() -> None:
+    """Initialize the app dependencies (called once per process)."""
+    global _INITIALIZED
+    if _INITIALIZED:
+        return
+    _INITIALIZED = True
+
+    # Initialize all submodules with their dependencies
+    bootstrap.initialize_modules(
+        # Core state objects
+        session=SESSION,
+        settings=SETTINGS,
+        gripper_defaults=GRIPPER_DEFAULTS,
+        robot_coordinate_id=ROBOT_COORDINATE_ID,
+        # Path constants
+        drop_target_path=DROP_TARGET_PATH,
+        bundle_path=DEFAULT_BUNDLE_PATH,
+        workspace_path=DEFAULT_WORKSPACE_PATH,
+        robot_calibration_path=DEFAULT_ROBOT_CALIBRATION_PATH,
+        model_dir=DEFAULT_MODEL_DIR,
+        default_robot_uri=DEFAULT_ROBOT_URI,
+        # Stream references
+        mjpeg_stream=MJPEG_STREAM,
+        raw_stream=RAW_STREAM,
+        # Logger
+        logger=LOGGER,
+        # Component builder dependencies
+        gpu_status_fn=format_gpu_status,
+        model_options_fn=_model_options,
+    )
+
+    # Restore persisted state on module load
+    _restore_persisted_state()
+
+
+def reset_initialization() -> None:
+    """Reset the initialization flag for hot-reload.
+
+    This allows the app to be re-initialized after cleanup.
+    Called by the cleanup handler in run_codroid_picker.py.
+    """
+    global _INITIALIZED
+    _INITIALIZED = False
+
+
+# Run initialization when module loads (guarded against double execution)
+_initialize_app()
 
 # Make SESSION and LOGGER available as module attributes for robot callbacks
 # This allows callbacks to access them via codroid_picker_module.SESSION/LOGGER
@@ -210,6 +251,7 @@ globals_to_expose = [
     'GRIPPER_OPEN_WIDTH_DEFAULT', 'GRIPPER_CLOSE_WIDTH_DEFAULT',
     'DEFAULT_FLANGE_BUTTON_PORTS', 'GRIPPER_PROFILE_KEYS',
     'CODROID_DEFAULTS', 'DEFAULT_GRIPPER_IP', 'GRIPPER_DEFAULTS',
+    'no_update',  # From Dash
 
     # Path constants
     'DEFAULT_BUNDLE_PATH', 'DEFAULT_WORKSPACE_PATH', 'DEFAULT_ROBOT_CALIBRATION_PATH',
@@ -224,12 +266,17 @@ globals_to_expose = [
     '_save_drop_target', '_save_settings', '_commit_settings',
     '_begin_operation', '_finish_operation', 'get_latest_frame',
     '_log_move_target', '_ensure_coordinate5_active',
+    '_set_robot_guidance', '_clear_robot_accuracy_guidance',
+    '_load_robot_calibration', '_acknowledge_robot_error',
+    '_pause_operation', '_update_operation_message', '_resume_operation',
 
     # Calibration functions
     '_calibration_data_complete', '_calibration_metadata_entries',
     '_reset_calibration_assets', '_camera_calibration_path',
     '_robot_calibration_path', '_refresh_calibration_menu_visibility',
-    'refresh_gripper_constants',
+    'refresh_gripper_constants', '_record_gripper_sync', '_recent_gripper_sync',
+    '_restore_calibration_gripper_width', '_resolve_gripper_limits',
+    '_command_gripper',
     '_operation_snapshot', '_robot_posture_ready',
 
     # Model and GPU functions
@@ -247,6 +294,9 @@ globals_to_expose = [
 
     # Auto operation functions
     '_format_detection_list', '_run_detection',
+
+    # Overlay tasks
+    '_select_overlay_task', '_run_charuco_task',
 
     # API classes
     'CodroidAPI', 'RobotSession', 'GripperDevice', 'TwoFG7Gripper',
@@ -323,10 +373,6 @@ def create_app() -> Dash:
 
     # Register Flask video streaming routes
     register_video_routes(app)
-
-    # Auto-load model on startup if one is configured
-    # This happens after app creation in case model loading needs app context
-    bootstrap.auto_load_model(SETTINGS, activate_model, LOGGER)
 
     return app
 

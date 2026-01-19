@@ -48,6 +48,15 @@ class AppRegistry:
             cls._instance._fully_initialized = False
         return cls._instance
 
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance for clean hot-reload.
+
+        This clears the singleton so the next call to registry() creates
+        a fresh instance with no state from the previous run.
+        """
+        cls._instance = None
+
     def __init__(self) -> None:
         if self._initialized:
             return

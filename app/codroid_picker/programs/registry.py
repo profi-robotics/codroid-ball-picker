@@ -56,6 +56,17 @@ class ProgramRegistry:
                     cls._instance._initialized = False
         return cls._instance
 
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance for clean hot-reload.
+
+        This clears the singleton so the next call creates a fresh instance.
+        """
+        global _registry
+        with cls._lock:
+            cls._instance = None
+            _registry = None
+
     def __init__(self) -> None:
         if self._initialized:
             return

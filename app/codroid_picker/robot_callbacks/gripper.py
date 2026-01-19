@@ -8,20 +8,6 @@ from dash import Dash, Input, no_update, Output, State
 def register_gripper_callbacks(app: Dash) -> None:
     """Register gripper-related callbacks."""
 
-    @app.callback(
-        Output("footer-gripper-width", "disabled"),
-        Output("footer-gripper-width-decrease", "disabled"),
-        Output("footer-gripper-width-increase", "disabled"),
-        Input("gripper-connection-state", "data"),
-        prevent_initial_call=False,
-    )
-    def _update_gripper_width_disabled(
-        gripper_state: Optional[dict],
-    ) -> Tuple[bool, bool, bool]:
-        """Disable gripper width controls when gripper is not connected."""
-        is_online = (gripper_state or {}).get("status") == "online"
-        disabled = not is_online
-        return disabled, disabled, disabled
 
     @app.callback(
         Output("footer-gripper-width", "value", allow_duplicate=True),

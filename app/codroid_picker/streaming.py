@@ -199,12 +199,20 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
         raise
 
 
-def stop_camera_stream() -> None:
-    """Stop the current camera stream."""
+def stop_camera_stream(wait_for_release: bool = False) -> None:
+    """Stop the current camera stream.
+
+    Args:
+        wait_for_release: If True, wait briefly for USB device to be released.
+            Use this during hot-reload cleanup to avoid device conflicts.
+    """
     try:
         if SESSION.camera_stream is not None:
             SESSION.camera_stream.stop()
             SESSION.camera_stream = None
+            if wait_for_release:
+                # Allow time for USB device to be fully released
+                time.sleep(0.5)
     except Exception as exc:
         LOGGER.error("Error stopping camera stream: %s", exc)
 
