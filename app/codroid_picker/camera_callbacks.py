@@ -103,17 +103,28 @@ def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tupl
 def _refresh_plate_status(frame: Any, plate_path: Path) -> None:
     """Refresh plate tracking status from frame."""
     from app.codroid_picker import state
-    from vision.plate import track_plate
+    from vision.plate import load_plate_layout, estimate_plate_calibration
+    from app.codroid_picker.overlays.calibration import _evaluate_plate_status
 
     try:
-        result = track_plate(frame, plate_path)
+        plate_layout = load_plate_layout(plate_path)
+        calibration_result = estimate_plate_calibration(frame, plate_layout)
+        status_data = _evaluate_plate_status(calibration_result)
+        count = status_data.get("count", 0)
+        if status_data.get("is_ok"):
+            if status_data.get("movement_px") is not None:
+                message = f"Plate markers: {count} (movement: {status_data['movement_px']:.1f}px)"
+            else:
+                message = f"Plate markers: {count}"
+        else:
+            message = f"Insufficient plate markers: {count}/{status_data.get('min_required', '?')}"
         state.update_plate_status(
-            count=result.marker_count,
-            ok=result.all_detected,
-            stable=result.is_stable,
-            center_px=result.center_px,
-            movement_px=result.movement_px,
-            message=result.status_message,
+            count=count,
+            ok=status_data.get("is_ok", False),
+            stable=status_data.get("stable", False),
+            center_px=tuple(status_data["current_center"]) if status_data.get("current_center") is not None else None,
+            movement_px=status_data.get("movement_px"),
+            message=message,
         )
     except Exception as exc:
         state.update_plate_status(
