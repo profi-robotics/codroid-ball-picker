@@ -95,6 +95,7 @@ class UISession:
     coord5_transform: Optional[workspace.RigidTransform] = None
     robot_has_object: bool = False
     operation_in_progress: bool = False
+    operation_started_at: Optional[float] = None
     pick_attempts: int = 0
     pick_successes: int = 0
     pick_failures: int = 0

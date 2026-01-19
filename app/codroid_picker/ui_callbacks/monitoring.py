@@ -74,8 +74,24 @@ def register_monitoring_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _update_button_states(_n: int) -> Tuple[bool, bool, bool, bool]:
-        """Disable buttons during operations to prevent rapid clicking."""
+        """Disable buttons during operations to prevent rapid clicking.
+
+        Includes a 120-second watchdog to auto-reset stuck operations.
+        """
+        import time
+        import logging
         from app.codroid_picker.session import SESSION
+
+        # Watchdog: auto-reset if operation has been running for more than 120 seconds
+        if SESSION.operation_in_progress and SESSION.operation_started_at is not None:
+            elapsed = time.monotonic() - SESSION.operation_started_at
+            if elapsed > 120.0:
+                logging.getLogger(__name__).warning(
+                    "Auto-resetting stuck operation_in_progress flag after %.1f seconds",
+                    elapsed,
+                )
+                SESSION.operation_in_progress = False
+                SESSION.operation_started_at = None
 
         disabled = SESSION.operation_in_progress
         # Only enable reset when operation is in progress
@@ -93,6 +109,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         from app.codroid_picker.session import SESSION
 
         SESSION.operation_in_progress = False
+        SESSION.operation_started_at = None
         codroid_picker_module.LOGGER.info(
             "Operation lock manually reset by user")
         return "Operation lock reset."

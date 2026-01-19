@@ -25,3 +25,14 @@ class OperationAbort(Exception):
     """
 
     pass
+
+
+class TrackingLost(Exception):
+    """Raised when target tracking is lost during a follow move.
+
+    This exception signals that the target can no longer be detected and
+    the robot should retreat to a safe position (e.g., drop approach).
+    """
+
+    pass
+

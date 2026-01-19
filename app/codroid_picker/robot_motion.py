@@ -26,7 +26,6 @@ from app.codroid_picker.app_instance import registry
 from app.codroid_picker.exceptions import OperationPaused, OperationAbort
 from app.codroid_picker.robot_helpers import (
     resolve_gripper_limits as _resolve_gripper_limits,
-    is_gripper_connected,
     safe_int,
 )
 
@@ -494,6 +493,8 @@ async def move_linear_follow_target(
 
     stable_since: Optional[float] = None
     deadline = time.monotonic() + timeout_s
+    consecutive_none_count = 0
+    target_acquired = False  # True once we've successfully tracked a target
 
     while True:
         _check_operation()
@@ -507,7 +508,22 @@ async def move_linear_follow_target(
         target = target_fetch()
         if target is not None:
             last_target = target
+            consecutive_none_count = 0  # Reset counter on successful fetch
+            target_acquired = True
+        else:
+            consecutive_none_count += 1
+            if consecutive_none_count == 3:
+                # Log that we're losing target but continue with last known position
+                # This is expected when robot obscures the target during approach
+                LOGGER.info(
+                    f"Follow move '{label}': Target not visible for {consecutive_none_count} frames, "
+                    f"continuing with last known position"
+                )
+            # Don't raise TrackingLost - just continue with last_target
+            # The robot likely obscures the target when close
+
         if last_target is None:
+            # We never acquired a target - this is a real error
             raise RuntimeError("No target available for follow move.")
 
         await robot_api.set_target_cpos(

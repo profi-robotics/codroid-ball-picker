@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING, Callable, Optional, Tuple
-
-import numpy as np
 
 if TYPE_CHECKING:
     from codroid_api import CodroidAPI
@@ -25,8 +22,8 @@ from app.codroid_picker.programs.base import (
 )
 from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
-    ensure_operation_active,
     wait_for_operation_resume,
+    move_linear_follow_target,
     command_gripper,
     resolve_gripper_limits,
     ensure_coordinate_active,
@@ -62,6 +59,11 @@ class ManualPickPlaceProgram(RobotProgram):
         approach_mm: float = -30.0,
         pick_mm: float = 0.0,
         drop_mm: float = 0.0,
+        # Tracking mode configuration
+        tracking_mode: str = "move",
+        segment_min_mm: float = 5.0,
+        segment_max_mm: float = 50.0,
+        segment_fraction: float = 0.5,
         # Gripper settings
         gripper_close_width: Optional[float] = None,
         gripper_open_width: Optional[float] = None,
@@ -78,6 +80,10 @@ class ManualPickPlaceProgram(RobotProgram):
         self._approach_mm = approach_mm
         self._pick_mm = pick_mm
         self._drop_mm = drop_mm
+        self._tracking_mode = tracking_mode
+        self._segment_min_mm = segment_min_mm
+        self._segment_max_mm = segment_max_mm
+        self._segment_fraction = segment_fraction
         self._gripper_close_width = gripper_close_width
         self._gripper_open_width = gripper_open_width
         self._on_pick_complete = on_pick_complete
@@ -157,11 +163,14 @@ class ManualPickPlaceProgram(RobotProgram):
             )
 
     async def _execute_pick(self, robot_api: "CodroidAPI") -> ProgramResult:
-        """Execute a pick operation with dynamic target tracking."""
+        """Execute a pick operation with optional dynamic target tracking."""
         from app.codroid_picker.session import SESSION
 
         settings = registry().settings
         coordinate_id = registry().robot_coordinate_id
+        use_segment_tracking = self._tracking_mode.lower() == "segment"
+
+        LOGGER.info(f"Manual pick using tracking_mode={self._tracking_mode} (segment={use_segment_tracking})")
 
         # Power on and ensure coordinate system
         self.update_message("Powering on robot...")
@@ -176,19 +185,31 @@ class ManualPickPlaceProgram(RobotProgram):
         if approach_pose is None:
             return ProgramResult(
                 status=ProgramStatus.ERROR,
-                message="Could not compute approach pose.",
+                message="Could not compute approach pose - no target detected.",
             )
 
         log_move_target("pick_approach", approach_pose,
                         coordinate_id=coordinate_id)
-        await self._move_linear_follow(
-            robot_api,
-            lambda: self._pick_approach_pose_fn() if self._pick_approach_pose_fn else approach_pose,
-            label="pick_approach_follow",
-            coordinate_id=coordinate_id,
-        )
 
-        # Get pick pose
+        if use_segment_tracking:
+            # Use move_linear_follow_target for dynamic tracking (segment mode)
+            # The pose fetcher will use last known position if target is obscured by robot
+            await move_linear_follow_target(
+                robot_api,
+                lambda: self._pick_approach_pose_fn() if self._pick_approach_pose_fn else approach_pose,
+                label="pick_approach_follow",
+                coordinate_id=coordinate_id,
+                run_id=self._run_id,
+            )
+        else:
+            # Use simple linear move for static target (move target mode)
+            await self.move_with_hold(
+                approach_pose,
+                coordinate_id=coordinate_id,
+                hold_seconds=2.0,
+            )
+
+        # Get pick pose - for segment tracking, this uses the last tracked position
         await wait_for_operation_resume(self._run_id)
         self.update_message("Moving to pick position...")
         pick_pose = self._pick_pose_fn() if self._pick_pose_fn else None
@@ -199,12 +220,23 @@ class ManualPickPlaceProgram(RobotProgram):
             )
 
         log_move_target("pick_pose", pick_pose, coordinate_id=coordinate_id)
-        await self._move_linear_follow(
-            robot_api,
-            lambda: self._pick_pose_fn() if self._pick_pose_fn else pick_pose,
-            label="pick_pose_follow",
-            coordinate_id=coordinate_id,
-        )
+
+        if use_segment_tracking:
+            # Use move_linear_follow_target for dynamic tracking (segment mode)
+            await move_linear_follow_target(
+                robot_api,
+                lambda: self._pick_pose_fn() if self._pick_pose_fn else pick_pose,
+                label="pick_pose_follow",
+                coordinate_id=coordinate_id,
+                run_id=self._run_id,
+            )
+        else:
+            # Use simple linear move for static target (move target mode)
+            await self.move_with_hold(
+                pick_pose,
+                coordinate_id=coordinate_id,
+                hold_seconds=2.0,
+            )
 
         # Close gripper
         await wait_for_operation_resume(self._run_id)
@@ -240,6 +272,46 @@ class ManualPickPlaceProgram(RobotProgram):
             status=ProgramStatus.COMPLETED,
             message="Pick complete.",
         )
+
+    async def _retreat_to_drop_approach(self, robot_api: "CodroidAPI", coordinate_id: int) -> None:
+        """Retreat to the drop approach position."""
+        from app.codroid_picker.session import SESSION
+
+        LOGGER.info(f"Retreating to drop approach. drop_approach_pose={self._drop_approach_pose}, "
+                   f"drop_target_robot={SESSION.drop_target_robot}")
+
+        # Determine the retreat target - prefer drop_approach_pose, fall back to session data
+        retreat_pose = self._drop_approach_pose
+
+        if retreat_pose is None and SESSION.drop_target_robot is not None:
+            # Build drop approach from session data
+            base = SESSION.drop_target_robot
+            retreat_pose = {
+                "x": float(base[0]),
+                "y": float(base[1]),
+                "z": float(base[2]) + self._approach_mm,
+                "a": 0.0, "b": 0.0, "c": 0.0,
+            }
+            if SESSION.drop_target_orientation is not None:
+                orient = SESSION.drop_target_orientation
+                retreat_pose.update({
+                    "a": float(orient[0]),
+                    "b": float(orient[1]),
+                    "c": float(orient[2]),
+                })
+            LOGGER.info(f"Built retreat pose from session: {retreat_pose}")
+
+        if retreat_pose is not None:
+            log_move_target("tracking_lost_retreat", retreat_pose,
+                           coordinate_id=coordinate_id)
+            await self.move_with_hold(
+                retreat_pose,
+                coordinate_id=coordinate_id,
+                hold_seconds=2.0,
+            )
+        else:
+            LOGGER.warning("No drop approach position available for retreat - "
+                          "neither drop_approach_pose nor SESSION.drop_target_robot are set")
 
     async def _execute_drop(self, robot_api: "CodroidAPI") -> ProgramResult:
         """Execute a drop operation."""
@@ -322,15 +394,17 @@ class ManualPickPlaceProgram(RobotProgram):
         else:
             close_width = settings.gripper_profile.close_width_default
         if open_width <= close_width:
-            _min_width, max_width = resolve_gripper_limits()
-            if max_width > open_width:
-                LOGGER.warning(
-                    "Open width %.1f <= close width %.1f; using max width %.1f",
-                    open_width,
-                    close_width,
-                    max_width,
-                )
-                open_width = max_width
+            gripper = registry().gripper
+            if gripper is not None:
+                _min_width, max_width = resolve_gripper_limits(gripper)
+                if max_width > open_width:
+                    LOGGER.warning(
+                        "Open width %.1f <= close width %.1f; using max width %.1f",
+                        open_width,
+                        close_width,
+                        max_width,
+                    )
+                    open_width = max_width
         result = command_gripper(open_width, "opened")
         LOGGER.info(f"Gripper open result: {result}")
 
@@ -366,63 +440,3 @@ class ManualPickPlaceProgram(RobotProgram):
             message="Drop complete.",
         )
 
-    async def _move_linear_follow(
-        self,
-        robot_api: "CodroidAPI",
-        pose_fn: Callable[[], Optional[dict]],
-        *,
-        label: str,
-        coordinate_id: int,
-    ) -> None:
-        """Execute a linear move with position updates from pose_fn."""
-        settings = registry().settings
-        timeout_s = settings.verification_move_timeout_s
-        settle_s = settings.verification_settle_s
-        motion_eps_mm = settings.verification_motion_eps_mm
-        heartbeat_interval = 0.2
-
-        session = registry().get_or_create_robot_session()
-        start_time = time.monotonic()
-        last_pos = session.position_snapshot()
-        moved = False
-        settle_deadline: Optional[float] = None
-
-        while time.monotonic() - start_time < timeout_s:
-            ensure_operation_active(self._run_id)
-
-            # Get current target pose
-            target = pose_fn()
-            if target is None:
-                raise RuntimeError(f"Lost target during {label}")
-
-            # Send move command
-            await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
-            await robot_api.set_target_cpos(
-                robot_api.attach_coordinate_to_cpos(
-                    robot_api.build_target_cpos(**target),
-                    coordinate_id=coordinate_id,
-                )
-            )
-            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
-            await robot_api.send_command_heartbeat()
-            await asyncio.sleep(heartbeat_interval)
-
-            # Check position
-            curr_pos = session.position_snapshot()
-            delta = np.linalg.norm([
-                float(curr_pos.x) - float(last_pos.x),
-                float(curr_pos.y) - float(last_pos.y),
-                float(curr_pos.z) - float(last_pos.z),
-            ])
-
-            if delta > motion_eps_mm:
-                moved = True
-                settle_deadline = time.monotonic() + settle_s
-            elif moved and settle_deadline is not None:
-                if time.monotonic() >= settle_deadline:
-                    break
-
-            last_pos = curr_pos
-
-        await robot_api.clear_target_position()
-        await robot_api.stop_command()

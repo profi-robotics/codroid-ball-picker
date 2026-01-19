@@ -4,6 +4,7 @@ This module provides UI callback wrappers for manual pick and place operations.
 It delegates actual robot control logic to the ManualPickPlaceProgram class.
 """
 
+import time
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, callback_context, no_update
@@ -30,6 +31,10 @@ def register_pick_place_callbacks(app: Dash) -> None:
         State("plate-test-approach-height", "value"),
         State("plate-test-pick-height", "value"),
         State("plate-test-drop-height", "value"),
+        State("shared-tracking-mode", "value"),
+        State("shared-segment-min", "value"),
+        State("shared-segment-max", "value"),
+        State("shared-segment-fraction", "value"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
@@ -43,6 +48,10 @@ def register_pick_place_callbacks(app: Dash) -> None:
         approach_height: Optional[float],
         pick_height: Optional[float],
         drop_height: Optional[float],
+        tracking_mode: Optional[str],
+        segment_min: Optional[float],
+        segment_max: Optional[float],
+        segment_fraction: Optional[float],
         robot_uri: Optional[str],
     ) -> Tuple[str, str]:
         """Handle manual pick and place operations.
@@ -222,10 +231,22 @@ def register_pick_place_callbacks(app: Dash) -> None:
             if not SESSION.detections:
                 return "No objects detected.", drop_text
 
-            # Find closest detection
+            # Get target label from settings
+            target_label = SETTINGS.auto_target_label
+
+            # Filter detections by target label
+            def filter_by_label(detections):
+                """Filter detections to only include the target label."""
+                return [d for d in detections if d.get("label") == target_label]
+
+            filtered_detections = filter_by_label(SESSION.detections)
+            if not filtered_detections:
+                return f"No objects with label '{target_label}' detected.", drop_text
+
+            # Find closest detection from filtered list
             from app.codroid_picker.pick_place_helpers import select_closest_detection
             detection = select_closest_detection(
-                SESSION.detections,
+                filtered_detections,
                 reference_xy=(0.0, 0.0),  # Pick closest to origin
                 coord5_fn=lambda d: codroid_picker_module._detection_coord5_xy(
                     d, workspace_def
@@ -237,18 +258,86 @@ def register_pick_place_callbacks(app: Dash) -> None:
             if coord5_xy is None:
                 return "Could not map detection to robot coordinates.", drop_text
 
-            # Build pose fetchers for tracking
-            tracker_coord5 = coord5_xy
+            # Determine tracking mode
+            use_segment_tracking = (tracking_mode or "move").strip().lower() == "segment"
 
-            def make_pick_approach_fn():
-                return codroid_picker_module._pose_from_coord5_mm(
-                    tracker_coord5[0], tracker_coord5[1], approach_mm
-                )
+            # Capture static coordinates for "move" mode
+            # These won't change during the operation
+            static_coord5_xy = (coord5_xy[0], coord5_xy[1])
 
-            def make_pick_pose_fn():
-                return codroid_picker_module._pose_from_coord5_mm(
-                    tracker_coord5[0], tracker_coord5[1], pick_mm
-                )
+            if use_segment_tracking:
+                # For segment tracking, we track during approach but then lock in
+                # the final position for pick_pose (robot obscures target when close)
+                # Use a mutable container to store the last tracked position
+                tracking_state = {
+                    "xy": (coord5_xy[0], coord5_xy[1]),
+                    "lost_count": 0,  # Count consecutive frames where target is lost
+                }
+
+                # Build dynamic pose fetcher for approach phase
+                # This re-queries SESSION.detections to track moving objects
+                # and updates tracking_state with each successful detection
+                # When target is not visible (robot obscures it), returns last known position
+                def make_pick_approach_fn():
+                    # Filter detections by target label
+                    filtered = filter_by_label(SESSION.detections) if SESSION.detections else []
+
+                    if not filtered:
+                        # No valid detections - use last known position
+                        # This is expected when robot obscures the target
+                        tracking_state["lost_count"] += 1
+                        if tracking_state["lost_count"] == 5:
+                            LOGGER.info(
+                                f"Target not visible for {tracking_state['lost_count']} frames, "
+                                f"using last known position (robot likely obscuring target)"
+                            )
+                        # Always return last known position - don't return None
+                        return codroid_picker_module._pose_from_coord5_mm(
+                            tracking_state["xy"][0], tracking_state["xy"][1], approach_mm
+                        )
+
+                    current_detection = select_closest_detection(
+                        filtered,
+                        reference_xy=(0.0, 0.0),
+                        coord5_fn=lambda d: codroid_picker_module._detection_coord5_xy(
+                            d, workspace_def
+                        ),
+                    )
+                    current_coord5 = codroid_picker_module._detection_coord5_xy(
+                        current_detection, workspace_def
+                    )
+                    if current_coord5 is None:
+                        # Detection exists but can't map to coordinates - use last known
+                        tracking_state["lost_count"] += 1
+                        return codroid_picker_module._pose_from_coord5_mm(
+                            tracking_state["xy"][0], tracking_state["xy"][1], approach_mm
+                        )
+
+                    # Successfully tracked - reset lost counter and update position
+                    tracking_state["lost_count"] = 0
+                    tracking_state["xy"] = (current_coord5[0], current_coord5[1])
+                    return codroid_picker_module._pose_from_coord5_mm(
+                        current_coord5[0], current_coord5[1], approach_mm
+                    )
+
+                # Build static pose fetcher for pick phase
+                # Uses the last tracked position from approach (robot obscures target)
+                def make_pick_pose_fn():
+                    return codroid_picker_module._pose_from_coord5_mm(
+                        tracking_state["xy"][0], tracking_state["xy"][1], pick_mm
+                    )
+            else:
+                # Build static pose fetchers for "move" mode
+                # These use the captured coordinates and don't change
+                def make_pick_approach_fn():
+                    return codroid_picker_module._pose_from_coord5_mm(
+                        static_coord5_xy[0], static_coord5_xy[1], approach_mm
+                    )
+
+                def make_pick_pose_fn():
+                    return codroid_picker_module._pose_from_coord5_mm(
+                        static_coord5_xy[0], static_coord5_xy[1], pick_mm
+                    )
 
             # Build drop poses
             drop_approach_pose = None
@@ -283,7 +372,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
                     return "Teach a drop position first.", drop_text
                 action = "pick_drop"
 
-            # Create and run program
+            # Create and run program with tracking configuration
             program = ManualPickPlaceProgram(
                 action=action,
                 pick_approach_pose_fn=make_pick_approach_fn,
@@ -293,10 +382,15 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 approach_mm=approach_mm,
                 pick_mm=pick_mm,
                 drop_mm=drop_mm,
+                tracking_mode=(tracking_mode or "move").strip().lower(),
+                segment_min_mm=_safe_float(segment_min, SETTINGS.segment_min),
+                segment_max_mm=_safe_float(segment_max, SETTINGS.segment_max),
+                segment_fraction=_safe_float(segment_fraction, SETTINGS.segment_fraction),
             )
 
             try:
                 SESSION.operation_in_progress = True
+                SESSION.operation_started_at = time.monotonic()
                 result = await registry.start_instance(
                     program,
                     await codroid_picker_module._get_robot_api(robot_uri or DEFAULT_ROBOT_URI),
@@ -313,6 +407,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 return f"Pick/place action failed: {exc}", drop_text
             finally:
                 SESSION.operation_in_progress = False
+                SESSION.operation_started_at = None
 
         # Handle execute-drop
         if trigger == "execute-drop":
@@ -353,6 +448,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
 
             try:
                 SESSION.operation_in_progress = True
+                SESSION.operation_started_at = time.monotonic()
                 result = await registry.start_instance(
                     program,
                     await codroid_picker_module._get_robot_api(robot_uri or DEFAULT_ROBOT_URI),
@@ -368,5 +464,6 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 return f"Drop action failed: {exc}", drop_text
             finally:
                 SESSION.operation_in_progress = False
+                SESSION.operation_started_at = None
 
         return no_update, drop_text
