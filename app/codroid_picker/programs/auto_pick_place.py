@@ -28,7 +28,6 @@ from app.codroid_picker.robot_motion import (
     wait_for_operation_resume,
     move_linear_follow_target,
     command_gripper,
-    drop_with_verify,
     ensure_coordinate_active,
     log_move_target,
     resolve_gripper_limits,
@@ -518,7 +517,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 _min_width, max_width = resolve_gripper_limits(gripper)
                 if max_width > open_width:
                     LOGGER.warning(
-                        "Open width %.1f <= min width %.1f; using max width %.1f",
+                        "Open width %.1f <= close width %.1f; using max width %.1f",
                         open_width,
                         gripper_close,
                         max_width,
