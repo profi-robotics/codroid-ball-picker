@@ -127,6 +127,7 @@ from app.codroid_picker.camera_calibration import (  # noqa: F401
     capture_color_frame,
     capture_depth_snapshot,
     compute_calibration_bundle,
+    compute_plate_calibration_from_latest,
 )
 from app.codroid_picker.auto_operation import (  # noqa: F401
     _format_detection_list,
