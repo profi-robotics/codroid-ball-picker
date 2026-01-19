@@ -64,10 +64,19 @@ def _clear_calibration_outputs(output_path: Path) -> None:
 
 def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tuple[list[int], int]:
     """Count ChArUco corners detected in each frame."""
-    from vision.markers import CharucoBoard
+    # Use the Charuco board spec loader and OpenCV CharucoDetector
+    from vision.aruco_board import load_charuco_board_spec
 
-    board = CharucoBoard.from_json(board_path)
-    detection_counts = []
+    board_spec = load_charuco_board_spec(board_path)
+    board = board_spec.create_board()
+
+    # Detector params - allow inverted markers (white on black)
+    detector_params = cv2.aruco.DetectorParameters()
+    detector_params.detectInvertedMarker = True
+    charuco_params = cv2.aruco.CharucoParameters()
+    charuco_detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
+
+    detection_counts: list[int] = []
     usable = 0
 
     for frame_path in frame_paths:
@@ -76,8 +85,14 @@ def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tupl
             detection_counts.append(0)
             continue
 
-        corners, ids, _, _ = board.detect(img)
-        count = len(corners) if corners is not None else 0
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        try:
+            charuco_corners, charuco_ids, _marker_corners, _marker_ids = charuco_detector.detectBoard(gray)
+        except Exception:
+            # Fall back to zero if detection fails on this image
+            charuco_corners = None
+
+        count = len(charuco_corners) if charuco_corners is not None else 0
         detection_counts.append(count)
         if count >= 16:
             usable += 1
@@ -332,16 +347,19 @@ def register_camera_callbacks(app: Dash) -> None:
     @app.callback(
         Output("camera-calibration-action", "children"),
         Output("calibration-progress-store", "data"),
+        Output("calibration-stepper", "active", allow_duplicate=True),
         Input("calibrate-camera", "n_clicks"),
         Input("use-existing-calibration", "n_clicks"),
         State("settings-calib-path", "value"),
+        State("calibration-stepper", "active"),
         prevent_initial_call=True,
     )
     def _handle_camera_calibration_actions(
         _calibrate: int,
         _use_existing: int,
         bundle_path: str,
-    ) -> Tuple[dmc.Alert, dict]:
+        current_step: Optional[int] = 0,
+    ) -> Tuple[dmc.Alert, dict, int]:
         # Import parent module to access helper functions
         import app.codroid_picker as codroid_picker_module
 
@@ -361,7 +379,8 @@ def register_camera_callbacks(app: Dash) -> None:
                     title="Using saved calibration",
                     color="green",
                 )
-                return alert, {"progress": 0}
+                # Advance to robot calibration step
+                return alert, {"progress": 0}, 1
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error loading saved calibration: {exc}", exc_info=True)
@@ -371,7 +390,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     title="Load error",
                     color="red",
                 )
-                return alert, {"progress": 0}
+                return alert, {"progress": 0}, (current_step or 0)
 
         if trigger == "calibrate-camera":
             try:
@@ -446,7 +465,8 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
-                return alert, {"progress": 0}
+                # Advance to robot calibration step
+                return alert, {"progress": 0}, 1
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error during calibration: {exc}", exc_info=True)
@@ -459,9 +479,9 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker on error
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
-                return alert, {"progress": 0}
+                return alert, {"progress": 0}, (current_step or 0)
 
-        return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}
+        return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}, (current_step or 0)
 
     @app.callback(
         Output("overlay-status", "children", allow_duplicate=True),

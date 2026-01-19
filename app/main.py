@@ -108,6 +108,7 @@ from app.codroid_picker.gripper_utils import (  # noqa: F401
 )
 from app.codroid_picker.models import (  # noqa: F401
     save_uploaded_model,
+    _list_capture_frames,
 )
 from app.codroid_picker.camera_calibration import (  # noqa: F401
     get_latest_frame,
@@ -115,6 +116,9 @@ from app.codroid_picker.camera_calibration import (  # noqa: F401
     load_workspace_definition,
     compute_workspace_from_latest,
     _clear_workspace_definition,
+    capture_color_frame,
+    capture_depth_snapshot,
+    compute_calibration_bundle,
 )
 from app.codroid_picker.auto_operation import (  # noqa: F401
     _format_detection_list,
@@ -123,6 +127,10 @@ from app.codroid_picker.auto_operation import (  # noqa: F401
 from app.codroid_picker.overlay_tasks import (  # noqa: F401
     _select_overlay_task,
     _run_charuco_task,
+    _run_workspace_task,
+    _run_plate_task,
+    _run_detection_task,
+    _run_drop_marker_task,
 )
 from app.settings import (  # noqa: F401
     _save_settings,
@@ -285,6 +293,8 @@ globals_to_expose = [
     # Workspace functions
     'load_calibration_bundle', 'load_workspace_definition',
     'compute_workspace_from_latest', '_clear_workspace_definition',
+    '_list_capture_frames', 'capture_color_frame', 'capture_depth_snapshot',
+    'compute_calibration_bundle',
 
     # Robot state functions
     '_detect_emergency_stop_status', '_detect_overspeed_status',
@@ -296,7 +306,8 @@ globals_to_expose = [
     '_format_detection_list', '_run_detection',
 
     # Overlay tasks
-    '_select_overlay_task', '_run_charuco_task',
+    '_select_overlay_task', '_run_charuco_task', '_run_workspace_task',
+    '_run_plate_task', '_run_detection_task', '_run_drop_marker_task',
 
     # API classes
     'CodroidAPI', 'RobotSession', 'GripperDevice', 'TwoFG7Gripper',

@@ -62,7 +62,7 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
     """Draw ChArUco board detection overlay."""
     vis = frame.copy()
     if not board_path.exists():
-        status = "ChArUco layout not found."
+        status = f"ChArUco layout not found: {board_path}"
         return vis, status, "ChArUco corners: --"
 
     try:
@@ -70,33 +70,30 @@ def draw_charuco_overlay(frame: np.ndarray, board_path: Path) -> Tuple[np.ndarra
         board = board_spec.create_board()
         gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
 
-        # Get dictionary and detector
-        dictionary_id = getattr(cv2.aruco, board_spec.dictionary)
-        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        # Set up detector parameters with inverted marker support
         detector_params = cv2.aruco.DetectorParameters()
-        detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
+        detector_params.detectInvertedMarker = True
 
-        # Detect markers
-        marker_corners, marker_ids, rejected = detector.detectMarkers(gray)
+        # Use CharucoDetector for combined marker + corner detection
+        charuco_params = cv2.aruco.CharucoParameters()
+        charuco_detector = cv2.aruco.CharucoDetector(
+            board, charuco_params, detector_params)
+        charuco_corners, charuco_ids, marker_corners, marker_ids = charuco_detector.detectBoard(gray)
 
         # Draw detected markers
-        cv2.aruco.drawDetectedMarkers(vis, marker_corners, marker_ids)
+        if marker_corners is not None and len(marker_corners) > 0:
+            cv2.aruco.drawDetectedMarkers(vis, marker_corners, marker_ids)
 
-        if marker_corners and len(marker_corners) > 0:
-            # Interpolate ChArUco corners
-            charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                marker_corners, marker_ids, gray, board
+        if charuco_corners is not None and len(charuco_corners) > 0:
+            cv2.aruco.drawDetectedCornersCharuco(
+                vis, charuco_corners, charuco_ids, (0, 255, 0)
             )
-
-            if charuco_retval > 0:
-                cv2.aruco.drawDetectedCornersCharuco(
-                    vis, charuco_corners, charuco_ids, (0, 255, 0)
-                )
-                status = f"ChArUco corners detected: {charuco_retval}"
-                metric = f"ChArUco corners: {charuco_retval}"
-            else:
-                status = "No ChArUco corners detected."
-                metric = "ChArUco corners: 0"
+            charuco_count = len(charuco_corners)
+            status = f"ChArUco corners detected: {charuco_count}"
+            metric = f"ChArUco corners: {charuco_count}"
+        elif marker_corners is not None and len(marker_corners) > 0:
+            status = "Markers detected but no ChArUco corners."
+            metric = "ChArUco corners: 0"
         else:
             status = "No ArUco markers detected."
             metric = "ChArUco corners: 0"

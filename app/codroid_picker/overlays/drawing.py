@@ -91,6 +91,9 @@ def _apply_workspace_overlay(frame: np.ndarray) -> None:
     """Apply workspace boundary overlay to the frame."""
     if SESSION.workspace_definition is None:
         return
+    if SESSION.calibration_bundle is None:
+        # Can't draw workspace overlay without calibration bundle
+        return
     try:
         corners_px = _workspace_corners_px(SESSION.workspace_definition)
     except Exception as exc:

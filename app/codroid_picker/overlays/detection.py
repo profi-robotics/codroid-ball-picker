@@ -64,6 +64,7 @@ def draw_drop_marker_overlay(frame: np.ndarray, marker_id: int) -> Tuple[np.ndar
         # Use ArUco detection for drop marker
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         detector_params = cv2.aruco.DetectorParameters()
+        detector_params.detectInvertedMarker = True
         detector = cv2.aruco.ArucoDetector(dictionary, detector_params)
 
         corners, ids, _ = detector.detectMarkers(gray)
