@@ -30,6 +30,8 @@ from app.codroid_picker.robot_motion import (
     command_gripper,
     drop_with_verify,
     ensure_coordinate_active,
+    log_move_target,
+    resolve_gripper_limits,
 )
 from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
 
@@ -388,14 +390,13 @@ class AutoPickPlaceProgram(RobotProgram):
             return _pose_from_coord5(coord5_xy, pick_mm)
 
         # Move to approach
-        LOGGER.info("Auto: Moving to pick approach position")
         await wait_for_operation_resume(self._run_id)
-        LOGGER.info(
-            "Auto: wait_for_operation_resume passed, executing pick approach move"
-        )
         approach_pose = _pick_approach_pose_fn()
         if approach_pose is None:
             raise RuntimeError("Pick approach pose unavailable.")
+        
+        log_move_target("pick_approach", approach_pose, coordinate_id=coordinate_id)
+        
         if use_segment_tracking:
             try:
                 await asyncio.wait_for(
@@ -409,7 +410,6 @@ class AutoPickPlaceProgram(RobotProgram):
                     ),
                     timeout=30.0,
                 )
-                LOGGER.info("Auto: move_linear_follow_target returned, reached pick approach position")
             except asyncio.TimeoutError:
                 LOGGER.error("Auto: Pick approach move timed out after 30s")
                 raise RuntimeError("Pick approach move timed out")
@@ -421,12 +421,13 @@ class AutoPickPlaceProgram(RobotProgram):
             )
 
         # Move to pick
-        LOGGER.info("Auto: About to wait for resume before moving to pick")
         await wait_for_operation_resume(self._run_id)
-        LOGGER.info("Auto: Resume complete, moving to pick position")
         pick_pose = _pick_pose_fn()
         if pick_pose is None:
             raise RuntimeError("Pick pose unavailable.")
+        
+        log_move_target("pick_pose", pick_pose, coordinate_id=coordinate_id)
+        
         if use_segment_tracking:
             await move_linear_follow_target(
                 robot_api,
@@ -442,17 +443,18 @@ class AutoPickPlaceProgram(RobotProgram):
                 coordinate_id=coordinate_id,
                 hold_seconds=2.0,
             )
-        LOGGER.info("Auto: Reached pick position")
 
         # Close gripper
-        LOGGER.info(f"Auto: Closing gripper to {gripper_close}mm")
         await wait_for_operation_resume(self._run_id)
-        command_gripper(gripper_close, "closed")
+        grip_force = min(
+            settings.gripper_profile.force_default * 2,
+            settings.gripper_profile.force_max,
+        )
+        result = command_gripper(gripper_close, "closed", force=grip_force)
+        LOGGER.info(f"Gripper close result: {result}")
         SESSION.robot_has_object = True
-        LOGGER.info("Auto: Gripper closed")
 
         # Retreat
-        LOGGER.info("Auto: Retreating from pick position")
         await wait_for_operation_resume(self._run_id)
         retreat_pose = _pick_approach_pose_fn()
         if retreat_pose is None:
@@ -462,7 +464,6 @@ class AutoPickPlaceProgram(RobotProgram):
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
         )
-        LOGGER.info("Auto: Pick sequence complete")
 
     async def _execute_drop(
         self,
@@ -491,38 +492,62 @@ class AutoPickPlaceProgram(RobotProgram):
 
         # Move to approach
         await wait_for_operation_resume(self._run_id)
-        await move_linear_follow_target(
-            robot_api,
-            lambda: approach_pose,
-            label="auto_drop_approach",
+        log_move_target("drop_approach", approach_pose, coordinate_id=coordinate_id)
+        await self.move_with_hold(
+            approach_pose,
             coordinate_id=coordinate_id,
-            run_id=self._run_id,
+            hold_seconds=2.0,
         )
 
         # Move to drop position
         await wait_for_operation_resume(self._run_id)
-        await move_linear_follow_target(
-            robot_api,
-            lambda: drop_pose,
-            label="auto_drop_pose",
+        log_move_target("drop_pose", drop_pose, coordinate_id=coordinate_id)
+        await self.move_with_hold(
+            drop_pose,
             coordinate_id=coordinate_id,
-            run_id=self._run_id,
+            hold_seconds=2.0,
         )
 
         # Open gripper
         await wait_for_operation_resume(self._run_id)
-        gripper_open = settings.gripper_profile.open_width_default
-        await drop_with_verify(gripper_open)
+        open_width = settings.gripper_profile.open_width_default
+        gripper_close = settings.gripper_profile.close_width_default
+        if open_width <= gripper_close:
+            gripper = registry().gripper
+            if gripper is not None:
+                _min_width, max_width = resolve_gripper_limits(gripper)
+                if max_width > open_width:
+                    LOGGER.warning(
+                        "Open width %.1f <= min width %.1f; using max width %.1f",
+                        open_width,
+                        gripper_close,
+                        max_width,
+                    )
+                    open_width = max_width
+        result = command_gripper(open_width, "opened")
+        LOGGER.info(f"Gripper open result: {result}")
+
+        # Wait for gripper to finish
+        gripper = registry().gripper
+        gripper_defaults = registry().gripper_defaults
+        if gripper is not None and gripper.isConnected(t_index=gripper_defaults["t_index"]):
+            max_polls = 20  # 2 seconds max
+            for _ in range(max_polls):
+                try:
+                    if not gripper.isBusy(t_index=gripper_defaults["t_index"]):
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+
         SESSION.robot_has_object = False
 
         # Retreat
-        await wait_for_operation_resume(self._run_id)
-        await move_linear_follow_target(
-            robot_api,
-            lambda: approach_pose,
-            label="auto_drop_retreat",
+        log_move_target("drop_retreat", approach_pose, coordinate_id=coordinate_id)
+        await self.move_with_hold(
+            approach_pose,
             coordinate_id=coordinate_id,
-            run_id=self._run_id,
+            hold_seconds=2.0,
         )
 
     async def _move_to_drop(
@@ -551,20 +576,16 @@ class AutoPickPlaceProgram(RobotProgram):
             drop_mm=drop_mm,
         )
 
-        await move_linear_follow_target(
-            robot_api,
-            lambda: approach_pose,
-            label="auto_wait_approach",
+        await self.move_with_hold(
+            approach_pose,
             coordinate_id=coordinate_id,
-            run_id=self._run_id,
+            hold_seconds=2.0,
         )
 
-        await move_linear_follow_target(
-            robot_api,
-            lambda: drop_pose,
-            label="auto_wait_drop",
+        await self.move_with_hold(
+            drop_pose,
             coordinate_id=coordinate_id,
-            run_id=self._run_id,
+            hold_seconds=2.0,
         )
 
         if open_gripper:
