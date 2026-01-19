@@ -167,7 +167,9 @@ def register_error_handling_callbacks(app: Dash) -> None:
             "error_type") == "emergency_stop"
         message = state.get("message") or "Emergency stop detected."
         physical_pressed = bool(state.get("physical_pressed"))
-        return active, message, physical_pressed
+        if physical_pressed:
+            message = f"{message} Release the physical E-stop to clear."
+        return active, message, not active
 
     # Use factory for standard 2-output modal callbacks
     _overspeed_handler = _create_modal_update_callback(
@@ -227,8 +229,6 @@ def register_error_handling_callbacks(app: Dash) -> None:
         state = error_state or {}
         if state.get("error_type") != "emergency_stop":
             return codroid_picker_module.no_update, codroid_picker_module.no_update
-        if state.get("physical_pressed"):
-            return codroid_picker_module.no_update, codroid_picker_module.no_update
 
         async def _clear(api) -> None:
             await api.clear_emergency_stop()
@@ -272,6 +272,10 @@ def register_error_handling_callbacks(app: Dash) -> None:
         async def _clear(api) -> None:
             await api.clear_overspeed()
 
+        async def _clear_and_power_on(api) -> None:
+            await api.clear_overspeed()
+            await api.power_on()
+
         if trigger == "overspeed-clear":
             snapshot, note = await _run_robot_action_with_notification(
                 robot_uri,
@@ -288,9 +292,9 @@ def register_error_handling_callbacks(app: Dash) -> None:
         if trigger == "overspeed-continue":
             snapshot, note = await _run_robot_action_with_notification(
                 robot_uri,
-                _clear,
+                _clear_and_power_on,
                 success_title="Overspeed cleared",
-                success_message="Recovery sequence sent. Program resumed.",
+                success_message="Recovery sequence sent. Robot powered on and program resumed.",
                 success_color="teal",
                 failure_title="Failed to clear overspeed",
             )

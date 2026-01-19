@@ -244,6 +244,15 @@ class RobotProgram(ABC):
         try:
             result = await self.execute(robot_api)
             self._status = result.status
+            if self._run_id is not None and result.status not in {
+                ProgramStatus.RUNNING,
+                ProgramStatus.PAUSED,
+            }:
+                finish_operation(
+                    self._run_id,
+                    status=result.status.value,
+                    message=result.message,
+                )
             return result
 
         except OperationAbort as exc:

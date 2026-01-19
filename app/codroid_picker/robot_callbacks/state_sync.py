@@ -103,6 +103,8 @@ def register_state_sync_callbacks(app: Dash) -> None:
             )
 
         physical_pressed = session.emergency_button_active()
+        if not emergency_active:
+            physical_pressed = False
 
         if emergency_active:
             snapshot = codroid_picker_module._activate_robot_error(

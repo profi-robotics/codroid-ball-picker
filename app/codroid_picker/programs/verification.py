@@ -195,17 +195,24 @@ class VerificationProgram(RobotProgram):
                     f"Verification move: {label.replace('_', ' ')}",
                     label=label,
                 )
-                self.log_target(label, target, coordinate_id=coord_id)
+                target_to_send = target
+                if coord_id == coordinate_id and use_coord5:
+                    posture = session.position_snapshot()
+                    target_to_send = dict(target)
+                    target_to_send["a"] = float(posture.a)
+                    target_to_send["b"] = float(posture.b)
+                    target_to_send["c"] = float(posture.c)
+                self.log_target(label, target_to_send, coordinate_id=coord_id)
 
                 await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
                 if coord_id == coordinate_id and use_coord5:
                     await robot_api.set_target_cpos(
                         robot_api.attach_coordinate_to_cpos(
-                            target, coordinate_id=coordinate_id
+                            target_to_send, coordinate_id=coordinate_id
                         )
                     )
                 else:
-                    await robot_api.set_target_cpos(target)
+                    await robot_api.set_target_cpos(target_to_send)
 
                 await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
 
@@ -228,9 +235,14 @@ class VerificationProgram(RobotProgram):
                 await robot_api.stop_command()
                 return
 
-        # Helper to clamp Z to safe minimum
+        from app.codroid_picker.transforms import _clamp_z_for_coord5
+
+        # Helper to clamp Z for the active coordinate system
         def _safe_z(value: float) -> float:
-            return max(float(value), float(min_z))
+            z_value = float(value)
+            if use_coord5:
+                return _clamp_z_for_coord5(z_value, use_base_coords=False)
+            return max(z_value, float(min_z))
 
         # Helper to build target pose
         def _target(
@@ -267,9 +279,15 @@ class VerificationProgram(RobotProgram):
         z2 = _safe_z(p2.get("z", 0.0))
         z3 = _safe_z(p3.get("z", 0.0))
         raise_mm = settings.verification_raise_mm
-        raise_1 = z1 + raise_mm
-        raise_2 = z2 + raise_mm
-        raise_3 = z3 + raise_mm
+
+        def _raise_z(z_value: float) -> float:
+            if use_coord5:
+                return float(z_value) - raise_mm
+            return float(z_value) + raise_mm
+
+        raise_1 = _raise_z(z1)
+        raise_2 = _raise_z(z2)
+        raise_3 = _raise_z(z3)
 
         # Determine coordinate system
         coord_id = coordinate_id if use_coord5 else 0
@@ -277,31 +295,93 @@ class VerificationProgram(RobotProgram):
         c5p2 = coord5_positions[1] if coord5_positions else None
         c5p3 = coord5_positions[2] if coord5_positions else None
 
-        # Execute verification sequence
-        await _move_with_hold(_target(p3, raise_3, c5p3), label="p3_raise", coord_id=coord_id)
-        await _move_with_hold(_target(p1, raise_1, c5p1), label="p1_raise", coord_id=coord_id)
-        await _move_with_hold(_target(p1, z1, c5p1), label="p1_down", coord_id=coord_id)
-        await _move_with_hold(_target(p1, raise_1, c5p1), label="p1_raise_return", coord_id=coord_id)
-        await _move_with_hold(_target(p2, raise_2, c5p2), label="p2_raise", coord_id=coord_id)
-        await _move_with_hold(_target(p2, z2, c5p2), label="p2_down", coord_id=coord_id)
-        await _move_with_hold(_target(p2, raise_2, c5p2), label="p2_raise_return", coord_id=coord_id)
-        await _move_with_hold(_target(p3, raise_3, c5p3), label="p3_raise", coord_id=coord_id)
-        await _move_with_hold(_target(p3, z3, c5p3), label="p3_down", coord_id=coord_id)
-        await _move_with_hold(_target(p3, raise_3, c5p3), label="p3_raise_return", coord_id=coord_id)
-        await _move_with_hold(
-            _target(p1, z1, c5p1), label="p1_home", hold_seconds=0.0, coord_id=coord_id
-        )
+        previous_speed_rate = float(SESSION.robot_speed_rate)
+        target_speed_rate = 0.6
 
-        # Ensure coordinate system is set correctly at end
-        if not use_coord5:
-            await robot_api.set_current_coordinate_id(coordinate_id)
+        async def _set_speed(rate: float) -> None:
+            await robot_api.set_manual_move_rate(rate)
+            SESSION.robot_speed_rate = rate
+            SESSION.robot_speed_last_set = time.time()
 
-        # Mark complete
-        self.finish(status="idle", message="Verification complete.")
-        return ProgramResult(
-            status=ProgramStatus.COMPLETED,
-            message="Calibration verified.",
-        )
+        try:
+            if abs(previous_speed_rate - target_speed_rate) > 0.001:
+                self.update_message("Verification move: setting robot speed to 60%.")
+                await _set_speed(target_speed_rate)
+
+            # Execute verification sequence
+            await _move_with_hold(
+                _target(p3, raise_3, c5p3),
+                label="p3_raise",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p1, raise_1, c5p1),
+                label="p1_raise",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p1, z1, c5p1),
+                label="p1_down",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p1, raise_1, c5p1),
+                label="p1_raise_return",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p2, raise_2, c5p2),
+                label="p2_raise",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p2, z2, c5p2),
+                label="p2_down",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p2, raise_2, c5p2),
+                label="p2_raise_return",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p3, raise_3, c5p3),
+                label="p3_raise",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p3, z3, c5p3),
+                label="p3_down",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p3, raise_3, c5p3),
+                label="p3_raise_return",
+                coord_id=coord_id,
+            )
+            await _move_with_hold(
+                _target(p1, z1, c5p1),
+                label="p1_home",
+                hold_seconds=0.0,
+                coord_id=coord_id,
+            )
+
+            # Ensure coordinate system is set correctly at end
+            if not use_coord5:
+                await robot_api.set_current_coordinate_id(coordinate_id)
+
+            # Mark complete
+            self.finish(status="idle", message="Verification complete.")
+            return ProgramResult(
+                status=ProgramStatus.COMPLETED,
+                message="Calibration verified.",
+            )
+        finally:
+            if abs(previous_speed_rate - float(SESSION.robot_speed_rate)) > 0.001:
+                try:
+                    await _set_speed(previous_speed_rate)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("Failed to restore robot speed: %s", exc)
 
     async def cleanup(self) -> None:
         """Restore gripper width after verification."""

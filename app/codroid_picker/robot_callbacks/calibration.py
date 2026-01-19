@@ -419,6 +419,16 @@ def register_calibration_callbacks(app: Dash) -> None:
             )
             result = await registry.start_instance(program, robot_api)
 
+            if result.status == ProgramStatus.STOPPED:
+                codroid_picker_module.SESSION.robot_calibration_baseline_px = None
+                codroid_picker_module._restore_calibration_gripper_width()
+                codroid_picker_module._set_robot_guidance(
+                    "Robot calibration canceled.",
+                    status="canceled",
+                    step=0,
+                    verification_ready=False,
+                )
+                return {"status": "canceled", "message": result.message}
             if result.status != ProgramStatus.COMPLETED:
                 raise RuntimeError(result.message)
 

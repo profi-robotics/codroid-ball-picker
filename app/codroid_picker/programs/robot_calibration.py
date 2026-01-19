@@ -356,6 +356,7 @@ class RobotCalibrationProgram(RobotProgram):
         deadline = time.monotonic() + timeout_s
 
         while True:
+            self.ensure_active()
             if ui.SESSION.robot_calibration_baseline_px is None:
                 self._ensure_plate_baseline()
 
