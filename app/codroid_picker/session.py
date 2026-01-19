@@ -89,6 +89,7 @@ class UISession:
     robot_speed_rate: float = 0.25
     robot_speed_last_set: float = 0.0
     robot_status_last_poll: float = 0.0
+    robot_power_toggle_time: float = 0.0
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None

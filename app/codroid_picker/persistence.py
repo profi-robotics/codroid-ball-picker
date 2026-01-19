@@ -18,7 +18,7 @@ from vision import calibration, workspace
 from app.codroid_picker.app_instance import registry
 from app.settings import _commit_settings
 from app.codroid_picker.procedures import _load_robot_calibration, _save_robot_calibration
-from app.codroid_picker.models import activate_model
+from app.codroid_picker.models import activate_model, ensure_model_available
 
 if TYPE_CHECKING:
     pass
@@ -309,10 +309,26 @@ def _restore_persisted_state() -> None:
                 exc,
             )
     _load_drop_target()
+    
+    # Try to restore last model, or download default if none available
+    model_to_load = None
     if settings.last_model:
+        model_path = Path(settings.last_model)
+        if model_path.exists():
+            model_to_load = model_path
+        else:
+            LOGGER.warning("Last model not found: %s", settings.last_model)
+    
+    # If no valid model configured, ensure we have at least one available
+    if model_to_load is None:
+        model_to_load = ensure_model_available(registry().model_dir)
+    
+    if model_to_load:
         try:
-            activate_model(Path(settings.last_model))
+            activate_model(model_to_load)
+            LOGGER.info("Activated model: %s", model_to_load.name)
         except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Failed to restore last model: %s", exc)
+            LOGGER.warning("Failed to activate model: %s", exc)
+    
     if robot_calibration_path.exists():
         _load_robot_calibration(robot_calibration_path)

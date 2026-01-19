@@ -308,6 +308,8 @@ def register_connection_callbacks(app: Dash) -> None:
             await codroid_picker_module._with_robot_api(robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _apply_power)
             action = "Power on" if checked else "Power off"
             codroid_picker_module.SESSION.last_action = f"{action} command sent."
+            # Set a debounce timestamp to prevent sync from overriding user action immediately
+            codroid_picker_module.SESSION.robot_power_toggle_time = time.time()
             return dmc.Notification(
                 action="show",
                 title="Robot power",
@@ -339,12 +341,21 @@ def register_connection_callbacks(app: Dash) -> None:
         robot_uri: Optional[str],
         current_state: Optional[dict],
     ) -> dict:
+        import asyncio
         import app.codroid_picker as codroid_picker_module
 
         if (robot_state or {}).get("status") != "online":
             return no_update
         now = time.time()
+        
+        # Don't sync for 3 seconds after user manually toggles power
+        # to give robot time to respond to the command
+        last_toggle = getattr(codroid_picker_module.SESSION, 'robot_power_toggle_time', 0)
+        if now - last_toggle < 3.0:
+            return no_update
+        
         # Skip throttle on first poll (current_state is None or empty)
+        # Also skip throttle when value is None (initial sync needed)
         if current_state and current_state.get("value") is not None:
             if now - codroid_picker_module.SESSION.robot_status_last_poll < 1.0:
                 return no_update
@@ -352,6 +363,8 @@ def register_connection_callbacks(app: Dash) -> None:
         async def _poll(api) -> None:
             await api.read_system_data()
             await api.read_global_data()
+            # Small delay to allow listener to process response
+            await asyncio.sleep(0.1)
 
         try:
             await codroid_picker_module._with_robot_api(robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _poll)
@@ -363,11 +376,28 @@ def register_connection_callbacks(app: Dash) -> None:
 
         session = codroid_picker_module._get_robot_session()
         power_on = session.robot_power_on()
+        status_snapshot = session.robot_status_snapshot()
+        
+        # Fallback: if robot_power_on returns None but we have a state field,
+        # interpret state >= 2 as powered on (common for Dobot/Codroid robots)
+        if power_on is None and isinstance(status_snapshot, dict):
+            state_value = status_snapshot.get("state")
+            if isinstance(state_value, (int, float)):
+                # State 0/1: typically off or idle
+                # State 2+: typically powered on / servo enabled
+                power_on = state_value >= 2
+
         if power_on is None:
-            return no_update
+            # Status not yet available, try to use status age to determine if we should wait
+            status_age = session.robot_status_age_seconds()
+            if status_age is None or status_age > 5.0:
+                # No recent status, don't update toggle
+                return no_update
         desired = {"value": bool(power_on), "timestamp": time.time()}
-        if current_state and current_state.get("value") == desired["value"]:
-            return no_update
+        # Always update on first poll (when current value is None) to sync toggle state
+        if current_state and current_state.get("value") is not None:
+            if current_state.get("value") == desired["value"]:
+                return no_update
         return desired
 
     @app.callback(

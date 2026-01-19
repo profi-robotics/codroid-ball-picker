@@ -2,7 +2,7 @@
 YOLO model loading and management utilities.
 
 This module provides functions for managing YOLO detection models,
-including uploading, listing, and activating models.
+including uploading, listing, downloading, and activating models.
 """
 
 from __future__ import annotations
@@ -20,6 +20,9 @@ import app.settings as app_settings
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL_DIR = app_settings.DEFAULT_MODEL_DIR
+
+# Default model to download if none available
+DEFAULT_MODEL_NAME = "yolov8n.pt"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +79,64 @@ def _model_options() -> list[dict]:
     for path in _list_model_files():
         options.append({"value": str(path), "label": path.name})
     return options
+
+
+def download_default_model(output_dir: Path = DEFAULT_MODEL_DIR) -> Optional[Path]:
+    """Download the default YOLOv8n model if no models are available.
+
+    Args:
+        output_dir: Directory to save the model to.
+
+    Returns:
+        Path to the downloaded model, or None if download failed.
+    """
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        LOGGER.warning(
+            "ultralytics not installed, cannot download default model. "
+            "Run `uv add ultralytics` to enable."
+        )
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / DEFAULT_MODEL_NAME
+
+    if model_path.exists():
+        LOGGER.info("Default model already exists: %s", model_path)
+        return model_path
+
+    try:
+        LOGGER.info("Downloading default YOLO model: %s", DEFAULT_MODEL_NAME)
+        # YOLO() auto-downloads the model if not cached
+        model = YOLO(DEFAULT_MODEL_NAME)
+        # Save to our models directory
+        model.save(model_path)
+        LOGGER.info("Downloaded default model to: %s", model_path)
+        return model_path
+    except Exception as exc:
+        LOGGER.error("Failed to download default model: %s", exc)
+        return None
+
+
+def ensure_model_available(output_dir: Path = DEFAULT_MODEL_DIR) -> Optional[Path]:
+    """Ensure at least one model is available, downloading if necessary.
+
+    This function checks if any models exist in the output directory.
+    If none are found, it downloads the default YOLOv8n model.
+
+    Args:
+        output_dir: Directory to check/save models to.
+
+    Returns:
+        Path to an available model, or None if no models available.
+    """
+    existing = _list_model_files(output_dir)
+    if existing:
+        return existing[0]
+
+    LOGGER.info("No models found, downloading default model...")
+    return download_default_model(output_dir)
 
 
 def save_uploaded_model(contents: str, filename: str, output_dir: Path) -> Path:

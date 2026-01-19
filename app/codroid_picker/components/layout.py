@@ -239,9 +239,7 @@ def _build_auto_control_column() -> dmc.Stack:
         },
     )
     prereq_summary = dmc.Stack(
-        [
-            dmc.Text("Loading prerequisites status...", size="xs", c="dimmed", id="auto-prereq-placeholder"),
-        ],
+        [],
         id="auto-prereq-badges",
         gap=2,
         align="center",

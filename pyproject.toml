@@ -19,16 +19,32 @@ dependencies = [
     "dash-mantine-components>=2.4.1",
     "pillow>=12.1.0",
     "ultralytics>=8.3.0",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
     "nvidia-ml-py>=12.560.30",
     "psutil>=6.1.0",
     "pydantic>=2.12.5",
 ]
 
+# PyTorch is listed separately because Jetson requires special wheels
+# On x86_64 Linux/Windows/macOS: uv sync --extra torch
+# On Jetson (aarch64): uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
+# See docs/deploy_jetson_docker.md for details
+[project.optional-dependencies]
+torch = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+]
+
 [tool.uv.sources]
 codroid-api = { path = "../codroid-api", editable = true }
 onrobot-api = { path = "../onrobot-api", editable = true }
+
+# PyTorch from NVIDIA for Jetson (JetPack 6 / L4T R36.x / CUDA 12.x)
+# uv does not yet support conditional index URLs per-extra, so for Jetson:
+#   1. Install without torch extra: uv sync
+#   2. Install CUDA-enabled torch manually:
+#      uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
+# Or use pip directly in the venv:
+#      .venv/bin/pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "robot", "vision"]

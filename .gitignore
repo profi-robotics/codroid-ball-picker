@@ -19,6 +19,7 @@ data/robot_calibration.json
 
 # Model files
 data/models/*
+*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

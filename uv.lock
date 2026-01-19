@@ -179,10 +179,14 @@ dependencies = [
     { name = "pillow" },
     { name = "psutil" },
     { name = "pydantic" },
-    { name = "torch" },
-    { name = "torchvision" },
     { name = "ultralytics" },
     { name = "websockets" },
+]
+
+[package.optional-dependencies]
+torch = [
+    { name = "torch" },
+    { name = "torchvision" },
 ]
 
 [package.metadata]
@@ -198,11 +202,12 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "psutil", specifier = ">=6.1.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "torch", specifier = ">=2.0.0" },
-    { name = "torchvision", specifier = ">=0.15.0" },
+    { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0.0" },
+    { name = "torchvision", marker = "extra == 'torch'", specifier = ">=0.15.0" },
     { name = "ultralytics", specifier = ">=8.3.0" },
     { name = "websockets" },
 ]
+provides-extras = ["torch"]
 
 [[package]]
 name = "colorama"
