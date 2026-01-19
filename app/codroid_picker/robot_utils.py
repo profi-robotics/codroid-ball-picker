@@ -33,6 +33,35 @@ async def _with_robot_api(
     await robot_session.run_with_robot(uri or default_uri, action)
 
 
+async def _get_robot_api(uri: str | None = None) -> "CodroidAPI":
+    """Get a robot API instance for the given URI.
+
+    This provides direct access to the robot API for use cases where
+    a callback-based pattern is not suitable (e.g., long-running programs).
+
+    Args:
+        uri: Robot WebSocket URI, or None to use default.
+
+    Returns:
+        CodroidAPI instance connected to the robot.
+    """
+    robot_session = registry().get_or_create_robot_session()
+    default_uri = registry().default_robot_uri
+
+    # Use run_with_robot to get the API instance via callback
+    api_instance = None
+    async def _capture_api(api: "CodroidAPI") -> None:
+        nonlocal api_instance
+        api_instance = api
+
+    await robot_session.run_with_robot(uri or default_uri, _capture_api)
+
+    if api_instance is None:
+        raise RuntimeError("Failed to get robot API instance")
+
+    return api_instance
+
+
 async def _ensure_robot_coord5_for_uri(uri: str | None) -> None:
     """Switch the robot to CoordinateId 5 via the provided URI."""
     from app.codroid_picker.procedures import _ensure_coordinate5_active

@@ -346,11 +346,11 @@ def register_calibration_callbacks(app: Dash) -> None:
         codroid_picker_module.LOGGER.info(
             "Plate state OK, starting calibration procedure...")
         try:
+            from vision.plate import load_plate_layout
             layout_path = codroid_picker_module.DEFAULT_PLATE_PATH
             codroid_picker_module.LOGGER.info(
                 f"Loading plate layout from: {layout_path}")
-            plate_layout = codroid_picker_module.plate.load_plate_layout(
-                layout_path)
+            plate_layout = load_plate_layout(layout_path)
             codroid_picker_module.LOGGER.info(
                 "Plate layout loaded successfully")
 

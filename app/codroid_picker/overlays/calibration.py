@@ -162,7 +162,8 @@ def draw_plate_overlay(frame: np.ndarray, layout_path: Path) -> Tuple[np.ndarray
         return vis, status, "Plate markers: --"
 
     try:
-        calibration_result = plate.detect_calibration_plate(frame, layout_path)
+        plate_layout = plate.load_plate_layout(layout_path)
+        calibration_result = plate.estimate_plate_calibration(frame, plate_layout)
 
         if len(calibration_result.detections) == 0:
             status = "No calibration plate markers detected."
@@ -217,7 +218,8 @@ def _refresh_plate_status(frame: np.ndarray, layout_path: Path) -> None:
             count=0
         )
 
-        calibration_result = plate.detect_calibration_plate(frame, layout_path)
+        plate_layout = plate.load_plate_layout(layout_path)
+        calibration_result = plate.estimate_plate_calibration(frame, plate_layout)
         status_data = _evaluate_plate_status(calibration_result)
         count = status_data["count"]
 

@@ -47,6 +47,7 @@ from app.codroid_picker.procedures import (  # noqa: F401
     _clear_robot_accuracy_guidance,
     _load_robot_calibration,
     _acknowledge_robot_error,
+    _ensure_posture_axes,
 )
 from app.codroid_picker.error_detection import (  # noqa: F401
     _detect_emergency_stop_status,
@@ -73,6 +74,7 @@ from app.codroid_picker.session import TwoFG7Gripper  # noqa: F401
 from app.codroid_picker.robot_utils import (  # noqa: F401
     _probe_robot,
     _with_robot_api,
+    _get_robot_api,
     _ensure_robot_coord5_for_uri,
     _log_move_target,
 )
@@ -82,6 +84,11 @@ from app.codroid_picker.transforms import (  # noqa: F401
 )
 from app.codroid_picker.persistence import (  # noqa: F401
     _save_drop_target,
+    _plate_is_stable,
+)
+from app.codroid_picker.robot_plate_calibration import (  # noqa: F401
+    _ensure_plate_stable,
+    _apply_robot_calibration_results,
 )
 from app.codroid_picker.state import (  # noqa: F401
     _begin_operation,
@@ -105,6 +112,7 @@ from app.codroid_picker.gripper_utils import (  # noqa: F401
     _restore_calibration_gripper_width,
     _resolve_gripper_limits,
     _command_gripper,
+    _prepare_gripper_for_calibration,
 )
 from app.codroid_picker.models import (  # noqa: F401
     save_uploaded_model,
@@ -263,11 +271,11 @@ globals_to_expose = [
 
     # Path constants
     'DEFAULT_BUNDLE_PATH', 'DEFAULT_WORKSPACE_PATH', 'DEFAULT_ROBOT_CALIBRATION_PATH',
-    'DEFAULT_MODEL_DIR',
+    'DEFAULT_MODEL_DIR', 'DEFAULT_PLATE_PATH',
 
     # Helper functions
     '_safe_float', '_safe_int', '_safe_path', '_model_options',
-    '_probe_robot', '_with_robot_api', '_get_robot_session',
+    '_probe_robot', '_with_robot_api', '_get_robot_api', '_get_robot_session',
     '_current_coordinate_id', '_ensure_robot_coord5_for_uri',
     '_coord5_to_workspace_mm', '_robot_to_workspace_mm',
     '_pose_from_coord5_mm',
@@ -276,6 +284,7 @@ globals_to_expose = [
     '_log_move_target', '_ensure_coordinate5_active',
     '_set_robot_guidance', '_clear_robot_accuracy_guidance',
     '_load_robot_calibration', '_acknowledge_robot_error',
+    '_ensure_posture_axes',
     '_pause_operation', '_update_operation_message', '_resume_operation',
 
     # Calibration functions
@@ -284,7 +293,8 @@ globals_to_expose = [
     '_robot_calibration_path', '_refresh_calibration_menu_visibility',
     'refresh_gripper_constants', '_record_gripper_sync', '_recent_gripper_sync',
     '_restore_calibration_gripper_width', '_resolve_gripper_limits',
-    '_command_gripper',
+    '_command_gripper', '_plate_is_stable', '_prepare_gripper_for_calibration',
+    '_ensure_plate_stable', '_apply_robot_calibration_results',
     '_operation_snapshot', '_robot_posture_ready',
 
     # Model and GPU functions
