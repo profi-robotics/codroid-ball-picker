@@ -303,6 +303,10 @@ async def execute_linear_move_with_hold(
     4. Hold position with heartbeats for specified duration
     5. Clear target and stop command
 
+    Note: This function may have issues with asyncio task cancellation
+    when called from Dash async callbacks. Programs should consider
+    implementing their own movement loop (see PlateTestProgram for example).
+
     Args:
         robot_api: The robot API instance.
         target_pose: Target pose dict with x, y, z, a, b, c keys.
@@ -497,9 +501,11 @@ async def move_linear_follow_target(
         return initial_target
 
     LOGGER.info(f"move_linear_follow_target '{label}': Starting follow loop")
-    LOGGER.info(f"move_linear_follow_target '{label}': Setting target pos type to cpos")
+    LOGGER.info(
+        f"move_linear_follow_target '{label}': Setting target pos type to cpos")
     await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
-    LOGGER.info(f"move_linear_follow_target '{label}': Target pos type set, entering main loop")
+    LOGGER.info(
+        f"move_linear_follow_target '{label}': Target pos type set, entering main loop")
 
     stable_since: Optional[float] = None
     deadline = time.monotonic() + timeout_s
@@ -510,7 +516,8 @@ async def move_linear_follow_target(
     while True:
         iteration_count += 1
         if iteration_count % 10 == 1:  # Log every 10 iterations
-            LOGGER.debug(f"move_linear_follow_target '{label}': Iteration {iteration_count}")
+            LOGGER.debug(
+                f"move_linear_follow_target '{label}': Iteration {iteration_count}")
 
         _check_operation()
         now = time.monotonic()
@@ -522,7 +529,8 @@ async def move_linear_follow_target(
 
         target = target_fetch()
         if iteration_count <= 2:  # Log first 2 target fetches
-            LOGGER.info(f"move_linear_follow_target '{label}': Fetched target: {target}")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Fetched target: {target}")
 
         if target is not None:
             last_target = target
@@ -545,7 +553,8 @@ async def move_linear_follow_target(
             raise RuntimeError("No target available for follow move.")
 
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Setting target cpos")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Setting target cpos")
         await robot_api.set_target_cpos(
             robot_api.attach_coordinate_to_cpos(
                 robot_api.build_target_cpos(**last_target),
@@ -553,33 +562,41 @@ async def move_linear_follow_target(
             )
         )
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Setting robot command to move_target_linear")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Setting robot command to move_target_linear")
         await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Robot command set, entering heartbeat loop")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Robot command set, entering heartbeat loop")
 
         segment_deadline = time.monotonic() + max(segment_hold_s, 0.0)
         heartbeat_count = 0
         while time.monotonic() < segment_deadline:
             heartbeat_count += 1
             if iteration_count <= 2 and heartbeat_count == 1:
-                LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat loop iteration {heartbeat_count}, checking operation")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': Heartbeat loop iteration {heartbeat_count}, checking operation")
             _check_operation()
             if iteration_count <= 2 and heartbeat_count == 1:
-                LOGGER.info(f"move_linear_follow_target '{label}': Operation check passed, running safety check")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': Operation check passed, running safety check")
             if safety_check is not None:
                 await safety_check()
             if iteration_count <= 2 and heartbeat_count == 1:
-                LOGGER.info(f"move_linear_follow_target '{label}': About to send command heartbeat")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': About to send command heartbeat")
             await robot_api.send_command_heartbeat()
             if iteration_count <= 2 and heartbeat_count == 1:
-                LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat sent, about to sleep for {min(update_interval, 0.05)}s")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': Heartbeat sent, about to sleep for {min(update_interval, 0.05)}s")
             await asyncio.sleep(min(update_interval, 0.05))
             if iteration_count <= 2 and heartbeat_count == 1:
-                LOGGER.info(f"move_linear_follow_target '{label}': Sleep complete, continuing heartbeat loop")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': Sleep complete, continuing heartbeat loop")
 
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Heartbeat loop complete ({heartbeat_count} heartbeats), checking position")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Heartbeat loop complete ({heartbeat_count} heartbeats), checking position")
 
         if session.posture_seen():
             posture = session.position_snapshot()
@@ -611,33 +628,42 @@ async def move_linear_follow_target(
 
             distance = np.linalg.norm(curr_xyz - target_xyz)
             if iteration_count <= 2:
-                LOGGER.info(f"move_linear_follow_target '{label}': Position check - distance: {distance:.2f}mm, tolerance: {tolerance_mm}mm")
+                LOGGER.info(
+                    f"move_linear_follow_target '{label}': Position check - distance: {distance:.2f}mm, tolerance: {tolerance_mm}mm")
 
             if distance <= tolerance_mm:
                 if stable_since is None:
                     stable_since = now
                     if iteration_count <= 2:
-                        LOGGER.info(f"move_linear_follow_target '{label}': Position within tolerance, starting stability timer")
+                        LOGGER.info(
+                            f"move_linear_follow_target '{label}': Position within tolerance, starting stability timer")
                 elif now - stable_since >= settle_s:
-                    LOGGER.info(f"move_linear_follow_target '{label}': Position stable for {settle_s}s, move complete")
+                    LOGGER.info(
+                        f"move_linear_follow_target '{label}': Position stable for {settle_s}s, move complete")
                     break
             else:
                 stable_since = None
         else:
             if iteration_count <= 2:
-                LOGGER.warning(f"move_linear_follow_target '{label}': No posture data available")
+                LOGGER.warning(
+                    f"move_linear_follow_target '{label}': No posture data available")
 
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Sleeping for {update_interval}s before next iteration")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Sleeping for {update_interval}s before next iteration")
         await asyncio.sleep(update_interval)
         if iteration_count <= 2:
-            LOGGER.info(f"move_linear_follow_target '{label}': Sleep complete, starting iteration {iteration_count + 1}")
+            LOGGER.info(
+                f"move_linear_follow_target '{label}': Sleep complete, starting iteration {iteration_count + 1}")
 
-    LOGGER.info(f"move_linear_follow_target '{label}': Main loop exited after {iteration_count} iterations")
+    LOGGER.info(
+        f"move_linear_follow_target '{label}': Main loop exited after {iteration_count} iterations")
     await robot_api.clear_target_position()
-    LOGGER.info(f"move_linear_follow_target '{label}': Cleared target position")
+    LOGGER.info(
+        f"move_linear_follow_target '{label}': Cleared target position")
     await robot_api.stop_command()
-    LOGGER.info(f"move_linear_follow_target '{label}': Stopped command, move complete")
+    LOGGER.info(
+        f"move_linear_follow_target '{label}': Stopped command, move complete")
     return last_target
 
 

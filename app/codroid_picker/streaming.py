@@ -126,7 +126,11 @@ class FrameProcessor:
             self._thread.join(timeout=1.0)
 
     def _worker(self) -> None:
-        """Background worker thread for processing frames."""
+        """Background worker thread for processing frames.
+
+        After computing the overlay, this worker pushes the result directly
+        to MJPEG_STREAM, decoupling video streaming from Dash callback timing.
+        """
         while self._running:
             task: Optional[tuple[str, np.ndarray,
                                  Callable[[np.ndarray], OverlayResult]]] = None
@@ -146,6 +150,8 @@ class FrameProcessor:
                 result = OverlayResult(frame, f"Processing error: {exc}", "--")
             with self._lock:
                 self._latest[key] = result
+            # Push directly to MJPEG stream - decouples video from Dash callbacks
+            MJPEG_STREAM.add_frame(result.vis)
 
 
 def _format_fps(capture_fps: float, stream_fps: float) -> str:

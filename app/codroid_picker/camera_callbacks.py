@@ -20,7 +20,8 @@ from dash import callback_context, Dash, html, Input, Output, State
 from app.codroid_picker.session import CALIBRATION_PROGRESS, SESSION
 from app.codroid_picker.streaming import OverlayResult, OverlayTask, start_camera_stream, stop_camera_stream, MJPEG_STREAM, FRAME_PROCESSOR
 from app.codroid_picker.utils import safe_float, safe_int, safe_path
-from app.settings import (DEFAULT_BOARD_PATH, DEFAULT_BUNDLE_PATH, DEFAULT_CAPTURE_DIR, DEFAULT_PLATE_PATH, SETTINGS)
+from app.settings import (DEFAULT_BOARD_PATH, DEFAULT_BUNDLE_PATH,
+                          DEFAULT_CAPTURE_DIR, DEFAULT_PLATE_PATH, SETTINGS)
 from vision.camera_check import list_oak_devices
 
 # Keep underscore-prefixed aliases for backward compatibility with external imports
@@ -74,7 +75,8 @@ def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tupl
     detector_params = cv2.aruco.DetectorParameters()
     detector_params.detectInvertedMarker = True
     charuco_params = cv2.aruco.CharucoParameters()
-    charuco_detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
+    charuco_detector = cv2.aruco.CharucoDetector(
+        board, charuco_params, detector_params)
 
     detection_counts: list[int] = []
     usable = 0
@@ -87,7 +89,8 @@ def _charuco_detection_counts(frame_paths: list[Path], board_path: Path) -> Tupl
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         try:
-            charuco_corners, charuco_ids, _marker_corners, _marker_ids = charuco_detector.detectBoard(gray)
+            charuco_corners, charuco_ids, _marker_corners, _marker_ids = charuco_detector.detectBoard(
+                gray)
         except Exception:
             # Fall back to zero if detection fails on this image
             charuco_corners = None
@@ -122,7 +125,8 @@ def _refresh_plate_status(frame: Any, plate_path: Path) -> None:
             count=count,
             ok=status_data.get("is_ok", False),
             stable=status_data.get("stable", False),
-            center_px=tuple(status_data["current_center"]) if status_data.get("current_center") is not None else None,
+            center_px=tuple(status_data["current_center"]) if status_data.get(
+                "current_center") is not None else None,
             movement_px=status_data.get("movement_px"),
             message=message,
         )
@@ -183,6 +187,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Output("camera-enable", "checked"),
         Output("camera-connection-state", "data"),
         Output("camera-interval", "disabled"),
+        Output("metrics-interval", "disabled"),
         Input("camera-enable", "checked"),
         Input("auto-init", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
@@ -199,7 +204,7 @@ def register_camera_callbacks(app: Dash) -> None:
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
-    ) -> Tuple[str, str, str, bool, dict, bool]:
+    ) -> Tuple[str, str, str, bool, dict, bool, bool]:
         trigger = callback_context.triggered_id
         stream_running = (
             SESSION.camera_stream is not None
@@ -232,6 +237,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                     {"status": "live", "message": status},
                     False,
+                    False,
                 )
             except Exception as exc:  # noqa: BLE001
                 error = f"Camera focus control error: {exc}"
@@ -241,6 +247,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     "red",
                     True,
                     {"status": "error", "message": error},
+                    False,
                     False,
                 )
 
@@ -257,6 +264,7 @@ def register_camera_callbacks(app: Dash) -> None:
                         True,
                         {"status": "live", "message": status},
                         False,
+                        False,
                     )
                 status = start_camera_stream(width, height, fps, bool(lock_af))
                 return (
@@ -265,6 +273,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     "brand",
                     True,
                     {"status": "live", "message": status},
+                    False,
                     False,
                 )
             except RuntimeError as exc:
@@ -281,6 +290,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                     {"status": "unavailable", "message": error},
                     True,
+                    True,
                 )
             except Exception as exc:
                 stop_camera_stream()
@@ -292,6 +302,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                     {"status": "error", "message": error},
                     True,
+                    True,
                 )
         stop_camera_stream()
         stopped = "Camera stream stopped."
@@ -301,6 +312,7 @@ def register_camera_callbacks(app: Dash) -> None:
             "gray",
             False,
             {"status": "off", "message": stopped},
+            True,
             True,
         )
 
@@ -330,7 +342,8 @@ def register_camera_callbacks(app: Dash) -> None:
             )
         else:
             # Camera not connected - show placeholder
-            message = (camera_state or {}).get("message", "Camera not connected")
+            message = (camera_state or {}).get(
+                "message", "Camera not connected")
             icon = "📷" if status == "off" else "⚠️"
             color = "#666" if status == "off" else "#ff8c00"
 
@@ -338,7 +351,8 @@ def register_camera_callbacks(app: Dash) -> None:
                 [
                     html.Div(
                         [
-                            html.Div(icon, style={"fontSize": "64px", "marginBottom": "16px"}),
+                            html.Div(icon, style={
+                                     "fontSize": "64px", "marginBottom": "16px"}),
                             html.Div(
                                 "Camera Not Connected" if status == "off" else "Camera Unavailable",
                                 style={
@@ -531,7 +545,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Output("plate-detection-state", "data", allow_duplicate=True),
         Output("calibrate-camera", "disabled", allow_duplicate=True),
         Output("markers-detected-icon", "color", allow_duplicate=True),
-        Input("camera-interval", "n_intervals"),
+        Input("metrics-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("calibration-stepper", "active"),
         State("application-tabs", "value"),
@@ -541,7 +555,7 @@ def register_camera_callbacks(app: Dash) -> None:
         State("overlay-mode-select", "value"),
         prevent_initial_call=True,
     )
-    def _update_camera_view(
+    def _update_live_metrics(
         _ticks: int,
         active_tab: Optional[str],
         calibration_step: Optional[int],
@@ -580,7 +594,10 @@ def register_camera_callbacks(app: Dash) -> None:
             "message": "Waiting for plate markers",
         }
         capture_fps = SESSION.camera_stream.get_fps() if SESSION.camera_stream else 0.0
-        overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
+        stream_fps = MJPEG_STREAM.get_fps()
+        # Format FPS with warning indicator if capture rate drops below 25
+        fps_warning = " ⚠️" if capture_fps > 0 and capture_fps < 25 else ""
+        overlay_fps_text = _format_fps(capture_fps, stream_fps) + fps_warning
 
         if frame is None:
             # Don't add placeholder to MJPEG stream - let video element show its poster image
@@ -602,12 +619,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 True,
                 "gray",
             )
-
-        # Check if this is a new frame by comparing object identity
-        current_frame_id = id(frame)
-        is_new_frame = current_frame_id != SESSION.last_frame_id
-        if is_new_frame:
-            SESSION.last_frame_id = current_frame_id
 
         # Frame received, dispatch to background processor for heavy overlays.
         tab = active_tab or "applications"
@@ -659,7 +670,7 @@ def register_camera_callbacks(app: Dash) -> None:
         elif calibration_step == 1:
             _refresh_plate_status(frame, plate_path)
 
-        vis = overlay.vis if overlay else frame
+        # Extract status and metrics from overlay result (vis is pushed by FrameProcessor)
         status_text = overlay.status if overlay else "No overlay applied."
         metric_text = overlay.metric if overlay else "--"
         mode_label = {
@@ -676,12 +687,11 @@ def register_camera_callbacks(app: Dash) -> None:
         from app.codroid_picker import state
         plate_state = state.get_plate_status_snapshot()
 
+        # Note: MJPEG_STREAM is now fed directly by FrameProcessor._worker(),
+        # so we no longer need to push frames from this callback.
+
         if tab == "calibration":
             if calibration_step == 0:
-                if is_new_frame:
-                    MJPEG_STREAM.add_frame(vis)
-                overlay_fps_text = _format_fps(
-                    capture_fps, MJPEG_STREAM.get_fps())
                 calibrate_disabled, marker_color = _camera_calibration_state(
                     metric_text, calibration_step
                 )
@@ -696,10 +706,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     calibrate_disabled,
                     marker_color,
                 )
-            if is_new_frame:
-                MJPEG_STREAM.add_frame(vis)
-            overlay_fps_text = _format_fps(
-                capture_fps, MJPEG_STREAM.get_fps())
             metrics_text = "ChArUco corners: --"
             calibrate_disabled, marker_color = _camera_calibration_state(
                 metrics_text, calibration_step
@@ -717,10 +723,6 @@ def register_camera_callbacks(app: Dash) -> None:
             )
 
         if tab == "applications":
-            if is_new_frame:
-                MJPEG_STREAM.add_frame(vis)
-            overlay_fps_text = _format_fps(
-                capture_fps, MJPEG_STREAM.get_fps())
             metrics_text = "ChArUco corners: --"
             calibrate_disabled, marker_color = _camera_calibration_state(
                 metrics_text, calibration_step
@@ -737,10 +739,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 marker_color,
             )
 
-        # Monitoring or any other tab: keep stream alive and surface metrics.
-        if is_new_frame:
-            MJPEG_STREAM.add_frame(vis)
-        overlay_fps_text = _format_fps(capture_fps, MJPEG_STREAM.get_fps())
+        # Monitoring or any other tab: surface metrics.
         metrics_text = "ChArUco corners: --"
         calibrate_disabled, marker_color = _camera_calibration_state(
             metrics_text, calibration_step

@@ -38,6 +38,7 @@ _BASE_CAMERA_CALIBRATION_FRAMES = 30
 _BASE_CAMERA_CALIBRATION_DELAY_S = 0.1
 _BASE_CAMERA_CALIBRATION_MIN_USABLE_FRAMES = 1
 _BASE_AUTO_TARGET_LABEL = "orange"
+_BASE_AUTO_TARGET_LABELS = ["orange", "sports ball"]
 _BASE_AUTO_DROP_IGNORE_RADIUS_MM = 60.0
 _BASE_AUTO_INTRUSION_MATCH_MM = 40.0
 _BASE_AUTO_DETECTION_STALE_S = 0.3
@@ -46,6 +47,11 @@ _BASE_AUTO_APPROACH_MM = -30.0
 _BASE_AUTO_PICK_MM = 0.0
 _BASE_AUTO_DROP_MM = 0.0
 _BASE_AUTO_ESTIMATE_WIDTH = False
+_BASE_AUTO_MOVE_TIMEOUT_S = 15.0
+_BASE_AUTO_SETTLE_S = 0.1
+_BASE_AUTO_TOLERANCE_MM = 2.0
+_BASE_AUTO_Z_TOLERANCE_MM = 3.0
+_BASE_AUTO_HOLD_S = 0.5
 _BASE_PICK_FOLLOW_TIMEOUT_S = 15.0
 _BASE_PICK_FOLLOW_UPDATE_S = 0.05
 _BASE_PICK_FOLLOW_SEGMENT_S = 0.1
@@ -178,6 +184,7 @@ class AppSettings(BaseSettings):
 
     # Auto pick & place defaults
     auto_target_label: str = _BASE_AUTO_TARGET_LABEL
+    auto_target_labels: list[str] = _BASE_AUTO_TARGET_LABELS
     auto_drop_ignore_radius_mm: float = _BASE_AUTO_DROP_IGNORE_RADIUS_MM
     auto_intrusion_match_mm: float = _BASE_AUTO_INTRUSION_MATCH_MM
     auto_detection_stale_s: float = _BASE_AUTO_DETECTION_STALE_S
@@ -186,6 +193,11 @@ class AppSettings(BaseSettings):
     auto_pick_mm: float = _BASE_AUTO_PICK_MM
     auto_drop_mm: float = _BASE_AUTO_DROP_MM
     auto_estimate_width: bool = _BASE_AUTO_ESTIMATE_WIDTH
+    auto_move_timeout_s: float = _BASE_AUTO_MOVE_TIMEOUT_S
+    auto_settle_s: float = _BASE_AUTO_SETTLE_S
+    auto_tolerance_mm: float = _BASE_AUTO_TOLERANCE_MM
+    auto_z_tolerance_mm: float = _BASE_AUTO_Z_TOLERANCE_MM
+    auto_hold_s: float = _BASE_AUTO_HOLD_S
 
     @property
     def gripper_profile(self) -> GripperProfile:

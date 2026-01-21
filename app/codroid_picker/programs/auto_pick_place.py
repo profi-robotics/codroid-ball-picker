@@ -15,6 +15,8 @@ import numpy as np
 if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
+import time
+
 from app.codroid_picker.programs.base import (
     RobotProgram,
     ProgramStatus,
@@ -136,7 +138,8 @@ class AutoPickPlaceProgram(RobotProgram):
             sys.stdout.flush()
 
         # Skip the sleep and data refresh - go straight to coordinate system
-        LOGGER.info("Auto: Skipping sleep and session refresh, proceeding to coordinate setup")
+        LOGGER.info(
+            "Auto: Skipping sleep and session refresh, proceeding to coordinate setup")
         sys.stdout.flush()
 
         # Ensure coordinate system is active
@@ -149,10 +152,12 @@ class AutoPickPlaceProgram(RobotProgram):
             LOGGER.info("Auto: Coordinate system setup complete")
             sys.stdout.flush()
         except asyncio.TimeoutError:
-            LOGGER.warning("Auto: Coordinate system setup timed out, continuing anyway")
+            LOGGER.warning(
+                "Auto: Coordinate system setup timed out, continuing anyway")
             sys.stdout.flush()
         except Exception as exc:
-            LOGGER.warning(f"Auto: Coordinate system setup failed: {exc}, continuing anyway")
+            LOGGER.warning(
+                f"Auto: Coordinate system setup failed: {exc}, continuing anyway")
             sys.stdout.flush()
 
         SESSION.auto_waiting_at_drop = False
@@ -174,8 +179,12 @@ class AutoPickPlaceProgram(RobotProgram):
 
                 # Get configuration
                 config = SESSION.auto_config or {}
-                target_label = str(config.get(
-                    "target_label", settings.auto_target_label))
+                target_labels = config.get(
+                    "target_labels", settings.auto_target_labels
+                )
+                # Support legacy single target_label config
+                if "target_label" in config and config["target_label"] not in target_labels:
+                    target_labels = [config["target_label"]]
                 drop_ignore_radius_mm = float(
                     config.get("drop_ignore_radius_mm",
                                settings.auto_drop_ignore_radius_mm)
@@ -207,7 +216,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 targets = self._filter_targets(
                     detections,
                     workspace_def,
-                    target_label=target_label,
+                    target_labels=target_labels,
                     drop_target_mm=SESSION.drop_target_mm,
                     drop_ignore_radius_mm=drop_ignore_radius_mm,
                 )
@@ -254,7 +263,7 @@ class AutoPickPlaceProgram(RobotProgram):
                         pick_mm=pick_mm,
                         estimate_width=estimate_width,
                         target=target,
-                        target_label=target_label,
+                        target_labels=target_labels,
                         tracking_mode=tracking_mode,
                     )
 
@@ -305,7 +314,7 @@ class AutoPickPlaceProgram(RobotProgram):
         pick_mm: float,
         estimate_width: bool,
         target: dict,
-        target_label: str,
+        target_labels: list[str],
         tracking_mode: str,
     ) -> None:
         """Execute a pick operation."""
@@ -344,10 +353,10 @@ class AutoPickPlaceProgram(RobotProgram):
 
         def _select_tracking_coord5() -> Optional[Tuple[float, float]]:
             detections = SESSION.detections or []
-            if target_label:
+            if target_labels:
                 detections = [
                     det for det in detections
-                    if str(det.get("label", "")).strip() == str(target_label).strip()
+                    if str(det.get("label", "")).strip() in target_labels
                 ]
             if not detections:
                 tracking_state["lost_count"] += 1
@@ -361,9 +370,11 @@ class AutoPickPlaceProgram(RobotProgram):
             coord5 = select_closest_detection(
                 detections,
                 reference_xy=tracking_state["xy"],
-                coord5_fn=lambda d: _detection_coord5_mm(d, SESSION.workspace_definition),
+                coord5_fn=lambda d: _detection_coord5_mm(
+                    d, SESSION.workspace_definition),
             )
-            coord5_xy = _detection_coord5_mm(coord5, SESSION.workspace_definition)
+            coord5_xy = _detection_coord5_mm(
+                coord5, SESSION.workspace_definition)
             if coord5_xy is None:
                 tracking_state["lost_count"] += 1
                 return None
@@ -393,11 +404,13 @@ class AutoPickPlaceProgram(RobotProgram):
         approach_pose = _pick_approach_pose_fn()
         if approach_pose is None:
             raise RuntimeError("Pick approach pose unavailable.")
-        
-        log_move_target("pick_approach", approach_pose, coordinate_id=coordinate_id)
-        
+
+        log_move_target("pick_approach", approach_pose,
+                        coordinate_id=coordinate_id)
+
         if use_segment_tracking:
             try:
+                LOGGER.debug("Auto: Starting segment tracking approach move")
                 await asyncio.wait_for(
                     move_linear_follow_target(
                         robot_api,
@@ -409,24 +422,31 @@ class AutoPickPlaceProgram(RobotProgram):
                     ),
                     timeout=30.0,
                 )
+                LOGGER.debug("Auto: Segment tracking approach move complete")
             except asyncio.TimeoutError:
                 LOGGER.error("Auto: Pick approach move timed out after 30s")
                 raise RuntimeError("Pick approach move timed out")
         else:
-            await self.move_with_hold(
+            LOGGER.debug(
+                "Auto: Starting _move_linear_with_hold approach move (hold=2.0s)")
+            await self._move_linear_with_hold(
+                robot_api,
                 approach_pose,
-                coordinate_id=coordinate_id,
-                hold_seconds=2.0,
+                coordinate_id,
+                label="auto_pick_approach",
+                hold_s=settings.auto_hold_s,
             )
+            LOGGER.debug("Auto: _move_linear_with_hold approach move complete")
 
         # Move to pick
+        LOGGER.debug("Auto: Approach done, preparing pick move")
         await wait_for_operation_resume(self._run_id)
         pick_pose = _pick_pose_fn()
         if pick_pose is None:
             raise RuntimeError("Pick pose unavailable.")
-        
+
         log_move_target("pick_pose", pick_pose, coordinate_id=coordinate_id)
-        
+
         if use_segment_tracking:
             await move_linear_follow_target(
                 robot_api,
@@ -437,10 +457,12 @@ class AutoPickPlaceProgram(RobotProgram):
                 run_id=self._run_id,
             )
         else:
-            await self.move_with_hold(
+            await self._move_linear_with_hold(
+                robot_api,
                 pick_pose,
-                coordinate_id=coordinate_id,
-                hold_seconds=2.0,
+                coordinate_id,
+                label="auto_pick_pose",
+                hold_s=settings.auto_hold_s,
             )
 
         # Close gripper
@@ -458,10 +480,12 @@ class AutoPickPlaceProgram(RobotProgram):
         retreat_pose = _pick_approach_pose_fn()
         if retreat_pose is None:
             retreat_pose = approach_pose
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             retreat_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="auto_pick_retreat",
+            hold_s=settings.auto_hold_s,
         )
 
     async def _execute_drop(
@@ -491,20 +515,22 @@ class AutoPickPlaceProgram(RobotProgram):
 
         # Move to approach
         await wait_for_operation_resume(self._run_id)
-        log_move_target("drop_approach", approach_pose, coordinate_id=coordinate_id)
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             approach_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="drop_approach",
+            hold_s=settings.auto_hold_s,
         )
 
         # Move to drop position
         await wait_for_operation_resume(self._run_id)
-        log_move_target("drop_pose", drop_pose, coordinate_id=coordinate_id)
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             drop_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="drop_pose",
+            hold_s=settings.auto_hold_s,
         )
 
         # Open gripper
@@ -543,11 +569,12 @@ class AutoPickPlaceProgram(RobotProgram):
 
         # Retreat
         await wait_for_operation_resume(self._run_id)
-        log_move_target("drop_retreat", approach_pose, coordinate_id=coordinate_id)
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             approach_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="drop_retreat",
+            hold_s=settings.auto_hold_s,
         )
 
     async def _move_to_drop(
@@ -577,17 +604,21 @@ class AutoPickPlaceProgram(RobotProgram):
         )
 
         await wait_for_operation_resume(self._run_id)
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             approach_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="move_to_drop_approach",
+            hold_s=settings.auto_hold_s,
         )
 
         await wait_for_operation_resume(self._run_id)
-        await self.move_with_hold(
+        await self._move_linear_with_hold(
+            robot_api,
             drop_pose,
-            coordinate_id=coordinate_id,
-            hold_seconds=2.0,
+            coordinate_id,
+            label="move_to_drop_pose",
+            hold_s=settings.auto_hold_s,
         )
 
         if open_gripper:
@@ -595,12 +626,87 @@ class AutoPickPlaceProgram(RobotProgram):
             command_gripper(gripper_open, "opened")
             SESSION.robot_has_object = False
 
+    async def _move_linear_with_hold(
+        self,
+        robot_api: "CodroidAPI",
+        target_pose: dict,
+        coordinate_id: int,
+        *,
+        label: str = "move",
+        hold_s: float = 2.0,
+    ) -> None:
+        """Execute a linear move with optional hold.
+
+        This is a self-contained movement loop similar to PlateTestProgram's
+        implementation. Unlike the base class move_with_hold which delegates
+        to execute_linear_move_with_hold, this method handles the heartbeat
+        loop directly to avoid asyncio task cancellation issues in Dash callbacks.
+        """
+        settings = registry().settings
+        session = registry().get_or_create_robot_session()
+
+        await self.wait_for_resume()
+
+        log_move_target(label, target_pose, coordinate_id=coordinate_id)
+
+        await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
+        await robot_api.set_target_cpos(
+            robot_api.attach_coordinate_to_cpos(
+                robot_api.build_target_cpos(**target_pose),
+                coordinate_id=coordinate_id,
+            )
+        )
+        await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+
+        # Wait for motion to settle - use auto-specific faster settings
+        timeout_s = getattr(settings, 'auto_move_timeout_s', 15.0)
+        settle_s = getattr(settings, 'auto_settle_s', 0.1)
+        tolerance_mm = getattr(settings, 'auto_tolerance_mm', 2.0)
+        z_tolerance_mm = getattr(settings, 'auto_z_tolerance_mm', 3.0)
+
+        deadline = time.monotonic() + timeout_s
+        settle_since: float | None = None
+
+        while time.monotonic() < deadline:
+            self.ensure_active()
+            await robot_api.send_command_heartbeat()
+            await asyncio.sleep(0.1)
+
+            posture = session.position_snapshot()
+            curr_xyz = (posture.x, posture.y, posture.z)
+            target_xyz = (target_pose["x"], target_pose["y"], target_pose["z"])
+
+            if (
+                abs(curr_xyz[0] - target_xyz[0]) <= tolerance_mm
+                and abs(curr_xyz[1] - target_xyz[1]) <= tolerance_mm
+                and abs(curr_xyz[2] - target_xyz[2]) <= z_tolerance_mm
+            ):
+                if settle_s <= 0:
+                    break
+                if settle_since is None:
+                    settle_since = time.monotonic()
+                elif time.monotonic() - settle_since >= settle_s:
+                    break
+            else:
+                settle_since = None
+
+        # Hold if requested
+        if hold_s > 0:
+            hold_deadline = time.monotonic() + hold_s
+            while time.monotonic() < hold_deadline:
+                self.ensure_active()
+                await robot_api.send_command_heartbeat()
+                await asyncio.sleep(0.1)
+
+        await robot_api.clear_target_position()
+        await robot_api.stop_command()
+
     def _filter_targets(
         self,
         detections: list,
         workspace_def,
         *,
-        target_label: str,
+        target_labels: list[str],
         drop_target_mm: Optional[Tuple[float, float]],
         drop_ignore_radius_mm: float,
     ) -> list:
@@ -608,8 +714,9 @@ class AutoPickPlaceProgram(RobotProgram):
         targets = []
 
         for det in detections:
-            # Check label
-            if det.get("label") != target_label:
+            # Check label - accept any of the target labels
+            det_label = str(det.get("label", "")).strip()
+            if det_label not in target_labels:
                 continue
 
             # Check for workspace coordinates

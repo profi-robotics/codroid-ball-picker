@@ -614,6 +614,13 @@ def build_layout() -> dmc.MantineProvider:
                     n_intervals=0,
                     disabled=True,
                 ),
+                dcc.Interval(
+                    id="metrics-interval",
+                    # ~10 Hz for live metrics updates (FPS, overlay status)
+                    interval=100,
+                    n_intervals=0,
+                    disabled=True,
+                ),
                 dcc.Interval(id="calibration-progress-interval",
                              interval=100, n_intervals=0),
                 html.Div(id="camera-refresh-container",

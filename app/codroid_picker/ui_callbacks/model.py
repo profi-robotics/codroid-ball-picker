@@ -61,7 +61,7 @@ def register_model_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("gpu-status-display", "children"),
-        Input("camera-interval", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
     )
     def _update_gpu_status(_n: int) -> list:
         """Update GPU status display periodically."""

@@ -88,7 +88,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
             Output("manual-pick-place-target", "disabled"),
             Output("reset-operation-lock", "disabled"),
         ],
-        Input("camera-interval", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _update_button_states(_n: int) -> Tuple[bool, bool, bool, bool]:
@@ -155,7 +155,6 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Output("use-existing-calibration", "disabled"),
         Output("use-existing-robot-calibration", "disabled"),
         Input("monitor-interval", "n_intervals"),
-        Input("camera-interval", "n_intervals"),
         State("camera-connection-state", "data"),
         State("robot-connection-state", "data"),
         State("gripper-connection-state", "data"),
@@ -166,7 +165,6 @@ def register_monitoring_callbacks(app: Dash) -> None:
     )
     def _update_monitoring_summary(
         _monitor_ticks: int,
-        _camera_ticks: int,
         camera_state: Optional[dict],
         robot_state: Optional[dict],
         gripper_state: Optional[dict],

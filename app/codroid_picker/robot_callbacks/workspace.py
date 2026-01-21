@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from dash import callback_context, Dash, Input, no_update, Output, State
+from dash import callback_context, Dash, Input, Output, State
 
 
 def register_workspace_callbacks(app: Dash) -> None:
@@ -67,13 +67,4 @@ def register_workspace_callbacks(app: Dash) -> None:
         except Exception as exc:
             return f"Workspace error: {exc}"
 
-    @app.callback(
-        Output("plate-action-status", "children"),
-        Input("camera-interval", "n_intervals"),
-        prevent_initial_call=True,
-    )
-    def _handle_plate_actions(
-        _ticks: int,
-    ) -> str:
-        """Handle continuous plate detection updates (currently no-op)."""
-        return no_update
+    # Note: _handle_plate_actions callback removed - it was a no-op returning no_update

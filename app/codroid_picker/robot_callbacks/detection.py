@@ -108,7 +108,7 @@ def register_detection_callbacks(app: Dash) -> None:
     @app.callback(
         Output("detection-list", "children", allow_duplicate=True),
         Output("pick-detection-select", "data", allow_duplicate=True),
-        Input("camera-interval", "n_intervals"),
+        Input("monitor-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _update_detection_display(

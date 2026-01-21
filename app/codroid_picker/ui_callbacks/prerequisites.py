@@ -21,14 +21,12 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
     """Register the prerequisites state update callback."""
     @app.callback(
         Output("prerequisites-state", "data"),
-        Input("camera-interval", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         Input("gripper-connection-state", "data"),
         Input("robot-connection-state", "data"),
         prevent_initial_call=False,
     )
     def _update_prerequisites(
-        _n: int,
         _monitor: int,
         gripper_state: Optional[dict],
         robot_state: Optional[dict],
@@ -59,6 +57,6 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
             "drop_target_defined": session.drop_target_mm is not None,
         }
 
-        #LOGGER.info(f"Prerequisites callback fired, returning: {result}")
+        # LOGGER.info(f"Prerequisites callback fired, returning: {result}")
 
         return result

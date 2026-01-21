@@ -61,7 +61,6 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         LOGGER = logging.getLogger(__name__)
 
         prereqs = prerequisites or {}
-        LOGGER.info(f"Auto prerequisites callback fired: prereqs={prereqs}")
 
         # Build badge items
         badge_items = [
@@ -95,7 +94,8 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         stop_disabled = not running
 
         # Build status text with missing items
-        missing = [label for key, label in prereq_labels if not prereqs.get(key, False)]
+        missing = [label for key,
+                   label in prereq_labels if not prereqs.get(key, False)]
         status_text = dmc.Text(
             "Ready for auto run" if not missing else f"Missing: {', '.join(missing)}",
             size="xs",
@@ -104,10 +104,9 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         prereq_children = [
             status_text,
-            dmc.Group(badge_items, gap=6, align="center", wrap="wrap", justify="center"),
+            dmc.Group(badge_items, gap=6, align="center",
+                      wrap="wrap", justify="center"),
         ]
-
-        LOGGER.info(f"Auto prerequisites callback returning {len(prereq_children)} children, missing={missing}")
 
         return start_disabled, stop_disabled, prereq_children
 
@@ -146,7 +145,8 @@ def register_auto_operation_callbacks(app: Dash) -> None:
             # Check if already running
             if registry.is_program_running:
                 return (
-                    {"running": True, "paused": False, "message": "Program already running"},
+                    {"running": True, "paused": False,
+                        "message": "Program already running"},
                     dmc.Notification(
                         title="Auto Operation",
                         message=f"A program is already running: {registry.active_program_name}",
@@ -177,22 +177,19 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                     robot_uri or DEFAULT_ROBOT_URI
                 )
 
-                # Start program as background task
-                async def _run_auto():
-                    try:
-                        result = await registry.start_instance(program, robot_api)
-                        LOGGER.info(f"Auto operation completed: {result.message}")
-                    except Exception as exc:
-                        LOGGER.exception("Auto operation failed")
-
-                SESSION.auto_task = asyncio.create_task(_run_auto())
+                # Start program using direct await like plate test does
+                # The callback will block until the program completes or is stopped
+                # This is the pattern that works reliably
+                result = await registry.start_instance(program, robot_api)
+                LOGGER.info("Auto operation completed: %s", result.message)
 
                 return (
-                    {"running": True, "paused": False, "message": "Auto operation started"},
+                    {"running": False, "paused": False,
+                        "message": result.message},
                     dmc.Notification(
                         title="Auto Operation",
-                        message="Auto pick & place operation started",
-                        color="green",
+                        message=result.message,
+                        color="green" if result.status == ProgramStatus.COMPLETED else "orange",
                         action="show",
                     ),
                 )
@@ -211,7 +208,8 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         elif trigger_id == "auto-stop":
             if registry.stop():
                 return (
-                    {"running": False, "paused": False, "message": "Auto operation stopped"},
+                    {"running": False, "paused": False,
+                        "message": "Auto operation stopped"},
                     dmc.Notification(
                         title="Auto Operation",
                         message="Auto pick & place operation stopped",
@@ -249,4 +247,3 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         if current_state == snapshot:
             return no_update
         return snapshot
-
