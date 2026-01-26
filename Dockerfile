@@ -47,8 +47,8 @@ RUN uv sync --no-dev
 # For Jetson: Install CUDA-optimized PyTorch (JetPack 6.x compatible)
 # This overrides the CPU-only version that might be installed by dependencies
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-        uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60; \
-    fi
+  uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60; \
+  fi
 
 # Now copy the remaining application files
 COPY codroid-ball-picker/run_codroid_picker.py ./
