@@ -14,7 +14,7 @@ services:
       - "8050:8050"
     devices:
       - "/dev/bus/usb:/dev/bus/usb" # OAK-D / USB devices
-      - "/dev/video0:/dev/video0" # Optional: camera passthrough
+      # - "/dev/video0:/dev/video0" # Optional: camera passthrough (commented out if not available)
     volumes:
       - ./data:/app/data # persist calibration/workspace data
     command:
