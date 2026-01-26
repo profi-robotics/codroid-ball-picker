@@ -1,25 +1,25 @@
 # Jetson Orin Nano Docker Deployment
 
-These steps build and run the calibration UI on a Jetson Orin Nano (JetPack 5.x / L4T R35.x) with GPU and USB access for the OAK-D and gripper.
+These steps build and run the calibration UI on a Jetson Orin Nano (JetPack 5.x/6.x) with GPU and USB access for the OAK-D and gripper.
 
 ## Prerequisites
-- JetPack 5.x (L4T R35.x) with NVIDIA Container Runtime (`sudo apt install nvidia-container-runtime`).
+- JetPack 5.x or 6.x with NVIDIA Container Runtime (`sudo apt install nvidia-container-runtime`).
 - Docker + docker-compose plugin.
-- Repo cloned to the Jetson.
+- Repo cloned to the Jetson with `codroid-api` and `onrobot-api` in parent directory.
 
 ## Build
 ```bash
 docker compose build
 ```
 
-This uses the L4T PyTorch base image and `uv` to install Python deps from `pyproject.toml`/`uv.lock`.
+This uses Ubuntu 22.04 base with automatic Jetson PyTorch optimization and `uv` to install Python deps.
 
 ## Run
 ```bash
-docker compose up
+docker compose up -d
 ```
 
-The UI will be reachable on `http://<jetson-ip>:8050`.
+The UI will be reachable on `http://<jetson-ip>:8050` and auto-restart after reboot.
 
 ### Device access
 - USB/OAK-D: passed via `/dev/bus/usb`.

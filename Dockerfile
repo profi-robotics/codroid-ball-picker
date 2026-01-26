@@ -1,9 +1,8 @@
-# Jetson Orin Nano deployment container
-# Uses NVIDIA L4T PyTorch base (JetPack 5.x / L4T R35.x)
+# Multi-platform container for Jetson and development
+# Uses Ubuntu base compatible with both ARM64 (Jetson) and AMD64 (development)
 
-FROM nvcr.io/nvidia/l4t-pytorch:r35.4.1-py3
+FROM ubuntu:22.04
 
-ARG UV_VERSION=0.4.0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 ENV PATH="/root/.local/bin:${PATH}"
@@ -23,18 +22,39 @@ RUN apt-get update && \
   python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
-# Install uv (pinned)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --version ${UV_VERSION}
+# Install uv (latest version)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Copy manifests first for layer caching
-COPY pyproject.toml uv.lock ./ 
+COPY codroid-ball-picker/pyproject.toml ./
+COPY codroid-ball-picker/README.md ./
 
-# Install Python dependencies into the project venv
-RUN uv sync --frozen --no-dev
+# Copy local dependencies that are referenced in pyproject.toml
+COPY codroid-api ./codroid-api
+COPY onrobot-api ./onrobot-api
 
-# Now copy the application code
-COPY . .
+# Update pyproject.toml to use correct local paths for the container
+RUN sed -i 's|path = "../codroid-api"|path = "./codroid-api"|g' pyproject.toml && \
+  sed -i 's|path = "../onrobot-api"|path = "./onrobot-api"|g' pyproject.toml
 
+# Copy the minimal source code needed for package build
+COPY codroid-ball-picker/app ./app
+COPY codroid-ball-picker/vision ./vision
+
+# Install Python dependencies using uv with local packages (regenerate lock)
+RUN uv sync --no-dev
+
+# For Jetson: Install CUDA-optimized PyTorch (JetPack 6.x compatible)
+# This overrides the CPU-only version that might be installed by dependencies
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+        uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60; \
+    fi
+
+# Now copy the remaining application files
+COPY codroid-ball-picker/run_codroid_picker.py ./
+COPY codroid-ball-picker/assets ./assets
+
+# Expose port
 EXPOSE 8050
 
 # Run the Dash UI

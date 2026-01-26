@@ -62,7 +62,8 @@ def cleanup_on_reload():
                     if loop.is_running():
                         loop.create_task(app_registry._robot_session.close())
                     else:
-                        loop.run_until_complete(app_registry._robot_session.close())
+                        loop.run_until_complete(
+                            app_registry._robot_session.close())
                 except Exception:
                     pass
                 logger.info("Robot session closed")
@@ -106,10 +107,12 @@ def cleanup_on_reload():
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Codroid calibration UI.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
+    parser = argparse.ArgumentParser(
+        description="Run the Codroid calibration UI.")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8050, help="Port to bind.")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode.")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug mode.")
     args = parser.parse_args()
 
     # Configure logging
@@ -148,7 +151,8 @@ def main() -> None:
     logging.info("Worker process starting - initializing app...")
 
     # Load the main app module
-    spec = importlib.util.spec_from_file_location("codroid_picker_main", "app/main.py")
+    spec = importlib.util.spec_from_file_location(
+        "codroid_picker_main", "app/main.py")
     codroid_picker = importlib.util.module_from_spec(spec)
     sys.modules["codroid_picker_main"] = codroid_picker
     spec.loader.exec_module(codroid_picker)
