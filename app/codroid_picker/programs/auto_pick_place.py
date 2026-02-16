@@ -98,6 +98,31 @@ class AutoPickPlaceProgram(RobotProgram):
 
         return True, "Ready for auto operation."
 
+    @staticmethod
+    def _resolve_run_orientation() -> Tuple[float, float, float]:
+        """Resolve a stable orientation for auto mode to avoid wrist re-rotation."""
+        from app.codroid_picker.session import SESSION
+
+        try:
+            robot_session = registry().get_or_create_robot_session()
+            if robot_session.posture_seen():
+                posture = robot_session.position_snapshot()
+                return (
+                    float(posture.a),
+                    float(posture.b),
+                    float(posture.c),
+                )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Auto: failed to read posture orientation: %s", exc)
+
+        if SESSION.drop_target_orientation is not None:
+            return (
+                float(SESSION.drop_target_orientation[0]),
+                float(SESSION.drop_target_orientation[1]),
+                float(SESSION.drop_target_orientation[2]),
+            )
+        return (0.0, 0.0, 0.0)
+
     async def execute(self, robot_api: "CodroidAPI") -> ProgramResult:
         """Execute the auto pick and place loop."""
         from app.codroid_picker.session import SESSION
@@ -163,6 +188,13 @@ class AutoPickPlaceProgram(RobotProgram):
         SESSION.auto_waiting_at_drop = False
         cycles_completed = 0
         cycles_failed = 0
+        run_orientation = self._resolve_run_orientation()
+        LOGGER.info(
+            "Auto: using fixed orientation a=%.2f b=%.2f c=%.2f",
+            run_orientation[0],
+            run_orientation[1],
+            run_orientation[2],
+        )
 
         self.update_message("Starting auto loop...")
         LOGGER.info("Auto: Entering main loop")
@@ -231,6 +263,7 @@ class AutoPickPlaceProgram(RobotProgram):
                             approach_mm=approach_mm,
                             drop_mm=drop_mm,
                             open_gripper=not SESSION.robot_has_object,
+                            orientation=run_orientation,
                         )
                         SESSION.auto_waiting_at_drop = True
 
@@ -265,6 +298,7 @@ class AutoPickPlaceProgram(RobotProgram):
                         target=target,
                         target_labels=target_labels,
                         tracking_mode=tracking_mode,
+                        orientation=run_orientation,
                     )
 
                     # Execute drop
@@ -272,6 +306,7 @@ class AutoPickPlaceProgram(RobotProgram):
                         robot_api,
                         approach_mm=approach_mm,
                         drop_mm=drop_mm,
+                        orientation=run_orientation,
                     )
 
                     cycles_completed += 1
@@ -289,6 +324,7 @@ class AutoPickPlaceProgram(RobotProgram):
                             approach_mm=approach_mm,
                             drop_mm=drop_mm,
                             open_gripper=True,
+                            orientation=run_orientation,
                         )
                     except Exception:
                         pass
@@ -316,6 +352,7 @@ class AutoPickPlaceProgram(RobotProgram):
         target: dict,
         target_labels: list[str],
         tracking_mode: str,
+        orientation: Tuple[float, float, float],
     ) -> None:
         """Execute a pick operation."""
         from app.codroid_picker.session import SESSION
@@ -340,9 +377,9 @@ class AutoPickPlaceProgram(RobotProgram):
                 "x": float(coord5_xy[0]),
                 "y": float(coord5_xy[1]),
                 "z": float(z),
-                "a": 0.0,
-                "b": 0.0,
-                "c": 0.0,
+                "a": float(orientation[0]),
+                "b": float(orientation[1]),
+                "c": float(orientation[2]),
             }
 
         static_coord5_xy = (float(target_coord5[0]), float(target_coord5[1]))
@@ -494,6 +531,7 @@ class AutoPickPlaceProgram(RobotProgram):
         *,
         approach_mm: float,
         drop_mm: float,
+        orientation: Tuple[float, float, float],
     ) -> None:
         """Execute a drop operation."""
         from app.codroid_picker.session import SESSION
@@ -508,7 +546,7 @@ class AutoPickPlaceProgram(RobotProgram):
         # Use shared helper to build poses
         approach_pose, drop_pose = build_drop_poses(
             drop_robot_xyz=drop_target,
-            orientation=SESSION.drop_target_orientation,
+            orientation=orientation,
             approach_mm=approach_mm,
             drop_mm=drop_mm,
         )
@@ -584,6 +622,7 @@ class AutoPickPlaceProgram(RobotProgram):
         approach_mm: float,
         drop_mm: float,
         open_gripper: bool,
+        orientation: Tuple[float, float, float],
     ) -> None:
         """Move to drop position and optionally open gripper."""
         from app.codroid_picker.session import SESSION
@@ -598,7 +637,7 @@ class AutoPickPlaceProgram(RobotProgram):
         # Use shared helper to build poses
         approach_pose, drop_pose = build_drop_poses(
             drop_robot_xyz=drop_target,
-            orientation=SESSION.drop_target_orientation,
+            orientation=orientation,
             approach_mm=approach_mm,
             drop_mm=drop_mm,
         )

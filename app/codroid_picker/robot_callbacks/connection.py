@@ -124,10 +124,6 @@ def register_connection_callbacks(app: Dash) -> None:
         if trigger is None:
             return no_update, no_update, no_update, no_update, no_update
 
-        if trigger == "auto-init":
-            # Avoid blocking initial page load on XML-RPC connection attempts.
-            return no_update, no_update, no_update, no_update, no_update
-
         if not enabled and trigger == "gripper-enable":
             # Disable gripper
             if codroid_picker_module.SESSION.gripper is not None:

@@ -231,6 +231,32 @@ def register_pick_place_callbacks(app: Dash) -> None:
             if not SESSION.detections:
                 return "No objects detected.", drop_text
 
+            # Keep pick moves in the current wrist orientation to avoid
+            # unnecessary re-orientation during manual mode.
+            pick_orientation = (0.0, 0.0, 0.0)
+            try:
+                robot_session = _get_robot_session()
+                if robot_session.posture_seen():
+                    pos = robot_session.position_snapshot()
+                    pick_orientation = (
+                        float(pos.a),
+                        float(pos.b),
+                        float(pos.c),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Falling back to default pick orientation: %s", exc)
+
+            def build_pick_pose(x_mm: float, y_mm: float, z_mm: float) -> dict:
+                pose = codroid_picker_module._pose_from_coord5_mm(x_mm, y_mm, z_mm)
+                pose.update(
+                    {
+                        "a": pick_orientation[0],
+                        "b": pick_orientation[1],
+                        "c": pick_orientation[2],
+                    }
+                )
+                return pose
+
             # Get target label from settings
             target_label = SETTINGS.auto_target_label
 
@@ -292,7 +318,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
                                 f"using last known position (robot likely obscuring target)"
                             )
                         # Always return last known position - don't return None
-                        return codroid_picker_module._pose_from_coord5_mm(
+                        return build_pick_pose(
                             tracking_state["xy"][0], tracking_state["xy"][1], approach_mm
                         )
 
@@ -309,33 +335,33 @@ def register_pick_place_callbacks(app: Dash) -> None:
                     if current_coord5 is None:
                         # Detection exists but can't map to coordinates - use last known
                         tracking_state["lost_count"] += 1
-                        return codroid_picker_module._pose_from_coord5_mm(
+                        return build_pick_pose(
                             tracking_state["xy"][0], tracking_state["xy"][1], approach_mm
                         )
 
                     # Successfully tracked - reset lost counter and update position
                     tracking_state["lost_count"] = 0
                     tracking_state["xy"] = (current_coord5[0], current_coord5[1])
-                    return codroid_picker_module._pose_from_coord5_mm(
+                    return build_pick_pose(
                         current_coord5[0], current_coord5[1], approach_mm
                     )
 
                 # Build static pose fetcher for pick phase
                 # Uses the last tracked position from approach (robot obscures target)
                 def make_pick_pose_fn():
-                    return codroid_picker_module._pose_from_coord5_mm(
+                    return build_pick_pose(
                         tracking_state["xy"][0], tracking_state["xy"][1], pick_mm
                     )
             else:
                 # Build static pose fetchers for "move" mode
                 # These use the captured coordinates and don't change
                 def make_pick_approach_fn():
-                    return codroid_picker_module._pose_from_coord5_mm(
+                    return build_pick_pose(
                         static_coord5_xy[0], static_coord5_xy[1], approach_mm
                     )
 
                 def make_pick_pose_fn():
-                    return codroid_picker_module._pose_from_coord5_mm(
+                    return build_pick_pose(
                         static_coord5_xy[0], static_coord5_xy[1], pick_mm
                     )
 
