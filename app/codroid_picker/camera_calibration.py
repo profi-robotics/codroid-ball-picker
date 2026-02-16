@@ -36,14 +36,16 @@ def get_latest_frame() -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
 
 def capture_color_frame(output_dir: Path) -> Path:
     """Capture a color frame from the camera stream and save it to disk."""
-    # Retry logic: frame might not be available immediately, so poll briefly
-    max_retries = 5
+    # Retry logic: frame might not be available immediately, especially
+    # right after a stream restart on slower Jetson devices.
+    max_retries = 30
+    retry_delay_s = 0.1
     for attempt in range(max_retries):
         frame, _depth = get_latest_frame()
         if frame is not None and frame.size > 0:
             break
         if attempt < max_retries - 1:
-            time.sleep(0.1)
+            time.sleep(retry_delay_s)
 
     if frame is None or frame.size == 0:
         raise RuntimeError(
@@ -58,8 +60,13 @@ def capture_color_frame(output_dir: Path) -> Path:
     if not success:
         raise RuntimeError(f"Failed to write frame to {path}.")
 
-    # Verify by reading back immediately
-    verify = cv2.imread(str(path))
+    # Verify by reading back. Retry a few times to avoid transient FS races.
+    verify = None
+    for _ in range(5):
+        verify = cv2.imread(str(path))
+        if verify is not None:
+            break
+        time.sleep(0.05)
     if verify is None:
         raise RuntimeError(f"Failed to read back saved frame from {path}.")
 
@@ -69,9 +76,18 @@ def capture_color_frame(output_dir: Path) -> Path:
 
 def capture_depth_snapshot(output_dir: Path) -> Path:
     """Capture a depth frame from the camera stream and save it to disk."""
-    _frame, depth = get_latest_frame()
+    depth = None
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        _frame, depth = get_latest_frame()
+        if depth is not None:
+            break
+        time.sleep(0.05)
     if depth is None:
-        raise RuntimeError("No depth frame available from the camera stream.")
+        raise RuntimeError(
+            "No depth frame available from the camera stream. "
+            "Unable to acquire depth data after waiting 5 seconds."
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "calibration_depth_frame.npz"
     np.savez_compressed(path, depth=depth.astype(np.float32))

@@ -162,6 +162,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         State("robot-speed-state", "data"),
         State("settings-calib-path", "value"),
         State("settings-robot-calib-path", "value"),
+        prevent_initial_call=True,
     )
     def _update_monitoring_summary(
         _monitor_ticks: int,
@@ -373,7 +374,10 @@ def register_monitoring_callbacks(app: Dash) -> None:
         }:
             in_progress = True
         robot_online = (robot_conn_state or {}).get("status") == "online"
-        posture_ready, posture_message = codroid_picker_module._robot_posture_ready()
+        posture_ready = robot_online
+        posture_message = "Robot not connected."
+        if robot_online:
+            posture_ready, posture_message = codroid_picker_module._robot_posture_ready()
 
         # Determine message based on the actual blocking issue
         if in_progress:

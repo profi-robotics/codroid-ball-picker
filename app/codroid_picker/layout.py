@@ -602,10 +602,10 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
-                             interval=400, n_intervals=0),
+                             interval=1000, n_intervals=0),
                 dcc.Interval(
                     id="monitor-interval",
-                    interval=1000,
+                    interval=2000,
                     n_intervals=0,
                 ),
                 dcc.Interval(
@@ -616,13 +616,13 @@ def build_layout() -> dmc.MantineProvider:
                 ),
                 dcc.Interval(
                     id="metrics-interval",
-                    # ~10 Hz for live metrics updates (FPS, overlay status)
-                    interval=100,
+                    # Keep UI metrics updates light for embedded devices (Jetson Nano).
+                    interval=500,
                     n_intervals=0,
                     disabled=True,
                 ),
                 dcc.Interval(id="calibration-progress-interval",
-                             interval=100, n_intervals=0),
+                             interval=500, n_intervals=0),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
                 build_setup_drawer(),

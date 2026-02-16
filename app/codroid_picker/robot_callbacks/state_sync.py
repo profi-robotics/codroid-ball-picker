@@ -20,6 +20,7 @@ def register_state_sync_callbacks(app: Dash) -> None:
         Output("current-robot-position", "children"),
         Input("robot-connection-state", "data"),
         Input("robot-status-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _update_robot_position_display(
         robot_conn_state: Optional[dict],
@@ -206,6 +207,7 @@ def register_state_sync_callbacks(app: Dash) -> None:
         Output("footer-robot-position", "children"),
         Input("robot-connection-state", "data"),
         Input("robot-status-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _update_footer_robot_position(
         robot_conn_state: Optional[dict],
@@ -235,6 +237,7 @@ def register_state_sync_callbacks(app: Dash) -> None:
         Output("footer-flange-indicator-3", "className"),
         Output("footer-flange-indicator-4", "className"),
         Input("robot-status-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _update_footer_flange_indicators(_intervals: int) -> Tuple[str, str, str, str]:
         import app.codroid_picker as codroid_picker_module

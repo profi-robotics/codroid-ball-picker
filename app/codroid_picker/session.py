@@ -68,6 +68,8 @@ class UISession:
     robot_session: Optional[RobotSession] = None
     robot_connection_attempted: bool = False
     robot_last_connection_error: Optional[str] = None
+    robot_probe_inflight: bool = False
+    robot_last_probe_started_at: float = 0.0
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
     last_plate_test_capture: Optional[str] = None
@@ -89,7 +91,9 @@ class UISession:
     robot_speed_rate: float = 0.25
     robot_speed_last_set: float = 0.0
     robot_status_last_poll: float = 0.0
+    robot_power_poll_error_logged_at: float = 0.0
     robot_power_toggle_time: float = 0.0
+    camera_calibration_in_progress: bool = False
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None

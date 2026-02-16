@@ -62,9 +62,12 @@ def register_model_callbacks(app: Dash) -> None:
     @app.callback(
         Output("gpu-status-display", "children"),
         Input("monitor-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _update_gpu_status(_n: int) -> list:
         """Update GPU status display periodically."""
         import app.codroid_picker as codroid_picker_module
 
+        if (_n or 0) <= 0:
+            return no_update
         return codroid_picker_module.format_gpu_status()

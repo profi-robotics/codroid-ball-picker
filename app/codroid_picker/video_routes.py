@@ -37,13 +37,15 @@ def register_video_routes(app: "Dash") -> None:
         def generate():
             boundary = b'--frame\r\n'
             frame_count = 0
+            last_frame_index = -1
             while True:
-                frame_data = registry().mjpeg_stream.get_frame()
+                frame_data, frame_index = registry().mjpeg_stream.get_frame_with_index()
 
-                if not frame_data:
-                    time.sleep(0.033)
+                if not frame_data or frame_index == last_frame_index:
+                    time.sleep(0.005)
                     continue
 
+                last_frame_index = frame_index
                 frame_count += 1
                 if frame_count == 1:
                     LOGGER.debug(
@@ -54,7 +56,6 @@ def register_video_routes(app: "Dash") -> None:
                 yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
                 yield frame_data
                 yield b'\r\n'
-                time.sleep(0.01)  # Small delay to avoid hammering
 
         return app.server.response_class(
             generate(),
@@ -85,19 +86,18 @@ def register_video_routes(app: "Dash") -> None:
     @app.server.route("/raw_camera_frame.jpg")
     def raw_camera_frame():
         """Get the latest raw camera frame (no overlays) as a JPEG image."""
-        frame_data = registry().raw_stream.get_frame()
-        if not frame_data:
+        raw_frame = registry().raw_stream.get_latest_frame()
+        if raw_frame is None:
             placeholder = placeholder_frame(
                 "Camera stream offline", size=(480, 640))
-            success, buffer = cv2.imencode(".jpg", placeholder)
-            if success:
-                frame_data = buffer.tobytes()
-            else:
-                return app.server.response_class(
-                    b"",
-                    mimetype='image/jpeg'
-                )
+            raw_frame = placeholder
+        success, buffer = cv2.imencode(".jpg", raw_frame)
+        if not success:
+            return app.server.response_class(
+                b"",
+                mimetype='image/jpeg'
+            )
         return app.server.response_class(
-            frame_data,
+            buffer.tobytes(),
             mimetype='image/jpeg'
         )

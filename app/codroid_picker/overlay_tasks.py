@@ -102,5 +102,8 @@ def _select_overlay_task(
                 _run_workspace_task(marker_ids, marker_size_mm),
             )
         if application_tab == "pick-place":
-            return OverlayTask("pick-place-detection", _run_detection_task())
+            # Avoid running YOLO overlay inference on every incoming camera frame
+            # in default "auto" mode; this is too expensive on Jetson Nano.
+            # Users can still explicitly enable detection overlay from the UI.
+            return None
     return None

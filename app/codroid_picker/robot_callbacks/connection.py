@@ -33,11 +33,21 @@ def register_connection_callbacks(app: Dash) -> None:
 
         trigger = callback_context.triggered_id
         session = codroid_picker_module._get_robot_session()
+        ui_session = codroid_picker_module.SESSION
         resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
+        probe_retry_interval_s = 5.0
+
+        if trigger == "auto-init":
+            # Keep first paint lightweight on embedded devices:
+            # don't block page load on websocket probes.
+            return no_update, no_update, no_update, no_update
+
         if trigger == "robot-disconnect":
             await session.close()
-            codroid_picker_module.SESSION.robot_connection_attempted = True
-            codroid_picker_module.SESSION.robot_last_connection_error = None
+            ui_session.robot_connection_attempted = True
+            ui_session.robot_last_connection_error = None
+            ui_session.robot_probe_inflight = False
+            ui_session.robot_last_probe_started_at = 0.0
             session.clear_position()
             codroid_picker_module._set_robot_guidance(
                 "Robot calibration idle. Click 'Begin calibrating robot' to start.",
@@ -47,18 +57,29 @@ def register_connection_callbacks(app: Dash) -> None:
             )
             status = "Robot disconnected."
             return status, "Robot: offline", "gray", {"status": "offline", "message": status}
-        if trigger in {"auto-init", "monitor-interval"}:
+        if trigger == "monitor-interval":
             if session.is_connected(resolved_uri):
                 target = session.resolve_robot_target(resolved_uri)
                 status = f"Robot connected to {target['host']}:{target['port']}."
-                codroid_picker_module.SESSION.robot_connection_attempted = True
-                codroid_picker_module.SESSION.robot_last_connection_error = None
+                ui_session.robot_connection_attempted = True
+                ui_session.robot_last_connection_error = None
                 return status, "Robot: online", "brand", {"status": "online", "message": status}
-            if codroid_picker_module.SESSION.robot_connection_attempted:
-                if codroid_picker_module.SESSION.robot_last_connection_error:
-                    error = codroid_picker_module.SESSION.robot_last_connection_error
-                    return error, "Robot: error", "yellow", {"status": "error", "message": error}
+            # Skip background probes until the user explicitly requests
+            # a connection test at least once.
+            if not ui_session.robot_connection_attempted:
                 return no_update, no_update, no_update, no_update
+            if ui_session.robot_probe_inflight:
+                return no_update, no_update, no_update, no_update
+            now = time.time()
+            if now - ui_session.robot_last_probe_started_at < probe_retry_interval_s:
+                if ui_session.robot_connection_attempted and ui_session.robot_last_connection_error:
+                    return no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update
+        if ui_session.robot_probe_inflight:
+            status = "Robot connection check already in progress."
+            return status, "Robot: probing", "yellow", {"status": "probing", "message": status}
+        ui_session.robot_probe_inflight = True
+        ui_session.robot_last_probe_started_at = time.time()
         try:
             response = await codroid_picker_module._probe_robot(resolved_uri)
             if not response:
@@ -66,14 +87,16 @@ def register_connection_callbacks(app: Dash) -> None:
             host = response.get("host", "unknown")
             port = response.get("port", "unknown")
             status = f"Robot connected to {host}:{port}."
-            codroid_picker_module.SESSION.robot_connection_attempted = True
-            codroid_picker_module.SESSION.robot_last_connection_error = None
+            ui_session.robot_connection_attempted = True
+            ui_session.robot_last_connection_error = None
             return status, "Robot: online", "brand", {"status": "online", "message": status}
         except Exception as exc:
             error = f"Robot connection failed: {exc}"
-            codroid_picker_module.SESSION.robot_connection_attempted = True
-            codroid_picker_module.SESSION.robot_last_connection_error = error
+            ui_session.robot_connection_attempted = True
+            ui_session.robot_last_connection_error = error
             return error, "Robot: error", "yellow", {"status": "error", "message": error}
+        finally:
+            ui_session.robot_probe_inflight = False
 
     @app.callback(
         Output("gripper-status-text", "children"),
@@ -85,6 +108,7 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("gripper-enable", "checked"),
         Input("auto-init", "n_intervals"),
         State("gripper-cb-ip", "value"),
+        prevent_initial_call=True,
     )
     def _handle_gripper(
         _test_clicks: int,
@@ -96,6 +120,13 @@ def register_connection_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         trigger = callback_context.triggered_id
+
+        if trigger is None:
+            return no_update, no_update, no_update, no_update, no_update
+
+        if trigger == "auto-init":
+            # Avoid blocking initial page load on XML-RPC connection attempts.
+            return no_update, no_update, no_update, no_update, no_update
 
         if not enabled and trigger == "gripper-enable":
             # Disable gripper
@@ -110,9 +141,6 @@ def register_connection_callbacks(app: Dash) -> None:
                 {"status": "disabled", "message": "Gripper disabled"},
             )
 
-        # Auto-connect once on load
-        if trigger == "auto-init":
-            enabled = True
         if not enabled:
             return no_update, no_update, no_update, no_update, no_update
 
@@ -347,17 +375,29 @@ def register_connection_callbacks(app: Dash) -> None:
         if (robot_state or {}).get("status") != "online":
             return no_update
         now = time.time()
-        
+
         # Don't sync for 3 seconds after user manually toggles power
         # to give robot time to respond to the command
         last_toggle = getattr(codroid_picker_module.SESSION, 'robot_power_toggle_time', 0)
         if now - last_toggle < 3.0:
             return no_update
-        
-        # Skip throttle on first poll (current_state is None or empty)
-        # Also skip throttle when value is None (initial sync needed)
+
+        session = codroid_picker_module._get_robot_session()
+        status_snapshot = session.robot_status_snapshot()
+        status_age = session.robot_status_age_seconds()
+        status_is_fresh = (
+            bool(status_snapshot)
+            and status_age is not None
+            and status_age <= 2.0
+        )
+
+        # Skip throttle on first poll (current_state is None or empty).
+        # Back off polling when recent power polls are failing.
         if current_state and current_state.get("value") is not None:
-            if now - codroid_picker_module.SESSION.robot_status_last_poll < 1.0:
+            min_poll_interval_s = 5.0 if (
+                now - codroid_picker_module.SESSION.robot_power_poll_error_logged_at < 5.0
+            ) else 1.0
+            if now - codroid_picker_module.SESSION.robot_status_last_poll < min_poll_interval_s:
                 return no_update
 
         async def _poll(api) -> None:
@@ -366,15 +406,26 @@ def register_connection_callbacks(app: Dash) -> None:
             # Small delay to allow listener to process response
             await asyncio.sleep(0.1)
 
-        try:
-            await codroid_picker_module._with_robot_api(robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _poll)
-            codroid_picker_module.SESSION.robot_status_last_poll = now
-        except Exception as exc:  # noqa: BLE001
-            codroid_picker_module.LOGGER.debug(
-                "Robot power poll failed: %s", exc)
-            return no_update
+        if not status_is_fresh:
+            try:
+                await codroid_picker_module._with_robot_api(
+                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
+                    _poll,
+                )
+                codroid_picker_module.SESSION.robot_status_last_poll = now
+            except Exception as exc:  # noqa: BLE001
+                if (
+                    now
+                    - codroid_picker_module.SESSION.robot_power_poll_error_logged_at
+                    >= 5.0
+                ):
+                    codroid_picker_module.LOGGER.debug(
+                        "Robot power poll failed: %s", exc
+                    )
+                codroid_picker_module.SESSION.robot_power_poll_error_logged_at = now
+                codroid_picker_module.SESSION.robot_status_last_poll = now
+                return no_update
 
-        session = codroid_picker_module._get_robot_session()
         power_on = session.robot_power_on()
         status_snapshot = session.robot_status_snapshot()
         

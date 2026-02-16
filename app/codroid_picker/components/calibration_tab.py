@@ -315,8 +315,19 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                 justify="space-between",
                 align="center",
             ),
-            dmc.Text(id="overlay-status", size="sm", c="dimmed"),
-            dmc.Text(id="camera-fps", size="sm", c="dimmed"),
+            dmc.Text(
+                "Overlay: waiting for camera frames...",
+                id="overlay-status",
+                size="sm",
+                c="dimmed",
+            ),
+            dmc.Text(
+                "Camera: -- FPS · Stream: -- FPS",
+                id="camera-fps",
+                size="sm",
+                c="dark",
+                fw=500,
+            ),
             html.Div(
                 id="camera-feed-container",
                 children=[],  # Will be populated by callback based on camera connection state
@@ -380,7 +391,7 @@ def build_settings_card() -> dmc.Card:
                         dmc.TextInput(
                             id="settings-gripper-ip",
                             label="Gripper IP",
-                            placeholder="192.168.101.180",
+                            placeholder="192.168.101.95",
                             value=SETTINGS.gripper_ip,
                             size="sm",
                         ),

@@ -51,6 +51,7 @@ class MotionJPEGStream:
         self._last_push_ts = 0.0
         self._fps = 0.0
         self._last_fps_ts = 0.0
+        self._frame_index = 0
 
     def add_frame(self, frame: np.ndarray) -> None:
         """Add a frame to the stream queue, dropping frames if pushing too fast."""
@@ -64,6 +65,7 @@ class MotionJPEGStream:
         with self.lock:
             self.frame_queue.append(buffer.tobytes())
             self.frame_count += 1
+            self._frame_index += 1
             self._last_push_ts = now
             if self._last_fps_ts > 0.0:
                 dt = now - self._last_fps_ts
@@ -81,6 +83,13 @@ class MotionJPEGStream:
             if self.frame_queue:
                 return self.frame_queue[-1]
         return None
+
+    def get_frame_with_index(self) -> tuple[Optional[bytes], int]:
+        """Get the latest frame bytes and monotonic frame index."""
+        with self.lock:
+            if self.frame_queue:
+                return self.frame_queue[-1], self._frame_index
+            return None, self._frame_index
 
     def get_fps(self) -> float:
         """Get the current FPS of the stream."""
@@ -154,6 +163,26 @@ class FrameProcessor:
             MJPEG_STREAM.add_frame(result.vis)
 
 
+class RawFrameStore:
+    """In-memory store for the latest raw camera frame."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: Optional[np.ndarray] = None
+
+    def add_frame(self, frame: np.ndarray) -> None:
+        """Store the latest raw frame."""
+        with self._lock:
+            self._latest = frame.copy()
+
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        """Return a copy of the most recent raw frame."""
+        with self._lock:
+            if self._latest is None:
+                return None
+            return self._latest.copy()
+
+
 def _format_fps(capture_fps: float, stream_fps: float) -> str:
     """Format FPS for display."""
     cap_text = f"{capture_fps:.1f}" if capture_fps > 0 else "--"
@@ -164,7 +193,10 @@ def _format_fps(capture_fps: float, stream_fps: float) -> str:
 # Global streaming instances
 MJPEG_STREAM = MotionJPEGStream()
 FRAME_PROCESSOR = FrameProcessor()
-RAW_STREAM = MotionJPEGStream()
+RAW_STREAM = RawFrameStore()
+_ACTIVE_OVERLAY_TASK: Optional[OverlayTask] = None
+_OVERLAY_TASK_LOCK = threading.Lock()
+_STREAM_LIFECYCLE_LOCK = threading.RLock()
 
 
 def _publish_raw_frame(frame: np.ndarray) -> None:
@@ -172,37 +204,72 @@ def _publish_raw_frame(frame: np.ndarray) -> None:
     RAW_STREAM.add_frame(frame)
 
 
+def set_active_overlay_task(task: Optional[OverlayTask]) -> None:
+    """Set the currently active overlay task for camera-frame processing."""
+    global _ACTIVE_OVERLAY_TASK
+    with _OVERLAY_TASK_LOCK:
+        _ACTIVE_OVERLAY_TASK = task
+
+
+def get_active_overlay_task() -> Optional[OverlayTask]:
+    """Get the currently active overlay task."""
+    with _OVERLAY_TASK_LOCK:
+        return _ACTIVE_OVERLAY_TASK
+
+
+def process_camera_frame(frame: np.ndarray) -> None:
+    """Process camera frames on arrival from the DepthAI reader thread."""
+    _publish_raw_frame(frame)
+    task = get_active_overlay_task()
+    if task is None:
+        MJPEG_STREAM.add_frame(frame)
+        return
+    FRAME_PROCESSOR.submit(task, frame)
+
+
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float],
-                        lock_af: bool = False, frame_hook: Optional[Callable] = None) -> str:
+                        lock_af: bool = False, frame_hook: Optional[Callable] = None,
+                        enable_depth_override: Optional[bool] = None) -> str:
     """Start the camera stream with the specified configuration."""
-    stop_camera_stream()
+    with _STREAM_LIFECYCLE_LOCK:
+        stop_camera_stream()
 
-    # Get default values
-    from app.settings import DEFAULT_RESOLUTION, DEFAULT_FPS
-    resolution = (safe_int(width, DEFAULT_RESOLUTION[0]), safe_int(
-        height, DEFAULT_RESOLUTION[1]))
-    fps_value = safe_float(fps, DEFAULT_FPS)
+        # Get default values
+        from app.settings import DEFAULT_RESOLUTION, DEFAULT_FPS, SETTINGS
+        resolution = (safe_int(width, DEFAULT_RESOLUTION[0]), safe_int(
+            height, DEFAULT_RESOLUTION[1]))
+        fps_value = safe_float(fps, DEFAULT_FPS)
+        if enable_depth_override is None:
+            enable_depth = bool(getattr(SETTINGS, "camera_enable_depth", False))
+        else:
+            enable_depth = bool(enable_depth_override)
+        fast_depth = bool(getattr(SETTINGS, "camera_fast_depth", True))
 
-    # Default to publishing to RAW_STREAM if no hook is provided
-    hook = frame_hook if frame_hook is not None else _publish_raw_frame
+        # Default to in-thread frame processing so stream cadence follows camera cadence.
+        hook = frame_hook if frame_hook is not None else process_camera_frame
 
-    try:
-        # Create and start stream
-        stream = DepthAIFrameStream(
-            StreamConfig(resolution=resolution,
-                         fps=fps_value, lock_af=lock_af),
-            frame_hook=hook,
-        )
-        stream.start()
-        SESSION.camera_stream = stream
+        try:
+            # Create and start stream
+            stream = DepthAIFrameStream(
+                StreamConfig(
+                    resolution=resolution,
+                    fps=fps_value,
+                    lock_af=lock_af,
+                    enable_depth=enable_depth,
+                    fast_depth=fast_depth,
+                ),
+                frame_hook=hook,
+            )
+            stream.start()
+            SESSION.camera_stream = stream
 
-        device_id = stream.device_id() or "unknown"
-        return f"Camera stream running ({resolution[0]}x{resolution[1]} @ {fps_value:.1f} FPS, MXID {device_id})."
+            device_id = stream.device_id() or "unknown"
+            return f"Camera stream running ({resolution[0]}x{resolution[1]} @ {fps_value:.1f} FPS, MXID {device_id})."
 
-    except Exception as exc:
-        LOGGER.error("Failed to start camera stream: %s", exc)
-        # Re-raise the exception so the callback can handle it properly
-        raise
+        except Exception as exc:
+            LOGGER.error("Failed to start camera stream: %s", exc)
+            # Re-raise the exception so the callback can handle it properly
+            raise
 
 
 def stop_camera_stream(wait_for_release: bool = False) -> None:
@@ -212,22 +279,24 @@ def stop_camera_stream(wait_for_release: bool = False) -> None:
         wait_for_release: If True, wait briefly for USB device to be released.
             Use this during hot-reload cleanup to avoid device conflicts.
     """
-    try:
-        if SESSION.camera_stream is not None:
-            SESSION.camera_stream.stop()
-            SESSION.camera_stream = None
-            if wait_for_release:
-                # Allow time for USB device to be fully released
-                time.sleep(0.5)
-    except Exception as exc:
-        LOGGER.error("Error stopping camera stream: %s", exc)
+    with _STREAM_LIFECYCLE_LOCK:
+        try:
+            if SESSION.camera_stream is not None:
+                SESSION.camera_stream.stop()
+                SESSION.camera_stream = None
+                if wait_for_release:
+                    # Allow time for USB device to be fully released
+                    time.sleep(0.5)
+        except Exception as exc:
+            LOGGER.error("Error stopping camera stream: %s", exc)
 
 
 def get_current_frame():
     """Get the current frame from the stream."""
     if SESSION.camera_stream is None:
         return None
-    return SESSION.camera_stream.get_latest_frame()
+    frame, _depth = SESSION.camera_stream.get_latest()
+    return frame
 
 
 def is_stream_active() -> bool:
@@ -260,13 +329,15 @@ def create_video_feed_generator():
     def generate():
         boundary = b'--frame\r\n'
         frame_count = 0
+        last_frame_index = -1
         while True:
-            frame_data = MJPEG_STREAM.get_frame()
+            frame_data, frame_index = MJPEG_STREAM.get_frame_with_index()
 
-            if not frame_data:
-                time.sleep(0.033)
+            if not frame_data or frame_index == last_frame_index:
+                time.sleep(0.005)
                 continue
 
+            last_frame_index = frame_index
             frame_count += 1
             if frame_count == 1:
                 LOGGER.debug(
@@ -277,6 +348,5 @@ def create_video_feed_generator():
             yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
             yield frame_data
             yield b'\r\n'
-            time.sleep(0.01)  # Small delay to avoid hammering
 
     return generate()

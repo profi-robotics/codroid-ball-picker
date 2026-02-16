@@ -32,6 +32,8 @@ _BASE_PLATE_LAYOUT_PATH = Path(
 _BASE_CAPTURE_DIR = Path("data/calibration")
 _BASE_CAMERA_RESOLUTION: Tuple[int, int] = (1920, 1080)
 _BASE_CAMERA_FPS = 30.0
+_BASE_CAMERA_ENABLE_DEPTH = False
+_BASE_CAMERA_FAST_DEPTH = True
 _BASE_MODEL_DIR = Path("data/models")
 _BASE_DROP_MARKER_ID = 30
 _BASE_CAMERA_CALIBRATION_FRAMES = 30
@@ -131,6 +133,8 @@ class AppSettings(BaseSettings):
     capture_dir: Path = _BASE_CAPTURE_DIR
     camera_resolution: Tuple[int, int] = _BASE_CAMERA_RESOLUTION
     camera_fps: float = _BASE_CAMERA_FPS
+    camera_enable_depth: bool = _BASE_CAMERA_ENABLE_DEPTH
+    camera_fast_depth: bool = _BASE_CAMERA_FAST_DEPTH
     model_dir: Path = _BASE_MODEL_DIR
     drop_marker_id: int = _BASE_DROP_MARKER_ID
     plate_test_capture_dir: Path = _BASE_PLATE_TEST_CAPTURE_DIR
@@ -274,7 +278,7 @@ def _load_codroid_defaults() -> dict:
 def _load_gripper_defaults() -> dict:
     """Load OnRobot gripper default configuration."""
     return {
-        "compute_box_ip": SETTINGS.gripper_ip or os.getenv("ONROBOT_CB_IP", "192.168.101.180"),
+        "compute_box_ip": SETTINGS.gripper_ip or os.getenv("ONROBOT_CB_IP", "192.168.101.95"),
         "t_index": int(os.getenv("ONROBOT_T_INDEX", "0")),
     }
 

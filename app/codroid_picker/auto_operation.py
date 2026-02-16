@@ -133,12 +133,15 @@ def _run_detection(
         classes = [int(val.strip())
                    for val in class_filter.split(",") if val.strip().isdigit()]
 
-    # Crop to workspace region if workspace is defined
+    # Crop to workspace region only when both workspace and calibration are available.
     crop_offset_x = 0
     crop_offset_y = 0
     detection_frame = frame
 
-    if SESSION.workspace_definition is not None:
+    if (
+        SESSION.workspace_definition is not None
+        and SESSION.calibration_bundle is not None
+    ):
         try:
             corners = _workspace_corners_px(SESSION.workspace_definition)
             # Get bounding box of workspace region
@@ -157,9 +160,9 @@ def _run_detection(
             detection_frame = frame[y_min:y_max, x_min:x_max]
             crop_offset_x = x_min
             crop_offset_y = y_min
-        except Exception as exc:
-            logging.debug(
-                "Could not crop to workspace, using full frame: %s", exc)
+        except Exception:
+            # Fall back to full frame when workspace crop cannot be computed.
+            pass
 
     results = SESSION.yolo_model.predict(
         detection_frame,
@@ -616,5 +619,4 @@ async def _auto_wait_for_clear(
             _resume_operation("Workspace clear. Resuming.")
             return
         await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-
 

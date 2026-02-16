@@ -30,6 +30,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Output("robot-operation-state", "data"),
         Input("monitor-interval", "n_intervals"),
         State("robot-operation-state", "data"),
+        prevent_initial_call=True,
     )
     def _sync_operation_state(
         _ticks: int,

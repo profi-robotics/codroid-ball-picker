@@ -23,6 +23,7 @@ def register_calibration_callbacks(app: Dash) -> None:
     @app.callback(
         Output("robot-calibration-status", "children"),
         Input("robot-status-interval", "n_intervals"),
+        prevent_initial_call=True,
     )
     def _update_robot_calibration_guidance(_intervals: int) -> str:
         from app.codroid_picker import state

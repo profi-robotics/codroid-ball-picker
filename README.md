@@ -35,7 +35,14 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-   Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart.
+Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Camera calibration now temporarily enables depth capture automatically when needed, then restores the previous stream mode.
+To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
+
+For Jetson runtime FPS benchmarking, run without debug mode:
+```bash
+python run_codroid_picker.py
+```
+On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive. During camera calibration, a brief camera restart is expected because depth is temporarily enabled for the depth snapshot and then restored.
 
 ## Application Settings
 
@@ -155,7 +162,7 @@ The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Comp
 
 **Quick Setup:**
 1. Connect the 2FG7 gripper to the OnRobot Compute Box
-2. Note the Compute Box IP address (default: `192.168.101.180`)
+2. Note the Compute Box IP address (default: `192.168.101.95`)
 3. In the calibration UI, click **Setup** → **OnRobot 2FG7 Gripper**
 4. Enter the Compute Box IP and enable the connection
 5. Click **Test gripper** to verify

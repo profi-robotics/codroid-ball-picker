@@ -9,16 +9,25 @@ This module handles:
 """
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import cv2
 import dash_mantine_components as dmc
-from dash import callback_context, Dash, html, Input, Output, State
+from dash import callback_context, Dash, html, Input, Output, State, no_update
 
 from app.codroid_picker.session import CALIBRATION_PROGRESS, SESSION
-from app.codroid_picker.streaming import OverlayResult, OverlayTask, start_camera_stream, stop_camera_stream, MJPEG_STREAM, FRAME_PROCESSOR
+from app.codroid_picker.streaming import (
+    OverlayResult,
+    OverlayTask,
+    FRAME_PROCESSOR,
+    MJPEG_STREAM,
+    set_active_overlay_task,
+    start_camera_stream,
+    stop_camera_stream,
+)
 from app.codroid_picker.utils import safe_float, safe_int, safe_path
 from app.settings import (DEFAULT_BOARD_PATH, DEFAULT_BUNDLE_PATH,
                           DEFAULT_CAPTURE_DIR, DEFAULT_PLATE_PATH, SETTINGS)
@@ -28,6 +37,8 @@ from vision.camera_check import list_oak_devices
 _safe_int = safe_int
 _safe_float = safe_float
 _safe_path = safe_path
+
+_CALIBRATION_ACTION_LOCK = threading.Lock()
 
 
 def _format_fps(capture_fps: float, stream_fps: float) -> str:
@@ -170,6 +181,7 @@ def register_camera_callbacks(app: Dash) -> None:
     if hasattr(app, '_camera_callbacks_registered'):
         return
     app._camera_callbacks_registered = True
+    min_live_charuco_corners = 8
 
     @app.callback(
         Output("camera-device-info", "children"),
@@ -195,6 +207,7 @@ def register_camera_callbacks(app: Dash) -> None:
         State("camera-width", "value"),
         State("camera-height", "value"),
         State("camera-fps-input", "value"),
+        prevent_initial_call=True,
     )
     def _toggle_camera(
         checked: bool,
@@ -206,6 +219,26 @@ def register_camera_callbacks(app: Dash) -> None:
         fps: Optional[float],
     ) -> Tuple[str, str, str, bool, dict, bool, bool]:
         trigger = callback_context.triggered_id
+        if trigger is None:
+            return (
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+        if trigger == "monitor-interval" and SESSION.camera_calibration_in_progress:
+            return (
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
         stream_running = (
             SESSION.camera_stream is not None
             and SESSION.camera_stream.is_running()
@@ -282,6 +315,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     error = "No OAK-D camera detected. Ensure device is connected and powered on."
                 else:
                     error = f"Camera error: {exc}"
+                set_active_overlay_task(None)
                 stop_camera_stream()
                 return (
                     error,
@@ -293,6 +327,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                 )
             except Exception as exc:
+                set_active_overlay_task(None)
                 stop_camera_stream()
                 error = f"Camera error: {exc}"
                 return (
@@ -304,6 +339,7 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                     True,
                 )
+        set_active_overlay_task(None)
         stop_camera_stream()
         stopped = "Camera stream stopped."
         return (
@@ -445,7 +481,82 @@ def register_camera_callbacks(app: Dash) -> None:
                 return alert, {"progress": 0}, (current_step or 0)
 
         if trigger == "calibrate-camera":
+            if not _CALIBRATION_ACTION_LOCK.acquire(blocking=False):
+                alert = dmc.Alert(
+                    "Camera calibration is already running. Wait for the current capture to finish.",
+                    icon="!",
+                    title="Calibration in progress",
+                    color="yellow",
+                )
+                return alert, {"progress": CALIBRATION_PROGRESS.get("value", 0)}, (current_step or 0)
+
+            SESSION.camera_calibration_in_progress = True
+            restore_required = False
+            restore_params: Optional[tuple[int, int, float, bool, bool]] = None
+
+            def _restore_camera_stream(*, raise_on_error: bool) -> None:
+                nonlocal restore_required, restore_params
+                if not restore_required or restore_params is None:
+                    return
+                width, height, fps_value, lock_af, enable_depth = restore_params
+                try:
+                    stop_camera_stream(wait_for_release=True)
+                    start_camera_stream(
+                        width,
+                        height,
+                        fps_value,
+                        lock_af,
+                        enable_depth_override=enable_depth,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    message = (
+                        "Failed to restore camera stream after calibration depth capture: "
+                        f"{exc}"
+                    )
+                    if raise_on_error:
+                        raise RuntimeError(message) from exc
+                    logging.error(message, exc_info=True)
+                finally:
+                    restore_required = False
+
             try:
+                stream = SESSION.camera_stream
+                if (
+                    stream is not None
+                    and stream.is_running()
+                    and not bool(stream.config.enable_depth)
+                ):
+                    res_w, res_h = stream.config.resolution
+                    restore_params = (
+                        int(res_w),
+                        int(res_h),
+                        float(stream.config.fps),
+                        bool(stream.config.lock_af),
+                        bool(stream.config.enable_depth),
+                    )
+                    restore_required = True
+                    stop_camera_stream(wait_for_release=True)
+                    start_camera_stream(
+                        restore_params[0],
+                        restore_params[1],
+                        restore_params[2],
+                        restore_params[3],
+                        enable_depth_override=True,
+                    )
+
+                    depth_deadline = time.monotonic() + 5.0
+                    depth_ready = False
+                    while time.monotonic() < depth_deadline:
+                        _tmp_frame, tmp_depth = codroid_picker_module.get_latest_frame()
+                        if tmp_depth is not None:
+                            depth_ready = True
+                            break
+                        time.sleep(0.05)
+                    if not depth_ready:
+                        raise RuntimeError(
+                            "Unable to acquire depth frame after temporarily enabling depth."
+                        )
+
                 # Clear prior calibration artifacts on disk to avoid mixing old frames
                 _clear_calibration_outputs(output_path)
 
@@ -517,11 +628,13 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
+                _restore_camera_stream(raise_on_error=True)
                 # Advance to robot calibration step
                 return alert, {"progress": 0}, 1
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error during calibration: {exc}", exc_info=True)
+                _restore_camera_stream(raise_on_error=False)
                 alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
@@ -532,6 +645,9 @@ def register_camera_callbacks(app: Dash) -> None:
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
                 return alert, {"progress": 0}, (current_step or 0)
+            finally:
+                SESSION.camera_calibration_in_progress = False
+                _CALIBRATION_ACTION_LOCK.release()
 
         return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}, (current_step or 0)
 
@@ -573,13 +689,15 @@ def register_camera_callbacks(app: Dash) -> None:
         def _camera_calibration_state(
             metrics_text: str, step: int
         ) -> Tuple[bool, str]:
+            if SESSION.camera_calibration_in_progress:
+                return True, "yellow"
             if step != 0:
                 return True, "gray"
             if not metrics_text or "ChArUco corners:" not in metrics_text:
                 return True, "gray"
             try:
                 count = int(metrics_text.split(":")[-1].strip().split()[0])
-                is_disabled = count < 16
+                is_disabled = count < min_live_charuco_corners
                 return is_disabled, "green" if not is_disabled else "red"
             except (ValueError, IndexError):
                 return True, "gray"
@@ -595,11 +713,21 @@ def register_camera_callbacks(app: Dash) -> None:
         }
         capture_fps = SESSION.camera_stream.get_fps() if SESSION.camera_stream else 0.0
         stream_fps = MJPEG_STREAM.get_fps()
-        # Format FPS with warning indicator if capture rate drops below 25
-        fps_warning = " ⚠️" if capture_fps > 0 and capture_fps < 25 else ""
+        configured_fps = (
+            float(SESSION.camera_stream.config.fps)
+            if SESSION.camera_stream is not None
+            else 0.0
+        )
+        fps_warning_threshold = configured_fps * 0.85 if configured_fps > 0 else 0.0
+        fps_warning = (
+            " ⚠️"
+            if capture_fps > 0 and fps_warning_threshold > 0 and capture_fps < fps_warning_threshold
+            else ""
+        )
         overlay_fps_text = _format_fps(capture_fps, stream_fps) + fps_warning
 
         if frame is None:
+            set_active_overlay_task(None)
             # Don't add placeholder to MJPEG stream - let video element show its poster image
             # Only log occasionally to reduce noise (every 300 intervals = ~30 seconds at default interval)
             if _ticks % 300 == 0:
@@ -661,18 +789,27 @@ def register_camera_callbacks(app: Dash) -> None:
                                    codroid_picker_module._run_detection_task())
             elif requested_overlay == "none":
                 task = None
+
+        set_active_overlay_task(task)
+
         overlay: Optional[OverlayResult] = None
         if task is not None:
-            FRAME_PROCESSOR.submit(task, frame)
             overlay = FRAME_PROCESSOR.get_latest(task.key)
+            if overlay is None:
+                status_text = "Overlay processing..."
+                metric_text = "--"
+            else:
+                status_text = overlay.status
+                metric_text = overlay.metric
             if calibration_step == 1 and task.key != "calibration-plate":
                 _refresh_plate_status(frame, plate_path)
         elif calibration_step == 1:
             _refresh_plate_status(frame, plate_path)
 
-        # Extract status and metrics from overlay result (vis is pushed by FrameProcessor)
-        status_text = overlay.status if overlay else "No overlay applied."
-        metric_text = overlay.metric if overlay else "--"
+        if task is None:
+            status_text = "No overlay applied."
+            metric_text = "--"
+
         mode_label = {
             "auto": "Overlay: Auto",
             "calibration": "Overlay: Calibration",

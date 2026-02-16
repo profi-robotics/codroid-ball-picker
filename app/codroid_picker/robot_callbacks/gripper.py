@@ -256,6 +256,7 @@ def register_gripper_callbacks(app: Dash) -> None:
         Output("holding-status", "children"),
         Input("robot-status-interval", "n_intervals"),
         State("gripper-connection-state", "data"),
+        prevent_initial_call=True,
     )
     def _update_holding_badge(
         _intervals: int, gripper_state: Optional[dict]

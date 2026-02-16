@@ -115,6 +115,15 @@ def main() -> None:
                         help="Enable debug mode.")
     args = parser.parse_args()
 
+    # Keep debug logging, but avoid heavy Dash dev frontend features that can
+    # stall browser bootstrap on Jetson-class hardware.
+    dash_dev_kwargs = {
+        "dev_tools_serve_dev_bundles": False,
+        "dev_tools_props_check": False,
+        "dev_tools_ui": False,
+        "dev_tools_hot_reload": False,
+    }
+
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
@@ -144,6 +153,7 @@ def main() -> None:
             port=args.port,
             debug=True,
             extra_files=extra_files,
+            **dash_dev_kwargs,
         )
         return
 
@@ -166,12 +176,31 @@ def main() -> None:
     extra_files += glob.glob('vision/**/*.py', recursive=True)
 
     # Create and run the app
-    app = codroid_picker.create_app()
+    app = getattr(codroid_picker, "app", None) or codroid_picker.create_app()
+    try:
+        from app.codroid_picker.streaming import start_camera_stream
+        from app.settings import DEFAULT_FPS, DEFAULT_RESOLUTION
+
+        start_camera_stream(
+            DEFAULT_RESOLUTION[0],
+            DEFAULT_RESOLUTION[1],
+            DEFAULT_FPS,
+            False,
+        )
+        logging.getLogger(__name__).info(
+            "Camera auto-start attempted at server startup."
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "Camera auto-start failed: %s",
+            exc,
+        )
     app.run(
         host=args.host,
         port=args.port,
         debug=args.debug,
         extra_files=extra_files if args.debug else None,
+        **dash_dev_kwargs,
     )
 
 

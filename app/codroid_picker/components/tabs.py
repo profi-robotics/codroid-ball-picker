@@ -264,7 +264,6 @@ def build_pick_place_tab() -> dmc.Stack:
     action_card = dmc.Card(
         [
             dmc.Text("Pick & Drop Controls", fw=600, size="lg"),
-            build_tracking_mode_controls(),  # Add shared tracking mode controls
             # Hidden select kept for callbacks that expect a pick target selector
             dmc.Select(
                 id="pick-detection-select",
@@ -311,7 +310,6 @@ def build_pick_place_tab() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
-            build_tracking_mode_controls(),  # Use shared tracking controls
             dmc.Group(
                 [
                     dmc.NumberInput(
@@ -445,8 +443,19 @@ def build_pick_place_tab() -> dmc.Stack:
         ),
     ]
 
+    tracking_controls_card = dmc.Card(
+        [
+            dmc.Text("Tracking Controls", fw=600, size="lg"),
+            build_tracking_mode_controls(),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
     return dmc.Stack(
         [
+            tracking_controls_card,
             dmc.Accordion(
                 accordion_items,
                 multiple=True,

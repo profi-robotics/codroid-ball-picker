@@ -24,7 +24,7 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         Input("monitor-interval", "n_intervals"),
         Input("gripper-connection-state", "data"),
         Input("robot-connection-state", "data"),
-        prevent_initial_call=False,
+        prevent_initial_call=True,
     )
     def _update_prerequisites(
         _monitor: int,
@@ -37,15 +37,8 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         system prerequisites and returns a dict indicating which are ready.
         Other callbacks can use this state to enable/disable features.
         """
-        import logging
-        LOGGER = logging.getLogger(__name__)
-
         session = registry().session
         robot_connected = (robot_state or {}).get("status") == "online"
-        if not robot_connected:
-            robot_session = registry().get_or_create_robot_session()
-            robot_uri = robot_session.robot_uri or registry().default_robot_uri
-            robot_connected = robot_session.is_connected(robot_uri)
 
         result = {
             "camera_calibrated": session.calibration_bundle is not None,
