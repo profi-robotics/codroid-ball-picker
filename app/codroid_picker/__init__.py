@@ -20,6 +20,10 @@ _LAZY_EXPORTS = {
     ),
     "capture_color_frame": ("app.codroid_picker.camera_calibration", "capture_color_frame"),
     "capture_depth_snapshot": ("app.codroid_picker.camera_calibration", "capture_depth_snapshot"),
+    "capture_depth_snapshot_isolated": (
+        "app.codroid_picker.camera_calibration",
+        "capture_depth_snapshot_isolated",
+    ),
     "compute_calibration_bundle": (
         "app.codroid_picker.camera_calibration",
         "compute_calibration_bundle",

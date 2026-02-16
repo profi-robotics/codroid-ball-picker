@@ -29,6 +29,15 @@ class WorkspaceMarkers:
     marker_b: MarkerDetection
 
 
+@dataclass
+class WorkspaceMarkerDetectionResult:
+    """Compatibility container for workspace marker detection overlays."""
+
+    detections: Dict[int, MarkerDetection]
+    marker_ids: Tuple[int, int]
+    marker_size_mm: float
+
+
 def _get_dictionary(dictionary_name: str) -> cv2.aruco_Dictionary:
     dictionary_id = getattr(cv2.aruco, dictionary_name)
     return cv2.aruco.getPredefinedDictionary(dictionary_id)
@@ -141,3 +150,33 @@ def detect_markers(
     detections = detect_markers_map(
         image, marker_ids, dictionary_name=dictionary_name)
     return workspace_markers_from_detections(detections, marker_ids)
+
+
+def detect_workspace_markers(
+    image: np.ndarray,
+    marker_ids: Tuple[int, int],
+    marker_size_mm: float,
+    dictionary_name: str = "DICT_4X4_50",
+) -> WorkspaceMarkerDetectionResult:
+    """Detect workspace markers while allowing partial/empty results.
+
+    This compatibility API is used by the live workspace overlay, which should
+    continue rendering even when one or both markers are not currently visible.
+    """
+
+    try:
+        all_detections = _detect_all_markers(
+            image, dictionary_name=dictionary_name)
+    except RuntimeError:
+        all_detections = {}
+
+    requested = {
+        marker_id: all_detections[marker_id]
+        for marker_id in marker_ids
+        if marker_id in all_detections
+    }
+    return WorkspaceMarkerDetectionResult(
+        detections=requested,
+        marker_ids=marker_ids,
+        marker_size_mm=marker_size_mm,
+    )

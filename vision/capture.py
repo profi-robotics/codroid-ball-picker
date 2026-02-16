@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -19,6 +20,27 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_RESOLUTION: tuple[int, int] = (1920, 1080)
 DEFAULT_CAPTURE_COUNT = 15
 DEFAULT_FPS = 30.0
+DEFAULT_DEPTH_MAX_FPS = 10.0
+
+
+def _resolve_color_output_type() -> dai.ImgFrame.Type:
+    """Resolve color stream transport format from env."""
+    raw_value = os.getenv("CODROID_COLOR_OUTPUT_FORMAT", "nv12").strip().lower()
+    if raw_value in {"bgr", "bgr888i"}:
+        return dai.ImgFrame.Type.BGR888i
+    return dai.ImgFrame.Type.NV12
+
+
+def _resolve_depth_max_fps() -> float:
+    """Resolve depth FPS cap from env, falling back to a stable default."""
+    raw_value = os.getenv("CODROID_DEPTH_MAX_FPS", str(DEFAULT_DEPTH_MAX_FPS))
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_DEPTH_MAX_FPS
+    if value <= 0:
+        return DEFAULT_DEPTH_MAX_FPS
+    return value
 
 
 @dataclass
@@ -100,8 +122,13 @@ def _build_pipeline(
         resolution[0] - (resolution[0] % 16),
         resolution[1] - (resolution[1] % 2),
     )
+    color_output_type = _resolve_color_output_type()
+    LOGGER.info(
+        "Color stream format: %s",
+        "BGR888i" if color_output_type == dai.ImgFrame.Type.BGR888i else "NV12",
+    )
     color_out = color.requestOutput(
-        sanitized_resolution, dai.ImgFrame.Type.BGR888i, fps=fps)
+        sanitized_resolution, color_output_type, fps=fps)
     control_in: Optional[object] = getattr(color, "inputControl", None)
 
     depth_output: Optional[dai.Node.Output] = None
@@ -112,10 +139,17 @@ def _build_pipeline(
         left = pipeline.create(dai.node.Camera).build(sockets.left)
         right = pipeline.create(dai.node.Camera).build(sockets.right)
         mono_resolution = (min(1280, resolution[0]), min(800, resolution[1]))
+        depth_fps = min(float(fps), _resolve_depth_max_fps())
+        if depth_fps < float(fps):
+            LOGGER.info(
+                "Depth FPS capped for transport stability: requested %.1f, using %.1f",
+                float(fps),
+                depth_fps,
+            )
         left_out = left.requestOutput(
-            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
+            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=depth_fps)
         right_out = right.requestOutput(
-            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=fps)
+            mono_resolution, dai.ImgFrame.Type.GRAY8, fps=depth_fps)
 
         stereo = pipeline.create(dai.node.StereoDepth).build(
             left=left_out, right=right_out)
@@ -200,6 +234,40 @@ def _capture_depth_snapshot(depth_queue: dai.DataOutputQueue, dest: Path) -> Tup
     np.savez_compressed(output_path, depth=frame.astype(np.float32))
     LOGGER.info("Saved depth frame %s", output_path)
     return frame, output_path
+
+
+def capture_depth_snapshot_only(
+    output_dir: Path,
+    resolution: tuple[int, int] = DEFAULT_RESOLUTION,
+    fps: float = DEFAULT_FPS,
+    lock_af: bool = False,
+    fast_depth: bool = False,
+) -> Path:
+    """Capture a single depth frame using a temporary DepthAI pipeline."""
+    with ExitStack() as stack:
+        pipeline = stack.enter_context(dai.Pipeline())
+        device = pipeline.getDefaultDevice()
+        if device is None:
+            raise RuntimeError("No OAK-D device available for depth snapshot.")
+        sockets = resolve_camera_sockets(device)
+        color_out, depth_out, _control_in = _build_pipeline(
+            pipeline,
+            sockets,
+            resolution,
+            fps,
+            enable_depth=True,
+            fast_depth=fast_depth,
+            lock_af=lock_af,
+        )
+        if depth_out is None:
+            raise RuntimeError("Depth output unavailable from temporary pipeline.")
+        # DepthAI requires every requested output to be consumed by a queue or link.
+        _color_queue = color_out.createOutputQueue(maxSize=1, blocking=False)
+        depth_queue = depth_out.createOutputQueue(maxSize=2, blocking=True)
+        pipeline.start()
+        _depth_frame, path = _capture_depth_snapshot(depth_queue, output_dir)
+        pipeline.stop()
+    return path
 
 
 def capture_calibration_assets(config: CaptureConfig) -> Tuple[List[Path], np.ndarray]:

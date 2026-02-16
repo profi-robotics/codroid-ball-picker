@@ -35,14 +35,14 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Camera calibration now temporarily enables depth capture automatically when needed, then restores the previous stream mode.
+Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
 
 For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
 python run_codroid_picker.py
 ```
-On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive. During camera calibration, a brief camera restart is expected because depth is temporarily enabled for the depth snapshot and then restored.
+On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive.
 
 ## Application Settings
 

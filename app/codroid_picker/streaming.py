@@ -7,6 +7,7 @@ for the calibration interface.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -21,6 +22,18 @@ from app.codroid_picker.utils import safe_float, safe_int
 from vision.stream import DepthAIFrameStream, StreamConfig
 
 LOGGER = logging.getLogger(__name__)
+_CAMERA_START_MAX_ATTEMPTS = 8
+_CAMERA_START_RETRY_DELAY_S = 2.0
+_RGB_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS", "30"))
+_RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "30"))
+_MJPEG_MAX_FPS = float(os.getenv("CODROID_MJPEG_MAX_FPS", "30"))
+_RETRYABLE_CAMERA_ERROR_SUBSTRINGS = (
+    "device already closed or disconnected",
+    "input/output error",
+    "x_link",
+    "xlink",
+    "device likely crashed",
+)
 
 
 @dataclass
@@ -41,12 +54,15 @@ class OverlayTask:
 class MotionJPEGStream:
     """Manager for Motion JPEG video streaming for fullscreen video playback."""
 
-    def __init__(self, frame_rate: float = 30.0, min_push_interval_s: float = 1 / 120):
+    def __init__(self, frame_rate: float = 30.0, min_push_interval_s: Optional[float] = None):
         self.frame_rate = frame_rate
         self.frame_queue: list[bytes] = []
         self.lock = threading.Lock()
         self.max_queue_size = 3
         self.frame_count = 0
+        if min_push_interval_s is None:
+            max_fps = _MJPEG_MAX_FPS if _MJPEG_MAX_FPS > 0 else 30.0
+            min_push_interval_s = 1.0 / max_fps
         self.min_push_interval_s = min_push_interval_s
         self._last_push_ts = 0.0
         self._fps = 0.0
@@ -227,6 +243,12 @@ def process_camera_frame(frame: np.ndarray) -> None:
     FRAME_PROCESSOR.submit(task, frame)
 
 
+def _is_retryable_camera_error(exc: Exception) -> bool:
+    """Check whether camera startup should be retried for this error."""
+    message = str(exc).lower()
+    return any(token in message for token in _RETRYABLE_CAMERA_ERROR_SUBSTRINGS)
+
+
 def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float],
                         lock_af: bool = False, frame_hook: Optional[Callable] = None,
                         enable_depth_override: Optional[bool] = None) -> str:
@@ -244,32 +266,65 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
         else:
             enable_depth = bool(enable_depth_override)
         fast_depth = bool(getattr(SETTINGS, "camera_fast_depth", True))
+        requested_fps = fps_value
+        fps_cap = _RGB_WITH_DEPTH_MAX_FPS if enable_depth else _RGB_MAX_FPS
+        if fps_cap > 0:
+            fps_value = min(fps_value, fps_cap)
+            if fps_value < requested_fps:
+                LOGGER.info(
+                    "RGB FPS capped for transport stability: requested %.1f, using %.1f",
+                    requested_fps,
+                    fps_value,
+                )
 
         # Default to in-thread frame processing so stream cadence follows camera cadence.
         hook = frame_hook if frame_hook is not None else process_camera_frame
 
-        try:
-            # Create and start stream
-            stream = DepthAIFrameStream(
-                StreamConfig(
-                    resolution=resolution,
-                    fps=fps_value,
-                    lock_af=lock_af,
-                    enable_depth=enable_depth,
-                    fast_depth=fast_depth,
-                ),
-                frame_hook=hook,
-            )
-            stream.start()
-            SESSION.camera_stream = stream
+        last_error: Optional[Exception] = None
+        for attempt in range(1, _CAMERA_START_MAX_ATTEMPTS + 1):
+            try:
+                # Create and start stream
+                stream = DepthAIFrameStream(
+                    StreamConfig(
+                        resolution=resolution,
+                        fps=fps_value,
+                        lock_af=lock_af,
+                        enable_depth=enable_depth,
+                        fast_depth=fast_depth,
+                    ),
+                    frame_hook=hook,
+                )
+                stream.start()
+                SESSION.camera_stream = stream
 
-            device_id = stream.device_id() or "unknown"
-            return f"Camera stream running ({resolution[0]}x{resolution[1]} @ {fps_value:.1f} FPS, MXID {device_id})."
+                device_id = stream.device_id() or "unknown"
+                return (
+                    f"Camera stream running ({resolution[0]}x{resolution[1]} @ "
+                    f"{fps_value:.1f} FPS, MXID {device_id})."
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                retryable = _is_retryable_camera_error(exc)
+                final_attempt = attempt >= _CAMERA_START_MAX_ATTEMPTS
+                LOGGER.error(
+                    "Failed to start camera stream (attempt %s/%s): %s",
+                    attempt,
+                    _CAMERA_START_MAX_ATTEMPTS,
+                    exc,
+                )
+                if final_attempt or not retryable:
+                    break
+                LOGGER.warning(
+                    "Retrying camera start in %.1fs after transient error...",
+                    _CAMERA_START_RETRY_DELAY_S,
+                )
+                stop_camera_stream(wait_for_release=True)
+                time.sleep(_CAMERA_START_RETRY_DELAY_S)
 
-        except Exception as exc:
-            LOGGER.error("Failed to start camera stream: %s", exc)
-            # Re-raise the exception so the callback can handle it properly
-            raise
+        if last_error is None:
+            raise RuntimeError("Camera stream failed to start for an unknown reason.")
+        # Re-raise the exception so the callback can handle it properly
+        raise last_error
 
 
 def stop_camera_stream(wait_for_release: bool = False) -> None:

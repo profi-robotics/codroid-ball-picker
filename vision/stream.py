@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Callable, Optional, Tuple
 
+import cv2
 import depthai as dai
 import numpy as np
 
@@ -38,6 +39,7 @@ class DepthAIFrameStream:
         self._stack: Optional[ExitStack] = None
         self._pipeline: Optional[dai.Pipeline] = None
         self._device: Optional[dai.Device] = None
+        self._device_id: Optional[str] = None
         self._color_queue: Optional[dai.DataOutputQueue] = None
         self._depth_queue: Optional[dai.DataOutputQueue] = None
         self._control_queue: Optional[dai.DataInputQueue] = None
@@ -91,18 +93,8 @@ class DepthAIFrameStream:
         return self._running
 
     def device_id(self) -> Optional[str]:
-        if self._device is None:
-            return None
-        mx_id_fn = getattr(self._device, "getMxId", None)
-        if mx_id_fn is not None:
-            try:
-                mx_id = mx_id_fn()  # type: ignore[operator]
-            except (RuntimeError, TypeError):
-                mx_id = None
-            if mx_id:
-                return str(mx_id)
-        fallback = getattr(self._device, "mxid", None)
-        return str(fallback) if fallback is not None else None
+        with self._state_lock:
+            return self._device_id
 
     def get_latest(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self._lock:
@@ -138,6 +130,18 @@ class DepthAIFrameStream:
                     packet = next_packet
 
                 frame = packet.getCvFrame()
+                if frame is None:
+                    time.sleep(0.001)
+                    continue
+                # NV12 transport can arrive as a single-plane YUV image; convert to BGR.
+                if frame.ndim == 2:
+                    height = int(packet.getHeight())
+                    width = int(packet.getWidth())
+                    if frame.shape == (height + (height // 2), width):
+                        frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_NV12)
+                    else:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                frame = frame.copy()
                 with suppress(Exception):
                     lens = packet.getLensPosition()
                     with self._lock:
@@ -148,7 +152,7 @@ class DepthAIFrameStream:
                         depth_packet = self._depth_queue.tryGet()
                         if depth_packet is None:
                             break
-                        depth_frame = depth_packet.getFrame()
+                        depth_frame = depth_packet.getFrame().copy()
                 now = time.time()
                 if self._last_ts > 0.0:
                     dt = now - self._last_ts
@@ -163,7 +167,7 @@ class DepthAIFrameStream:
                 if self._frame_hook is not None:
                     with suppress(Exception):
                         self._frame_hook(frame)
-            except (RuntimeError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001
                 logging.error(
                     "DepthAIFrameStream reader error: %s", exc, exc_info=True)
                 now = time.time()
@@ -189,6 +193,10 @@ class DepthAIFrameStream:
             if device is None:
                 raise RuntimeError(
                     "getDefaultDevice() returned None; no camera connected")
+            usb_speed_fn = getattr(device, "getUsbSpeed", None)
+            if callable(usb_speed_fn):
+                with suppress(Exception):
+                    logging.info("DepthAI USB speed: %s", usb_speed_fn())
             sockets = resolve_camera_sockets(device)
             logging.info("Resolved sockets: %s", sockets)
             color_out, depth_out, control_in = build_pipeline(
@@ -222,6 +230,7 @@ class DepthAIFrameStream:
 
             self._pipeline = pipeline
             self._device = device
+            self._device_id = self._resolve_device_id(device)
 
     def _close_pipeline(self) -> None:
         if self._pipeline is not None:
@@ -231,6 +240,7 @@ class DepthAIFrameStream:
         self._stack = None
         self._pipeline = None
         self._device = None
+        self._device_id = None
         self._color_queue = None
         self._depth_queue = None
         self._control_queue = None
@@ -278,3 +288,17 @@ class DepthAIFrameStream:
                 with suppress(Exception):
                     ctrl.setAutoFocusEnable(True)
         self._control_queue.send(ctrl)
+
+    @staticmethod
+    def _resolve_device_id(device: dai.Device) -> Optional[str]:
+        """Resolve device MXID once to avoid cross-thread device RPC calls."""
+        mx_id_fn = getattr(device, "getMxId", None)
+        if mx_id_fn is not None:
+            try:
+                mx_id = mx_id_fn()  # type: ignore[operator]
+            except (RuntimeError, TypeError):
+                mx_id = None
+            if mx_id:
+                return str(mx_id)
+        fallback = getattr(device, "mxid", None)
+        return str(fallback) if fallback is not None else None

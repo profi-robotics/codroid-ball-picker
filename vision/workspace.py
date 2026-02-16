@@ -19,6 +19,8 @@ import numpy as np
 from .calibration import CalibrationBundle
 from .markers import WorkspaceMarkers
 from .markers import MarkerDetection
+from .markers import WorkspaceMarkerDetectionResult
+from .markers import workspace_markers_from_detections
 from .plate import CalibrationPlate
 
 
@@ -191,6 +193,41 @@ def compute_workspace(
         x_axis_camera=x_dir,
         y_axis_camera=y_dir,
         camera_to_robot=camera_to_robot,
+    )
+
+
+def compute_workspace_definition(
+    detection_result: WorkspaceMarkerDetectionResult,
+    marker_ids: Tuple[int, int],
+    marker_size_mm: float,
+) -> WorkspaceDefinition:
+    """Compatibility wrapper used by the workspace overlay path."""
+
+    if len(detection_result.detections) < 2:
+        raise RuntimeError("Both workspace markers are required.")
+
+    markers = workspace_markers_from_detections(
+        detection_result.detections,
+        marker_ids,
+    )
+    edge_len_px = float(
+        np.linalg.norm(markers.marker_a.corners[1] - markers.marker_a.corners[0])
+    )
+    fallback_scale = marker_size_mm / \
+        edge_len_px if edge_len_px > 0.0 else marker_size_mm
+
+    class _CalibrationScale:
+        def __init__(self, pixel_to_mm: float) -> None:
+            self.pixel_to_mm = pixel_to_mm
+
+    return compute_workspace(
+        markers,
+        _CalibrationScale(fallback_scale),  # type: ignore[arg-type]
+        marker_size_mm,
+        RigidTransform(
+            rotation=np.eye(3, dtype=np.float64),
+            translation=np.zeros(3, dtype=np.float64),
+        ),
     )
 
 

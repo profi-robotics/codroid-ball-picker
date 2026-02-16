@@ -257,10 +257,21 @@ def estimate_workspace_plane(depth_frame: np.ndarray, intrinsics: CameraCalibrat
     u = uv[:, 1]
     z = depth_frame[v, u]
 
-    fx = intrinsics.camera_matrix[0, 0]
-    fy = intrinsics.camera_matrix[1, 1]
-    cx = intrinsics.camera_matrix[0, 2]
-    cy = intrinsics.camera_matrix[1, 2]
+    # Depth and RGB can have different output sizes. Scale intrinsics from the
+    # calibration resolution estimate to the actual depth frame shape.
+    fx = float(intrinsics.camera_matrix[0, 0])
+    fy = float(intrinsics.camera_matrix[1, 1])
+    cx = float(intrinsics.camera_matrix[0, 2])
+    cy = float(intrinsics.camera_matrix[1, 2])
+    depth_h, depth_w = depth_frame.shape
+    calib_w = max(1.0, cx * 2.0)
+    calib_h = max(1.0, cy * 2.0)
+    scale_x = float(depth_w) / calib_w
+    scale_y = float(depth_h) / calib_h
+    fx *= scale_x
+    fy *= scale_y
+    cx *= scale_x
+    cy *= scale_y
 
     # Back-project sample points into 3D camera coordinates.
     x = (u - cx) * z / fx

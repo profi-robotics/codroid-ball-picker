@@ -8,6 +8,8 @@ workspace detection, depth frame capture, and calibration bundle management.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -91,6 +93,59 @@ def capture_depth_snapshot(output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "calibration_depth_frame.npz"
     np.savez_compressed(path, depth=depth.astype(np.float32))
+    SESSION.capture.depth_frame = depth
+    return path
+
+
+def capture_depth_snapshot_isolated(
+    output_dir: Path,
+    resolution: Tuple[int, int],
+    fps: float,
+    lock_af: bool = False,
+    timeout_s: float = 45.0,
+) -> Path:
+    """Capture depth snapshot in an isolated process to avoid in-process crashes."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    helper = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "capture_depth_snapshot_once.py"
+    )
+    if not helper.exists():
+        raise RuntimeError(f"Depth snapshot helper script not found: {helper}")
+
+    command = [
+        sys.executable,
+        str(helper),
+        "--output-dir",
+        str(output_dir),
+        "--width",
+        str(int(resolution[0])),
+        "--height",
+        str(int(resolution[1])),
+        "--fps",
+        f"{float(fps):.1f}",
+    ]
+    if lock_af:
+        command.append("--lock-af")
+
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(
+            f"Depth snapshot helper failed (exit {completed.returncode}). {details}"
+        )
+
+    path = output_dir / "calibration_depth_frame.npz"
+    depth = load_depth_snapshot(output_dir)
+    if depth is None:
+        raise RuntimeError("Depth snapshot helper completed but no depth file was produced.")
     SESSION.capture.depth_frame = depth
     return path
 

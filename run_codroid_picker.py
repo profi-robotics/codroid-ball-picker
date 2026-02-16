@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import faulthandler
 import logging
 import sys
 import os
@@ -133,6 +134,13 @@ def main() -> None:
     logging.getLogger('asyncio').setLevel(logging.INFO)
     logging.getLogger('websockets').setLevel(logging.INFO)
 
+    # DepthAI installs its own native signal handler by default. In debug mode
+    # with Werkzeug reloader, keep Python's signal handling path to reduce
+    # native signal-handler conflicts during rapid restarts.
+    if args.debug:
+        os.environ.setdefault("DEPTHAI_INSTALL_SIGNAL_HANDLER", "0")
+        faulthandler.enable(all_threads=True)
+
     # In debug mode with reloader, only the worker process should initialize
     # the app module and register cleanup handlers.
     if args.debug and is_reloader_process():
@@ -186,6 +194,7 @@ def main() -> None:
             DEFAULT_RESOLUTION[1],
             DEFAULT_FPS,
             False,
+            enable_depth_override=False,
         )
         logging.getLogger(__name__).info(
             "Camera auto-start attempted at server startup."

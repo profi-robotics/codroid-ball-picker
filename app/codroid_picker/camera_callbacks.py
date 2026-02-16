@@ -299,7 +299,13 @@ def register_camera_callbacks(app: Dash) -> None:
                         False,
                         False,
                     )
-                status = start_camera_stream(width, height, fps, bool(lock_af))
+                status = start_camera_stream(
+                    width,
+                    height,
+                    fps,
+                    bool(lock_af),
+                    enable_depth_override=False,
+                )
                 return (
                     status,
                     "Camera: live",
@@ -481,6 +487,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 return alert, {"progress": 0}, (current_step or 0)
 
         if trigger == "calibrate-camera":
+            logging.info("[CALIBRATE] Camera calibration requested")
             if not _CALIBRATION_ACTION_LOCK.acquire(blocking=False):
                 alert = dmc.Alert(
                     "Camera calibration is already running. Wait for the current capture to finish.",
@@ -491,74 +498,19 @@ def register_camera_callbacks(app: Dash) -> None:
                 return alert, {"progress": CALIBRATION_PROGRESS.get("value", 0)}, (current_step or 0)
 
             SESSION.camera_calibration_in_progress = True
-            restore_required = False
-            restore_params: Optional[tuple[int, int, float, bool, bool]] = None
-
-            def _restore_camera_stream(*, raise_on_error: bool) -> None:
-                nonlocal restore_required, restore_params
-                if not restore_required or restore_params is None:
-                    return
-                width, height, fps_value, lock_af, enable_depth = restore_params
-                try:
-                    stop_camera_stream(wait_for_release=True)
-                    start_camera_stream(
-                        width,
-                        height,
-                        fps_value,
-                        lock_af,
-                        enable_depth_override=enable_depth,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    message = (
-                        "Failed to restore camera stream after calibration depth capture: "
-                        f"{exc}"
-                    )
-                    if raise_on_error:
-                        raise RuntimeError(message) from exc
-                    logging.error(message, exc_info=True)
-                finally:
-                    restore_required = False
 
             try:
                 stream = SESSION.camera_stream
-                if (
-                    stream is not None
-                    and stream.is_running()
-                    and not bool(stream.config.enable_depth)
-                ):
-                    res_w, res_h = stream.config.resolution
-                    restore_params = (
-                        int(res_w),
-                        int(res_h),
-                        float(stream.config.fps),
-                        bool(stream.config.lock_af),
-                        bool(stream.config.enable_depth),
-                    )
-                    restore_required = True
-                    stop_camera_stream(wait_for_release=True)
-                    start_camera_stream(
-                        restore_params[0],
-                        restore_params[1],
-                        restore_params[2],
-                        restore_params[3],
-                        enable_depth_override=True,
-                    )
-
-                    depth_deadline = time.monotonic() + 5.0
-                    depth_ready = False
-                    while time.monotonic() < depth_deadline:
-                        _tmp_frame, tmp_depth = codroid_picker_module.get_latest_frame()
-                        if tmp_depth is not None:
-                            depth_ready = True
-                            break
-                        time.sleep(0.05)
-                    if not depth_ready:
-                        raise RuntimeError(
-                            "Unable to acquire depth frame after temporarily enabling depth."
-                        )
+                logging.info(
+                    "[CALIBRATE] Stream state before capture: present=%s running=%s depth=%s",
+                    stream is not None,
+                    bool(stream and stream.is_running()),
+                    bool(stream and stream.config.enable_depth),
+                )
 
                 # Clear prior calibration artifacts on disk to avoid mixing old frames
                 _clear_calibration_outputs(output_path)
+                logging.info("[CALIBRATE] Cleared previous calibration outputs")
 
                 # Clear previous captures
                 SESSION.capture.frames = []
@@ -585,9 +537,33 @@ def register_camera_callbacks(app: Dash) -> None:
                     ):
                         time.sleep(SETTINGS.camera_calibration_frame_delay_s)
 
-                # Capture depth snapshot
-                depth_path = codroid_picker_module.capture_depth_snapshot(
-                    output_path)
+                # Capture depth snapshot. If runtime stream is RGB-only, stop the
+                # stream, capture depth in an isolated helper process, and keep the
+                # stream paused to avoid in-process DepthAI restarts.
+                depth_path = None
+                stream_paused_for_depth_capture = False
+                stream = SESSION.camera_stream
+                if stream is None or not stream.is_running():
+                    raise RuntimeError(
+                        "Camera stream stopped before depth capture.")
+                if bool(stream.config.enable_depth):
+                    depth_path = codroid_picker_module.capture_depth_snapshot(
+                        output_path)
+                else:
+                    restore_resolution = stream.config.resolution
+                    restore_fps = stream.config.fps
+                    restore_lock_af = stream.config.lock_af
+                    logging.info(
+                        "[CALIBRATE] Capturing depth snapshot via isolated helper process")
+                    stop_camera_stream(wait_for_release=True)
+                    stream_paused_for_depth_capture = True
+                    depth_path = codroid_picker_module.capture_depth_snapshot_isolated(
+                        output_path,
+                        restore_resolution,
+                        restore_fps,
+                        bool(restore_lock_af),
+                    )
+                logging.info("[CALIBRATE] Captured depth snapshot at %s", depth_path)
 
                 # Pre-flight check: ensure the saved frames actually contain ChArUco corners
                 detection_counts, usable_frames = _charuco_detection_counts(
@@ -604,23 +580,29 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Compute calibration bundle
                 result = codroid_picker_module.compute_calibration_bundle(
                     board_path, bundle_path, output_path)
+                logging.info("[CALIBRATE] Calibration bundle computed: %s", bundle_path)
+
+                success_lines = [
+                    dmc.Text(
+                        f"✓ Captured {len(captured_frames)} RGB frames", size="sm"
+                    ),
+                    dmc.Text("✓ Captured 1 depth snapshot", size="sm"),
+                    dmc.Text(
+                        f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"
+                    ),
+                ]
+                if stream_paused_for_depth_capture:
+                    success_lines.append(
+                        dmc.Text(
+                            "⚠ Camera stream paused after isolated depth capture. Click 'Enable camera' to resume live video.",
+                            size="sm",
+                            c="orange",
+                        )
+                    )
+                success_lines.append(dmc.Text(result, size="sm", fw=600, c="teal"))
 
                 alert = dmc.Alert(
-                    children=[
-                        dmc.Stack(
-                            [
-                                dmc.Text(
-                                    f"✓ Captured {len(captured_frames)} RGB frames", size="sm"
-                                ),
-                                dmc.Text(
-                                    "✓ Captured 1 depth snapshot", size="sm"),
-                                dmc.Text(
-                                    f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"),
-                                dmc.Text(result, size="sm", fw=600, c="teal"),
-                            ],
-                            gap="xs",
-                        ),
-                    ],
+                    children=[dmc.Stack(success_lines, gap="xs")],
                     icon="✓",
                     title="Calibration complete",
                     color="green",
@@ -628,13 +610,11 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
-                _restore_camera_stream(raise_on_error=True)
                 # Advance to robot calibration step
                 return alert, {"progress": 0}, 1
             except Exception as exc:
                 logging.error(
                     f"[CALIBRATE] Error during calibration: {exc}", exc_info=True)
-                _restore_camera_stream(raise_on_error=False)
                 alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
