@@ -83,12 +83,15 @@ docker compose pull
 docker compose up
 ```
 See `docs/deploy_jetson_docker.md` for Jetson prerequisites, device mappings, and GPU/runtime notes.
+The provided compose file uses host networking so the UI can be opened via a
+Tailscale IP (for example `100.x.x.x:8050`) while backend services still reach
+local robot/gripper IPs such as `192.168.101.95`.
 
 ## CI/CD
 GitHub Actions publishes releases and container images automatically for pushes to `master`:
 - Computes the next `vX.Y.Z` tag from existing git tags (patch increment).
 - Creates and pushes the new tag.
-- Builds and publishes the image to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
+- Builds and publishes the ARM64 image (`linux/arm64/v8`) on a native ARM GitHub runner (`ubuntu-24.04-arm`) to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
 - Creates a GitHub release for the new tag.
 
 If `codroid-api` and `onrobot-api` are private in your organization, add a repository secret named `CI_REPO_READ_TOKEN` with read access to those repos.

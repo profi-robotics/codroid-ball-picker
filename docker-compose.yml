@@ -4,12 +4,13 @@ services:
     container_name: codroid-ui
     restart: unless-stopped
     runtime: nvidia
+    # Host networking keeps direct reachability to robot/gripper LAN segments
+    # (for example 192.168.101.0/24) while still exposing the UI on Tailscale.
+    network_mode: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
       - UV_PROJECT_ENVIRONMENT=/app/.venv
-    ports:
-      - "8050:8050"
     device_cgroup_rules:
       - "c 189:* rmw" # Allow USB re-enumeration (DepthAI boots as a new USB node)
     volumes:

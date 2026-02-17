@@ -20,11 +20,17 @@ docker compose up -d
 ```
 
 The UI will be reachable on `http://<jetson-ip>:8050` and auto-restart after reboot.
+When Tailscale is enabled, use `http://<tailscale-ip>:8050` as well.
 
 ### Device access
 - USB/OAK-D: passed via `/dev/bus/usb` bind mount plus `device_cgroup_rules: ["c 189:* rmw"]` so DepthAI can access the device after USB re-enumeration during boot.
 - V4L2 camera (optional): `/dev/video0`.
 - GPU: enabled via `runtime: nvidia` and `NVIDIA_*` env vars in `docker-compose.yml`.
+- Network: `network_mode: host` is enabled so the container can directly reach robot/gripper subnets such as `192.168.101.0/24` while the UI is opened through Tailscale (`100.x.x.x`).
+
+### Networking note
+- `ports:` is intentionally not used with host networking.
+- Ensure the Jetson host itself can reach the Compute Box (`192.168.101.95:41414`) because the container now shares the host network stack.
 
 ### Persist data
 `./data` is mounted into the container to keep calibration bundles, workspace definitions, and settings.
