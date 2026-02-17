@@ -38,6 +38,41 @@ jobs:
           path: onrobot-api
           token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
 
+      - name: Validate dependency checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          normalize_repo_root() {
+            local repo_dir="$1"
+            local marker_file=""
+            local nested_root=""
+
+            if [ -f "${repo_dir}/pyproject.toml" ] || [ -f "${repo_dir}/setup.py" ]; then
+              echo "${repo_dir}: package root detected at repository root"
+              return 0
+            fi
+
+            marker_file=$(find "${repo_dir}" -mindepth 2 -maxdepth 4 -type f \( -name pyproject.toml -o -name setup.py \) | head -n1 || true)
+            if [ -z "${marker_file}" ]; then
+              echo "::error::${repo_dir} does not contain a Python package root (pyproject.toml or setup.py)."
+              ls -la "${repo_dir}" || true
+              exit 1
+            fi
+
+            nested_root=$(dirname "${marker_file}")
+            echo "${repo_dir}: using nested package root ${nested_root}"
+
+            rm -rf "${repo_dir}/.normalized-tmp"
+            mv "${nested_root}" "${repo_dir}/.normalized-tmp"
+            find "${repo_dir}" -mindepth 1 -maxdepth 1 ! -name '.normalized-tmp' -exec rm -rf {} +
+            cp -a "${repo_dir}/.normalized-tmp/." "${repo_dir}/"
+            rmdir "${repo_dir}/.normalized-tmp"
+          }
+
+          normalize_repo_root "codroid-api"
+          normalize_repo_root "onrobot-api"
+
       - name: Compute next version tag
         id: version
         working-directory: codroid-ball-picker
