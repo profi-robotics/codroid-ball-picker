@@ -77,12 +77,21 @@ Note: the debug reloader is disabled to keep camera/robot streams in a single
 process. Restart the app manually to pick up code changes.
 
 ### Docker on Jetson Orin Nano
-Build and run with:
+Pull and run with:
 ```bash
-docker compose build
+docker compose pull
 docker compose up
 ```
 See `docs/deploy_jetson_docker.md` for Jetson prerequisites, device mappings, and GPU/runtime notes.
+
+## CI/CD
+GitHub Actions publishes releases and container images automatically for pushes to `master`:
+- Computes the next `vX.Y.Z` tag from existing git tags (patch increment).
+- Creates and pushes the new tag.
+- Builds and publishes the image to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
+- Creates a GitHub release for the new tag.
+
+If `codroid-api` and `onrobot-api` are private in your organization, add a repository secret named `CI_REPO_READ_TOKEN` with read access to those repos.
 
 YOLO inference relies on the `ultralytics` package. Install it with `uv add ultralytics`
 if you want to run detections from uploaded `.pt`/`.onnx` models.

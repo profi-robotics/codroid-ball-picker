@@ -1,8 +1,6 @@
 services:
   ui:
-    build:
-      context: ..
-      dockerfile: codroid-ball-picker/Dockerfile
+    image: ghcr.io/profi-robotics/codroid-ball-picker:latest
     container_name: codroid-ui
     restart: unless-stopped
     runtime: nvidia
@@ -12,10 +10,10 @@ services:
       - UV_PROJECT_ENVIRONMENT=/app/.venv
     ports:
       - "8050:8050"
-    devices:
-      - "/dev/bus/usb:/dev/bus/usb" # OAK-D / USB devices
-      # - "/dev/video0:/dev/video0" # Optional: camera passthrough (commented out if not available)
+    device_cgroup_rules:
+      - "c 189:* rmw" # Allow USB re-enumeration (DepthAI boots as a new USB node)
     volumes:
+      - "/dev/bus/usb:/dev/bus/usb" # OAK-D / USB devices
       - ./data:/app/data # persist calibration/workspace data
     command:
       [

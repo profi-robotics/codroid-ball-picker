@@ -1,18 +1,18 @@
 # Jetson Orin Nano Docker Deployment
 
-These steps build and run the calibration UI on a Jetson Orin Nano (JetPack 5.x/6.x) with GPU and USB access for the OAK-D and gripper.
+These steps run the calibration UI on a Jetson Orin Nano (JetPack 5.x/6.x) with GPU and USB access for the OAK-D and gripper.
 
 ## Prerequisites
 - JetPack 5.x or 6.x with NVIDIA Container Runtime (`sudo apt install nvidia-container-runtime`).
 - Docker + docker-compose plugin.
-- Repo cloned to the Jetson with `codroid-api` and `onrobot-api` in parent directory.
+- Repo cloned to the Jetson (`codroid-ball-picker`).
 
-## Build
+## Pull image
 ```bash
-docker compose build
+docker compose pull
 ```
 
-This uses Ubuntu 22.04 base with automatic Jetson PyTorch optimization and `uv` to install Python deps.
+This pulls `ghcr.io/profi-robotics/codroid-ball-picker:latest`.
 
 ## Run
 ```bash
@@ -22,12 +22,31 @@ docker compose up -d
 The UI will be reachable on `http://<jetson-ip>:8050` and auto-restart after reboot.
 
 ### Device access
-- USB/OAK-D: passed via `/dev/bus/usb`.
+- USB/OAK-D: passed via `/dev/bus/usb` bind mount plus `device_cgroup_rules: ["c 189:* rmw"]` so DepthAI can access the device after USB re-enumeration during boot.
 - V4L2 camera (optional): `/dev/video0`.
 - GPU: enabled via `runtime: nvidia` and `NVIDIA_*` env vars in `docker-compose.yml`.
 
 ### Persist data
 `./data` is mounted into the container to keep calibration bundles, workspace definitions, and settings.
+
+## Automatic updates on Jetson
+Install a systemd timer that checks for new image versions, pulls them, and recreates the container if needed:
+
+```bash
+./scripts/setup_jetson_auto_update.sh
+```
+
+By default, the timer checks every 5 minutes. Override interval:
+
+```bash
+AUTO_UPDATE_INTERVAL=10min ./scripts/setup_jetson_auto_update.sh
+```
+
+Run one update cycle manually:
+
+```bash
+./scripts/jetson_auto_update_check.sh
+```
 
 ## Environment overrides
 Add env vars to `docker-compose.yml` as needed (e.g., `ONROBOT_CB_IP`, `ROBOT_URI`, `MODEL_DIR`).
@@ -35,3 +54,4 @@ Add env vars to `docker-compose.yml` as needed (e.g., `ONROBOT_CB_IP`, `ROBOT_UR
 ## Notes
 - For additional cameras, add more `/dev/video*` entries.
 - If depthai requires udev rules on your Jetson host, ensure they’re installed outside the container as well.
+- If GHCR package visibility is private, log in first: `docker login ghcr.io`.
