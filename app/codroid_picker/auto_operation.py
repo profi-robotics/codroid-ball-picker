@@ -124,6 +124,8 @@ def _run_detection(
     iou: float,
     max_detections: int,
     class_filter: Optional[str],
+    *,
+    crop_to_workspace: bool = True,
 ) -> list[dict]:
     """Run YOLO detection on a frame."""
     if SESSION.yolo_model is None:
@@ -140,6 +142,8 @@ def _run_detection(
     detection_frame = frame
 
     if (
+        crop_to_workspace
+        and
         SESSION.workspace_definition is not None
         and SESSION.calibration_bundle is not None
     ):

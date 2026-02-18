@@ -69,6 +69,14 @@ class UISession:
         }
     )
     auto_detection_updated_at: float = 0.0
+    safety_config: dict = field(
+        default_factory=lambda: {
+            "enabled": SETTINGS.camera_safety_enabled,
+            "zone": SETTINGS.camera_safety_zone,
+            "labels": list(SETTINGS.camera_safety_labels),
+            "check_interval_ms": SETTINGS.camera_safety_check_interval_ms,
+        }
+    )
     drop_marker_id: int = app_settings.DEFAULT_DROP_MARKER_ID
     drop_target_mm: Optional[Tuple[float, float]] = None
     drop_target_orientation: Optional[Tuple[float, float, float]] = None
@@ -191,4 +199,17 @@ def _refresh_session_auto_config_defaults() -> None:
     )
 
 
+def _refresh_session_safety_config_defaults() -> None:
+    """Overwrite safety-config with persisted defaults."""
+    SESSION.safety_config.update(
+        {
+            "enabled": SETTINGS.camera_safety_enabled,
+            "zone": SETTINGS.camera_safety_zone,
+            "labels": list(SETTINGS.camera_safety_labels),
+            "check_interval_ms": SETTINGS.camera_safety_check_interval_ms,
+        }
+    )
+
+
 _refresh_session_auto_config_defaults()
+_refresh_session_safety_config_defaults()

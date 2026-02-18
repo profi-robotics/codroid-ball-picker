@@ -4,7 +4,7 @@ This module contains Dash callbacks for:
 - Settings save and reset operations
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 from dash import Dash, Input, Output, State, callback_context
 from app.codroid_picker.i18n import t
@@ -44,6 +44,11 @@ def register_settings_callbacks(app: Dash) -> None:
         Output("settings-pick-follow-tolerance", "value"),
         Output("settings-rescue-jog-hold", "value"),
         Output("settings-coord5-max-z", "value"),
+        Output("settings-camera-safety-enabled", "checked"),
+        Output("settings-camera-safety-zone", "value"),
+        Output("settings-camera-safety-labels", "value"),
+        Output("camera-safety-interval", "interval"),
+        Output("camera-safety-interval", "disabled"),
         Input("settings-save", "n_clicks"),
         Input("settings-reset", "n_clicks"),
         State("settings-robot-host", "value"),
@@ -75,6 +80,9 @@ def register_settings_callbacks(app: Dash) -> None:
         State("settings-pick-follow-tolerance", "value"),
         State("settings-rescue-jog-hold", "value"),
         State("settings-coord5-max-z", "value"),
+        State("settings-camera-safety-enabled", "checked"),
+        State("settings-camera-safety-zone", "value"),
+        State("settings-camera-safety-labels", "value"),
         prevent_initial_call=True,
     )
     def _handle_settings(
@@ -109,42 +117,19 @@ def register_settings_callbacks(app: Dash) -> None:
         pick_follow_tolerance: Optional[float],
         rescue_jog_hold: Optional[float],
         coord5_max_z: Optional[float],
-    ) -> Tuple[
-        str,
-        Optional[str],
-        int,
-        Optional[str],
-        Optional[str],
-        Optional[int],
-        Optional[int],
-        Optional[float],
-        str,
-        str,
-        str,
-        str,
-        float,
-        float,
-        float,
-        float,
-        bool,
-        float,
-        float,
-        float,
-        int,
-        float,
-        int,
-        float,
-        float,
-        float,
-        float,
-        float,
-        float,
-        float,
-    ]:
+        camera_safety_enabled: Optional[bool],
+        camera_safety_zone: Optional[str],
+        camera_safety_labels: Optional[list[str]],
+    ):
         """Handle settings save and reset operations."""
         import app.codroid_picker as codroid_picker_module
         import app.settings as app_settings
-        from app.codroid_picker.session import SESSION, _refresh_session_auto_config_defaults
+        from app.codroid_picker.session import (
+            SESSION,
+            _refresh_session_auto_config_defaults,
+            _refresh_session_safety_config_defaults,
+        )
+        from app.codroid_picker.safety_guard import normalize_safety_labels
         from onrobot.gripper_profiles import DEFAULT_GRIPPER_TYPE
 
         trigger = callback_context.triggered_id
@@ -179,6 +164,10 @@ def register_settings_callbacks(app: Dash) -> None:
         default_rescue_jog_hold = app_settings._BASE_RESCUE_JOG_HOLD_S
         default_coord5_max_z = app_settings._BASE_COORD5_MAX_Z_MM
         default_robot_coordinate_id = app_settings._BASE_ROBOT_COORDINATE_ID
+        default_camera_safety_enabled = app_settings._BASE_CAMERA_SAFETY_ENABLED
+        default_camera_safety_zone = app_settings._BASE_CAMERA_SAFETY_ZONE
+        default_camera_safety_labels = list(app_settings._BASE_CAMERA_SAFETY_LABELS)
+        default_camera_safety_check_interval_ms = app_settings._BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS
 
         status_text = t("Settings saved.")
         if trigger == "settings-reset":
@@ -209,6 +198,9 @@ def register_settings_callbacks(app: Dash) -> None:
             pick_follow_tolerance_val = default_pick_follow_tolerance
             rescue_jog_hold_val = default_rescue_jog_hold
             coord5_max_z_val = default_coord5_max_z
+            camera_safety_enabled_val = default_camera_safety_enabled
+            camera_safety_zone_val = default_camera_safety_zone
+            camera_safety_labels_val = default_camera_safety_labels
         else:
             host_val = (robot_host or "").strip() or None
             gripper_ip_val = (gripper_ip or "").strip() or None
@@ -280,6 +272,19 @@ def register_settings_callbacks(app: Dash) -> None:
             coord5_max_z_val = codroid_picker_module._safe_float(
                 coord5_max_z, default_coord5_max_z
             )
+            camera_safety_enabled_val = (
+                bool(camera_safety_enabled)
+                if camera_safety_enabled is not None
+                else default_camera_safety_enabled
+            )
+            camera_safety_zone_val = str(
+                camera_safety_zone or default_camera_safety_zone
+            ).strip().lower()
+            if camera_safety_zone_val not in {"workspace", "full_frame"}:
+                camera_safety_zone_val = default_camera_safety_zone
+            camera_safety_labels_val = normalize_safety_labels(camera_safety_labels)
+            if not camera_safety_labels_val:
+                camera_safety_labels_val = default_camera_safety_labels
 
         codroid_picker_module._commit_settings(
             robot_host=host_val,
@@ -307,6 +312,9 @@ def register_settings_callbacks(app: Dash) -> None:
             rescue_jog_hold_s=rescue_jog_hold_val,
             coord5_max_z_mm=coord5_max_z_val,
             robot_coordinate_id=robot_coordinate_id_val,
+            camera_safety_enabled=camera_safety_enabled_val,
+            camera_safety_zone=camera_safety_zone_val,
+            camera_safety_labels=camera_safety_labels_val,
         )
 
         # Refresh global settings
@@ -317,6 +325,7 @@ def register_settings_callbacks(app: Dash) -> None:
         codroid_picker_module.DEFAULT_GRIPPER_IP = app_settings.DEFAULT_GRIPPER_IP
         codroid_picker_module.refresh_gripper_constants()
         _refresh_session_auto_config_defaults()
+        _refresh_session_safety_config_defaults()
         codroid_picker_module.set_asset_paths(
             calibration_bundle_path=calib_path_val,
             workspace_path=workspace_path_val,
@@ -330,6 +339,9 @@ def register_settings_callbacks(app: Dash) -> None:
         SESSION.marker_ids = (marker_a_val, marker_b_val)
         SESSION.marker_size_mm = marker_size_val
         codroid_picker_module.ROBOT_COORDINATE_ID = codroid_picker_module.SETTINGS.robot_coordinate_id
+        camera_safety_interval_ms = codroid_picker_module.SETTINGS.camera_safety_check_interval_ms
+        if camera_safety_interval_ms is None:
+            camera_safety_interval_ms = default_camera_safety_check_interval_ms
 
         host_display = host_val or codroid_picker_module.CODROID_DEFAULTS.get(
             "host")
@@ -366,4 +378,9 @@ def register_settings_callbacks(app: Dash) -> None:
             pick_follow_tolerance_val,
             rescue_jog_hold_val,
             coord5_max_z_val,
+            camera_safety_enabled_val,
+            camera_safety_zone_val,
+            camera_safety_labels_val,
+            int(camera_safety_interval_ms),
+            not camera_safety_enabled_val,
         )

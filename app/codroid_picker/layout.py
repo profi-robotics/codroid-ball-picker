@@ -439,6 +439,45 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Grid(
                     [
                         dmc.GridCol(
+                            dmc.Switch(
+                                id="settings-camera-safety-enabled",
+                                label=t("Enable camera safety pause"),
+                                description=t("Pause active programs when configured labels are detected."),
+                                checked=SETTINGS.camera_safety_enabled,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.Select(
+                                id="settings-camera-safety-zone",
+                                label=t("Camera safety zone"),
+                                data=[
+                                    {"label": t("Workspace only"), "value": "workspace"},
+                                    {"label": t("Full frame"), "value": "full_frame"},
+                                ],
+                                value=SETTINGS.camera_safety_zone,
+                                comboboxProps={"withinPortal": False},
+                                clearable=False,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.TagsInput(
+                                id="settings-camera-safety-labels",
+                                label=t("Safety stop labels"),
+                                description=t("YOLO labels that should pause motion."),
+                                data=list(SETTINGS.camera_safety_labels),
+                                value=list(SETTINGS.camera_safety_labels),
+                                allowDuplicates=False,
+                                acceptValueOnBlur=True,
+                                clearable=False,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
+                        dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-rescue-jog-hold",
                                 label=t("Rescue jog hold (s)"),
@@ -616,6 +655,10 @@ def build_layout() -> dmc.MantineProvider:
                     id="robot-power-state",
                     data={"value": None, "timestamp": 0.0},
                 ),
+                dcc.Store(
+                    id="camera-safety-state",
+                    data={"blocked": False, "matches": 0, "action": "none", "active": False},
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
@@ -640,6 +683,12 @@ def build_layout() -> dmc.MantineProvider:
                 ),
                 dcc.Interval(id="calibration-progress-interval",
                              interval=500, n_intervals=0),
+                dcc.Interval(
+                    id="camera-safety-interval",
+                    interval=SETTINGS.camera_safety_check_interval_ms,
+                    n_intervals=0,
+                    disabled=not SETTINGS.camera_safety_enabled,
+                ),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
                 build_setup_drawer(),

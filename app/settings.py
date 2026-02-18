@@ -72,6 +72,10 @@ _BASE_PICK_FOLLOW_SETTLE_S = 0.6
 _BASE_RESCUE_JOG_HOLD_S = 0.35
 _BASE_COORD5_MAX_Z_MM = 0.0
 _BASE_ROBOT_COORDINATE_ID = 5
+_BASE_CAMERA_SAFETY_ENABLED = True
+_BASE_CAMERA_SAFETY_ZONE = "workspace"
+_BASE_CAMERA_SAFETY_LABELS = ["person", "people"]
+_BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS = 250
 
 _BASE_PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
 _BASE_MIN_PLATE_MARKERS = 2
@@ -193,6 +197,10 @@ class AppSettings(BaseSettings):
     # Safety guards
     rescue_jog_hold_s: float = _BASE_RESCUE_JOG_HOLD_S
     coord5_max_z_mm: float = _BASE_COORD5_MAX_Z_MM
+    camera_safety_enabled: bool = _BASE_CAMERA_SAFETY_ENABLED
+    camera_safety_zone: str = _BASE_CAMERA_SAFETY_ZONE
+    camera_safety_labels: list[str] = _BASE_CAMERA_SAFETY_LABELS
+    camera_safety_check_interval_ms: int = _BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS
 
     # Robot coordinate selection
     robot_coordinate_id: int = _BASE_ROBOT_COORDINATE_ID

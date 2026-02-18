@@ -55,4 +55,13 @@
   ,"Separating cluster attempt {attempt}/{max_attempts}...": "Separating cluster attempt {attempt}/{max_attempts}..."
   ,"Auto: target crowded, trying side-separation before pick.": "Auto: target crowded, trying side-separation before pick."
   ,"Auto: selected C-axis {c:.1f} for pick.": "Auto: selected C-axis {c:.1f} for pick."
+  ,"Enable camera safety pause": "Enable camera safety pause"
+  ,"Pause active programs when configured labels are detected.": "Pause active programs when configured labels are detected."
+  ,"Camera safety zone": "Camera safety zone"
+  ,"Workspace only": "Workspace only"
+  ,"Full frame": "Full frame"
+  ,"Safety stop labels": "Safety stop labels"
+  ,"YOLO labels that should pause motion.": "YOLO labels that should pause motion."
+  ,"Paused (person detected).": "Paused (person detected)."
+  ,"Resumed (area clear).": "Resumed (area clear)."
 }

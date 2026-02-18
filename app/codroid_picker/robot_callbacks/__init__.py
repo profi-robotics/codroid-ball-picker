@@ -29,6 +29,7 @@ from .monitoring import register_monitoring_callbacks
 from .pick_place import register_pick_place_callbacks
 from .plate_test import register_plate_test_callbacks
 from .rescue_mode import register_rescue_mode_callbacks
+from .safety import register_safety_callbacks
 from .state_sync import register_state_sync_callbacks
 from .workspace import register_workspace_callbacks
 
@@ -50,6 +51,7 @@ def register_robot_callbacks(app: Dash) -> None:
     register_connection_callbacks(app)
     register_error_handling_callbacks(app)
     register_rescue_mode_callbacks(app)
+    register_safety_callbacks(app)
     register_calibration_callbacks(app)
     register_monitoring_callbacks(app)
     register_state_sync_callbacks(app)
@@ -67,6 +69,7 @@ __all__ = [
     "register_connection_callbacks",
     "register_error_handling_callbacks",
     "register_rescue_mode_callbacks",
+    "register_safety_callbacks",
     "register_calibration_callbacks",
     "register_monitoring_callbacks",
     "register_state_sync_callbacks",
