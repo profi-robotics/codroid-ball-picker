@@ -22,14 +22,20 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
     @app.callback(
         Output("prerequisites-state", "data"),
         Input("monitor-interval", "n_intervals"),
+        Input("camera-connection-state", "data"),
         Input("gripper-connection-state", "data"),
         Input("robot-connection-state", "data"),
+        Input("model-status", "children"),
+        Input("workspace-action-status", "children"),
         prevent_initial_call=True,
     )
     def _update_prerequisites(
         _monitor: int,
+        camera_state: Optional[dict],
         gripper_state: Optional[dict],
         robot_state: Optional[dict],
+        _model_status: Optional[str],
+        _workspace_status: Optional[str],
     ) -> dict:
         """Update prerequisites state based on current system status.
 
@@ -38,9 +44,11 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         Other callbacks can use this state to enable/disable features.
         """
         session = registry().session
+        camera_live = (camera_state or {}).get("status") == "live"
         robot_connected = (robot_state or {}).get("status") == "online"
 
         result = {
+            "camera_live": camera_live,
             "camera_calibrated": session.calibration_bundle is not None,
             "workspace_defined": session.workspace_definition is not None,
             "robot_calibrated": session.robot_calibration_min_z is not None,

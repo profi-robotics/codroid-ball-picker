@@ -4,7 +4,7 @@ import numpy as np
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Optional, Tuple
+from typing import Any, Deque, Optional, Tuple
 
 from onrobot.device import Device as GripperDevice
 from onrobot.twofg import TWOFG as TwoFG7Gripper
@@ -96,6 +96,8 @@ class UISession:
     camera_calibration_in_progress: bool = False
     camera_auto_init_done: bool = False
     camera_last_error_message: Optional[str] = None
+    camera_last_error_key: Optional[str] = None
+    camera_last_error_params: dict[str, Any] = field(default_factory=dict)
     camera_last_error_status: Optional[str] = None
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None

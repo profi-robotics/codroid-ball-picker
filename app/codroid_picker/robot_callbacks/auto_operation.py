@@ -20,6 +20,7 @@ from app.codroid_picker.programs import (
     AutoPickPlaceProgram,
 )
 from app.codroid_picker.programs.base import ProgramStatus
+from app.codroid_picker.app_instance import registry
 
 
 def register_auto_operation_callbacks(app: Dash) -> None:
@@ -36,7 +37,8 @@ def register_auto_operation_callbacks(app: Dash) -> None:
     LOGGER.info("Registering auto operation callbacks")
 
     prereq_labels = [
-        ("camera_calibrated", "Camera"),
+        ("camera_live", "Camera live"),
+        ("camera_calibrated", "Camera calib"),
         ("workspace_defined", "Workspace"),
         ("robot_calibrated", "Robot calib"),
         ("robot_connected", "Robot online"),
@@ -51,17 +53,28 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         Output("auto-prereq-badges", "children"),
         Input("prerequisites-state", "data"),
         Input("auto-operation-state", "data"),
+        Input("model-status", "children"),
+        Input("workspace-action-status", "children"),
+        Input("camera-connection-state", "data"),
         prevent_initial_call=False,
     )
     def _update_auto_buttons(
         prerequisites: Optional[dict],
         auto_state: Optional[dict],
+        _model_status: Optional[str],
+        _workspace_status: Optional[str],
+        camera_state: Optional[dict],
     ) -> Tuple[bool, bool, list]:
         """Enable/disable auto operation buttons and surface unmet prerequisites."""
-        import logging
-        LOGGER = logging.getLogger(__name__)
+        session = registry().session
 
-        prereqs = prerequisites or {}
+        prereqs = dict(prerequisites or {})
+        prereqs["camera_live"] = (camera_state or {}).get("status") == "live"
+        prereqs["camera_calibrated"] = session.calibration_bundle is not None
+        prereqs["workspace_defined"] = session.workspace_definition is not None
+        prereqs["robot_calibrated"] = session.robot_calibration_min_z is not None
+        prereqs["model_loaded"] = session.model_loaded
+        prereqs["drop_target_defined"] = session.drop_target_mm is not None
 
         # Build badge items
         translated_labels = [(key, t(label)) for key, label in prereq_labels]
@@ -79,6 +92,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         # Check if all prerequisites are met
         all_ready = all([
+            prereqs.get("camera_live", False),
             prereqs.get("camera_calibrated", False),
             prereqs.get("workspace_defined", False),
             prereqs.get("robot_calibrated", False),

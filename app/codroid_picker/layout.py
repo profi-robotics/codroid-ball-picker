@@ -594,6 +594,7 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Store(
                     id="prerequisites-state",
                     data={
+                        "camera_live": False,
                         "camera_calibrated": False,
                         "workspace_defined": False,
                         "robot_calibrated": False,

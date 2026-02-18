@@ -92,6 +92,11 @@ class AutoPickPlaceProgram(RobotProgram):
         if not SESSION.model_loaded:
             return False, "Detection model not loaded."
 
+        # Check camera stream
+        camera_stream = SESSION.camera_stream
+        if camera_stream is None or not camera_stream.is_running():
+            return False, "Camera stream is not running."
+
         # Check camera calibration
         if SESSION.calibration_bundle is None:
             return False, "Camera not calibrated."

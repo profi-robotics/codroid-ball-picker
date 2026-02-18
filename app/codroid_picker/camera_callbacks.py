@@ -171,6 +171,35 @@ def _format_detection_metrics() -> str:
     return metrics
 
 
+def _message_params(payload: Optional[dict]) -> dict:
+    """Return safe localization params from payload."""
+    params = (payload or {}).get("message_params")
+    return params if isinstance(params, dict) else {}
+
+
+def _resolve_camera_message(camera_state: Optional[dict]) -> str:
+    """Resolve camera status message in the current locale."""
+    payload = camera_state or {}
+
+    message_key = payload.get("message_key")
+    if isinstance(message_key, str) and message_key:
+        return t(message_key, **_message_params(payload))
+
+    session_key = SESSION.camera_last_error_key
+    if isinstance(session_key, str) and session_key:
+        session_params = SESSION.camera_last_error_params
+        if not isinstance(session_params, dict):
+            session_params = {}
+        return t(session_key, **session_params)
+
+    raw = payload.get("message")
+    if raw:
+        return str(raw)
+    if SESSION.camera_last_error_message:
+        return SESSION.camera_last_error_message
+    return t("Camera not connected.")
+
+
 def register_camera_callbacks(app: Dash) -> None:
     """Register all camera-related callbacks.
 
@@ -281,7 +310,7 @@ def register_camera_callbacks(app: Dash) -> None:
         ):
             # Preserve last known startup failure details when camera is already
             # down and the toggle transitions to false.
-            if SESSION.camera_last_error_message:
+            if SESSION.camera_last_error_key or SESSION.camera_last_error_message:
                 last_status = SESSION.camera_last_error_status or "unavailable"
                 badge_text = (
                     t("Camera: unavailable")
@@ -289,12 +318,16 @@ def register_camera_callbacks(app: Dash) -> None:
                     else t("Camera: error")
                 )
                 badge_color = "orange" if last_status == "unavailable" else "yellow"
+                message = _resolve_camera_message(camera_state)
                 state_payload = {
                     "status": last_status,
-                    "message": SESSION.camera_last_error_message,
+                    "message": message,
                 }
+                if SESSION.camera_last_error_key:
+                    state_payload["message_key"] = SESSION.camera_last_error_key
+                    state_payload["message_params"] = SESSION.camera_last_error_params
                 return (
-                    SESSION.camera_last_error_message,
+                    message,
                     badge_text,
                     badge_color,
                     False,
@@ -322,6 +355,8 @@ def register_camera_callbacks(app: Dash) -> None:
                 state = t("locked") if lock_af else t("unlocked")
                 status = t("Camera stream running; focus {state}.", state=state)
                 SESSION.camera_last_error_message = None
+                SESSION.camera_last_error_key = None
+                SESSION.camera_last_error_params = {}
                 SESSION.camera_last_error_status = None
                 return (
                     status,
@@ -333,13 +368,24 @@ def register_camera_callbacks(app: Dash) -> None:
                     False,
                 )
             except Exception as exc:  # noqa: BLE001
-                error = t("Camera focus control error: {error}", error=exc)
+                error_key = "Camera focus control error: {error}"
+                error_params = {"error": str(exc)}
+                error = t(error_key, **error_params)
+                SESSION.camera_last_error_message = error
+                SESSION.camera_last_error_key = error_key
+                SESSION.camera_last_error_params = error_params
+                SESSION.camera_last_error_status = "error"
                 return (
                     error,
                     t("Camera: error"),
                     "red",
                     True,
-                    {"status": "error", "message": error},
+                    {
+                        "status": "error",
+                        "message": error,
+                        "message_key": error_key,
+                        "message_params": error_params,
+                    },
                     False,
                     False,
                 )
@@ -354,6 +400,8 @@ def register_camera_callbacks(app: Dash) -> None:
                 if stream_running:
                     status = _describe_stream()
                     SESSION.camera_last_error_message = None
+                    SESSION.camera_last_error_key = None
+                    SESSION.camera_last_error_params = {}
                     SESSION.camera_last_error_status = None
                     return (
                         status,
@@ -372,6 +420,8 @@ def register_camera_callbacks(app: Dash) -> None:
                     enable_depth_override=False,
                 )
                 SESSION.camera_last_error_message = None
+                SESSION.camera_last_error_key = None
+                SESSION.camera_last_error_params = {}
                 SESSION.camera_last_error_status = None
                 return (
                     status,
@@ -385,12 +435,18 @@ def register_camera_callbacks(app: Dash) -> None:
             except RuntimeError as exc:
                 # Handle specific case of no devices
                 if "No available devices" in str(exc):
-                    error = t(
+                    error_key = (
                         "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry."
                     )
+                    error_params = {}
+                    error = t(error_key)
                 else:
-                    error = t("Camera error: {error}", error=exc)
+                    error_key = "Camera error: {error}"
+                    error_params = {"error": str(exc)}
+                    error = t(error_key, **error_params)
                 SESSION.camera_last_error_message = error
+                SESSION.camera_last_error_key = error_key
+                SESSION.camera_last_error_params = error_params
                 SESSION.camera_last_error_status = "unavailable"
                 set_active_overlay_task(None)
                 stop_camera_stream()
@@ -399,28 +455,44 @@ def register_camera_callbacks(app: Dash) -> None:
                     t("Camera: unavailable"),
                     "orange",
                     False,
-                    {"status": "unavailable", "message": error},
+                    {
+                        "status": "unavailable",
+                        "message": error,
+                        "message_key": error_key,
+                        "message_params": error_params,
+                    },
                     True,
                     True,
                 )
             except Exception as exc:
                 set_active_overlay_task(None)
                 stop_camera_stream()
-                error = t("Camera error: {error}", error=exc)
+                error_key = "Camera error: {error}"
+                error_params = {"error": str(exc)}
+                error = t(error_key, **error_params)
                 SESSION.camera_last_error_message = error
+                SESSION.camera_last_error_key = error_key
+                SESSION.camera_last_error_params = error_params
                 SESSION.camera_last_error_status = "error"
                 return (
                     error,
                     t("Camera: error"),
                     "yellow",
                     False,
-                    {"status": "error", "message": error},
+                    {
+                        "status": "error",
+                        "message": error,
+                        "message_key": error_key,
+                        "message_params": error_params,
+                    },
                     True,
                     True,
                 )
         set_active_overlay_task(None)
         stop_camera_stream()
         SESSION.camera_last_error_message = None
+        SESSION.camera_last_error_key = None
+        SESSION.camera_last_error_params = {}
         SESSION.camera_last_error_status = None
         stopped = t("Camera stream stopped.")
         return (
@@ -440,7 +512,9 @@ def register_camera_callbacks(app: Dash) -> None:
     def _update_camera_placeholder(camera_state: Optional[dict]) -> html.Div:
         """Show placeholder when camera is not connected, otherwise show video feed."""
         status = (camera_state or {}).get("status", "off")
-        if status == "off" and SESSION.camera_last_error_message:
+        if status == "off" and (
+            SESSION.camera_last_error_key or SESSION.camera_last_error_message
+        ):
             status = SESSION.camera_last_error_status or "unavailable"
 
         if status == "live":
@@ -461,11 +535,7 @@ def register_camera_callbacks(app: Dash) -> None:
             )
         else:
             # Camera not connected - show placeholder
-            message = (camera_state or {}).get("message")
-            if not message and SESSION.camera_last_error_message:
-                message = SESSION.camera_last_error_message
-            if not message:
-                message = t("Camera not connected.")
+            message = _resolve_camera_message(camera_state)
             icon = "📷" if status == "off" else "⚠️"
             color = "#666" if status == "off" else "#ff8c00"
 

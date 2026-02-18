@@ -10,6 +10,30 @@ def register_workspace_callbacks(app: Dash) -> None:
     """Register workspace-related callbacks."""
 
     @app.callback(
+        Output("compute-workspace", "disabled"),
+        Output("compute-workspace", "title"),
+        Input("camera-connection-state", "data"),
+        Input("prerequisites-state", "data"),
+        prevent_initial_call=False,
+    )
+    def _update_compute_workspace_state(
+        camera_state: Optional[dict],
+        prerequisites: Optional[dict],
+    ) -> tuple[bool, str]:
+        """Enable compute workspace only when camera stream and calibration are ready."""
+        camera_live = (camera_state or {}).get("status") == "live"
+        camera_calibrated = bool(
+            (prerequisites or {}).get("camera_calibrated", False)
+        )
+        if not camera_live:
+            return True, t("Enable live camera stream to compute workspace.")
+        if not camera_calibrated:
+            return True, t(
+                "Load or run camera calibration before computing workspace."
+            )
+        return False, ""
+
+    @app.callback(
         Output("workspace-action-status", "children"),
         Input("compute-workspace", "n_clicks"),
         Input("use-existing-workspace", "n_clicks"),

@@ -44,6 +44,10 @@
   " Within {threshold:.2f} mm threshold.": " Within {threshold:.2f} mm threshold.",
   " Above {threshold:.2f} mm threshold; consider repeating calibration or proceed with caution.": " Above {threshold:.2f} mm threshold; consider repeating calibration or proceed with caution.",
   "Enable live camera stream to connect a camera.": "Enable live camera stream to connect a camera.",
+  "Enable live camera stream to compute workspace.": "Enable live camera stream to compute workspace.",
+  "Load or run camera calibration before computing workspace.": "Load or run camera calibration before computing workspace.",
+  "Camera live": "Camera live",
+  "Camera calib": "Camera calib",
   "No OAK-D camera detected after retries. Connect/power the camera, then enable the camera stream to retry.": "No OAK-D camera detected after retries. Connect/power the camera, then enable the camera stream to retry.",
   "Camera not connected.": "Camera not connected.",
   "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry.": "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry."
