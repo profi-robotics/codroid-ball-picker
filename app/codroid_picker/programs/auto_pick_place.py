@@ -35,6 +35,12 @@ from app.codroid_picker.robot_motion import (
     resolve_gripper_limits,
 )
 from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
+from app.codroid_picker.target_planner import (
+    PickPlan,
+    TargetCandidate,
+    plan_pick_strategy,
+    rank_targets,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -235,6 +241,36 @@ class AutoPickPlaceProgram(RobotProgram):
                 tracking_mode = str(
                     config.get("tracking_mode", settings.tracking_mode)
                 ).strip().lower()
+                cluster_neighbor_mm = float(
+                    config.get("cluster_neighbor_mm", settings.auto_cluster_neighbor_mm)
+                )
+                rotation_clearance_mm = float(
+                    config.get("rotation_clearance_mm", settings.auto_rotation_clearance_mm)
+                )
+                rotation_step_deg = float(
+                    config.get("rotation_step_deg", settings.auto_rotation_step_deg)
+                )
+                rotation_max_delta_deg = float(
+                    config.get("rotation_max_delta_deg", settings.auto_rotation_max_delta_deg)
+                )
+                collision_body_radius_mm = float(
+                    config.get("collision_body_radius_mm", settings.auto_collision_body_radius_mm)
+                )
+                collision_finger_reach_mm = float(
+                    config.get("collision_finger_reach_mm", settings.auto_collision_finger_reach_mm)
+                )
+                separation_push_mm = float(
+                    config.get("separation_push_mm", settings.auto_separation_push_mm)
+                )
+                separation_entry_mm = float(
+                    config.get("separation_entry_mm", settings.auto_separation_entry_mm)
+                )
+                separation_max_attempts = int(
+                    config.get("separation_max_attempts", settings.auto_separation_max_attempts)
+                )
+                rescan_delay_s = float(
+                    config.get("rescan_delay_s", settings.auto_rescan_delay_s)
+                )
 
                 # Refresh detections from current frame
                 from app.codroid_picker.auto_operation import _refresh_follow_detections, _detection_coord5_mm
@@ -275,54 +311,134 @@ class AutoPickPlaceProgram(RobotProgram):
                     await asyncio.sleep(settings.auto_idle_sleep_s)
                     continue
 
-                # Select nearest target
-                target = self._select_nearest_target(targets, workspace_def)
-                if target is None:
-                    await asyncio.sleep(settings.auto_idle_sleep_s)
-                    continue
-
-                # Get target coordinates
-                target_coord5 = target.get("coord5_mm")
-                if target_coord5 is None:
-                    LOGGER.warning("Target missing coord5 coordinates")
+                ranked_candidates = self._rank_target_candidates(
+                    targets,
+                    neighbor_radius_mm=cluster_neighbor_mm,
+                )
+                if not ranked_candidates:
                     await asyncio.sleep(settings.auto_idle_sleep_s)
                     continue
 
                 SESSION.auto_waiting_at_drop = False
-                self.update_message(
-                    f"Picking target at ({target_coord5[0]:.1f}, {target_coord5[1]:.1f})...")
-
-                try:
-                    # Execute pick
-                    await self._execute_pick(
-                        robot_api,
-                        target_coord5=target_coord5,
-                        approach_mm=approach_mm,
-                        pick_mm=pick_mm,
-                        estimate_width=estimate_width,
-                        target=target,
-                        target_labels=target_labels,
-                        tracking_mode=tracking_mode,
-                        orientation=run_orientation,
+                picked_this_cycle = False
+                for candidate in ranked_candidates:
+                    pick_plan = plan_pick_strategy(
+                        candidate,
+                        ranked_candidates,
+                        current_c_deg=float(run_orientation[2]),
+                        rotation_step_deg=rotation_step_deg,
+                        rotation_max_delta_deg=rotation_max_delta_deg,
+                        body_radius_mm=collision_body_radius_mm,
+                        finger_reach_mm=collision_finger_reach_mm,
+                        clearance_mm=rotation_clearance_mm,
+                        separation_entry_mm=separation_entry_mm,
+                        separation_push_mm=separation_push_mm,
                     )
 
-                    # Execute drop
-                    await self._execute_drop(
-                        robot_api,
-                        approach_mm=approach_mm,
-                        drop_mm=drop_mm,
-                        orientation=run_orientation,
-                    )
-
-                    cycles_completed += 1
+                    target_coord5 = candidate.coord5_xy
                     self.update_message(
-                        f"Cycle complete. Total: {cycles_completed} picked, {cycles_failed} failed."
+                        f"Picking target at ({target_coord5[0]:.1f}, {target_coord5[1]:.1f})..."
+                    )
+                    if pick_plan.mode == "separate_then_rescan":
+                        LOGGER.info(
+                            "Auto: target crowded, trying side-separation before pick."
+                        )
+                        separated = False
+                        for attempt in range(1, max(1, separation_max_attempts) + 1):
+                            self.update_message(
+                                f"Separating cluster attempt {attempt}/{max(1, separation_max_attempts)}..."
+                            )
+                            await self._execute_separation_nudge(
+                                robot_api,
+                                pick_plan=pick_plan,
+                                approach_mm=approach_mm,
+                                orientation=run_orientation,
+                            )
+                            await asyncio.sleep(max(0.0, rescan_delay_s))
+
+                            detections = _refresh_follow_detections()
+                            for det in detections:
+                                if det.get("coord5_mm") is None:
+                                    coord5 = _detection_coord5_mm(det, workspace_def)
+                                    if coord5 is not None:
+                                        det["coord5_mm"] = coord5
+                            targets = self._filter_targets(
+                                detections,
+                                workspace_def,
+                                target_labels=target_labels,
+                                drop_target_mm=SESSION.drop_target_mm,
+                                drop_ignore_radius_mm=drop_ignore_radius_mm,
+                            )
+                            ranked_candidates = self._rank_target_candidates(
+                                targets,
+                                neighbor_radius_mm=cluster_neighbor_mm,
+                            )
+                            if not ranked_candidates:
+                                break
+                            candidate = ranked_candidates[0]
+                            pick_plan = plan_pick_strategy(
+                                candidate,
+                                ranked_candidates,
+                                current_c_deg=float(run_orientation[2]),
+                                rotation_step_deg=rotation_step_deg,
+                                rotation_max_delta_deg=rotation_max_delta_deg,
+                                body_radius_mm=collision_body_radius_mm,
+                                finger_reach_mm=collision_finger_reach_mm,
+                                clearance_mm=rotation_clearance_mm,
+                                separation_entry_mm=separation_entry_mm,
+                                separation_push_mm=separation_push_mm,
+                            )
+                            LOGGER.info(
+                                "Auto: re-plan after separation attempt %d -> %s",
+                                attempt,
+                                pick_plan.mode,
+                            )
+                            if pick_plan.mode == "rotate_pick":
+                                separated = True
+                                break
+                        if not separated:
+                            continue
+
+                    target = candidate.detection
+                    target_coord5 = candidate.coord5_xy
+                    LOGGER.info(
+                        "Auto: selected C-axis %.1f for pick at (%.1f, %.1f)",
+                        pick_plan.final_c,
+                        target_coord5[0],
+                        target_coord5[1],
                     )
 
-                except Exception as exc:
-                    LOGGER.warning(f"Pick/place cycle failed: {exc}")
+                    try:
+                        await self._execute_pick(
+                            robot_api,
+                            target_coord5=target_coord5,
+                            approach_mm=approach_mm,
+                            pick_mm=pick_mm,
+                            estimate_width=estimate_width,
+                            target=target,
+                            target_labels=target_labels,
+                            tracking_mode=tracking_mode,
+                            orientation=run_orientation,
+                            final_c=pick_plan.final_c,
+                        )
+                        await self._execute_drop(
+                            robot_api,
+                            approach_mm=approach_mm,
+                            drop_mm=drop_mm,
+                            orientation=run_orientation,
+                        )
+                        cycles_completed += 1
+                        picked_this_cycle = True
+                        self.update_message(
+                            f"Cycle complete. Total: {cycles_completed} picked, {cycles_failed} failed."
+                        )
+                        break
+                    except Exception as exc:
+                        LOGGER.warning(f"Pick/place cycle failed for candidate: {exc}")
+                        continue
+
+                if not picked_this_cycle:
                     cycles_failed += 1
-                    # Return to drop position on error
                     try:
                         await self._move_to_drop(
                             robot_api,
@@ -358,6 +474,7 @@ class AutoPickPlaceProgram(RobotProgram):
         target_labels: list[str],
         tracking_mode: str,
         orientation: Tuple[float, float, float],
+        final_c: float,
     ) -> None:
         """Execute a pick operation."""
         from app.codroid_picker.session import SESSION
@@ -377,14 +494,31 @@ class AutoPickPlaceProgram(RobotProgram):
             width_mm = width_px * 0.2  # rough estimate
             gripper_close = max(gripper_close, width_mm * 0.9)
 
-        def _pose_from_coord5(coord5_xy: Tuple[float, float], z: float) -> dict:
+        posture = registry().get_or_create_robot_session().position_snapshot()
+        transit_z = float(posture.z)
+        base_orientation = (
+            float(orientation[0]),
+            float(orientation[1]),
+            float(orientation[2]),
+        )
+        final_orientation = (
+            float(orientation[0]),
+            float(orientation[1]),
+            float(final_c),
+        )
+
+        def _pose_from_coord5(
+            coord5_xy: Tuple[float, float],
+            z: float,
+            orient: Tuple[float, float, float],
+        ) -> dict:
             return {
                 "x": float(coord5_xy[0]),
                 "y": float(coord5_xy[1]),
                 "z": float(z),
-                "a": float(orientation[0]),
-                "b": float(orientation[1]),
-                "c": float(orientation[2]),
+                "a": float(orient[0]),
+                "b": float(orient[1]),
+                "c": float(orient[2]),
             }
 
         static_coord5_xy = (float(target_coord5[0]), float(target_coord5[1]))
@@ -425,6 +559,15 @@ class AutoPickPlaceProgram(RobotProgram):
             tracking_state["xy"] = (float(coord5_xy[0]), float(coord5_xy[1]))
             return tracking_state["xy"]
 
+        def _pick_transit_pose_fn() -> Optional[dict]:
+            if use_segment_tracking:
+                coord5_xy = _select_tracking_coord5()
+                if coord5_xy is None:
+                    coord5_xy = tracking_state["xy"]
+            else:
+                coord5_xy = static_coord5_xy
+            return _pose_from_coord5(coord5_xy, transit_z, base_orientation)
+
         def _pick_approach_pose_fn() -> Optional[dict]:
             if use_segment_tracking:
                 coord5_xy = _select_tracking_coord5()
@@ -432,16 +575,29 @@ class AutoPickPlaceProgram(RobotProgram):
                     coord5_xy = tracking_state["xy"]
             else:
                 coord5_xy = static_coord5_xy
-            return _pose_from_coord5(coord5_xy, approach_mm)
+            return _pose_from_coord5(coord5_xy, approach_mm, base_orientation)
 
         def _pick_pose_fn() -> Optional[dict]:
             if use_segment_tracking:
                 coord5_xy = tracking_state["xy"]
             else:
                 coord5_xy = static_coord5_xy
-            return _pose_from_coord5(coord5_xy, pick_mm)
+            return _pose_from_coord5(coord5_xy, pick_mm, final_orientation)
 
-        # Move to approach
+        # Move XY transit first at current Z and with current orientation.
+        await wait_for_operation_resume(self._run_id)
+        transit_pose = _pick_transit_pose_fn()
+        if transit_pose is None:
+            raise RuntimeError("Pick transit pose unavailable.")
+        await self._move_linear_with_hold(
+            robot_api,
+            transit_pose,
+            coordinate_id,
+            label="auto_pick_transit_xy",
+            hold_s=settings.auto_hold_s,
+        )
+
+        # Move to approach height.
         await wait_for_operation_resume(self._run_id)
         approach_pose = _pick_approach_pose_fn()
         if approach_pose is None:
@@ -479,6 +635,20 @@ class AutoPickPlaceProgram(RobotProgram):
                 hold_s=settings.auto_hold_s,
             )
             LOGGER.debug("Auto: _move_linear_with_hold approach move complete")
+
+        # Align orientation only above the target, then descend.
+        await wait_for_operation_resume(self._run_id)
+        orientation_pose = dict(approach_pose)
+        orientation_pose["a"] = float(final_orientation[0])
+        orientation_pose["b"] = float(final_orientation[1])
+        orientation_pose["c"] = float(final_orientation[2])
+        await self._move_linear_with_hold(
+            robot_api,
+            orientation_pose,
+            coordinate_id,
+            label="auto_pick_align_orientation",
+            hold_s=settings.auto_hold_s,
+        )
 
         # Move to pick
         LOGGER.debug("Auto: Approach done, preparing pick move")
@@ -519,7 +689,7 @@ class AutoPickPlaceProgram(RobotProgram):
 
         # Retreat
         await wait_for_operation_resume(self._run_id)
-        retreat_pose = _pick_approach_pose_fn()
+        retreat_pose = dict(orientation_pose)
         if retreat_pose is None:
             retreat_pose = approach_pose
         await self._move_linear_with_hold(
@@ -527,6 +697,83 @@ class AutoPickPlaceProgram(RobotProgram):
             retreat_pose,
             coordinate_id,
             label="auto_pick_retreat",
+            hold_s=settings.auto_hold_s,
+        )
+
+    def _rank_target_candidates(
+        self,
+        targets: list[dict],
+        *,
+        neighbor_radius_mm: float,
+    ) -> list[TargetCandidate]:
+        """Rank valid targets for collision-aware picking."""
+        from app.codroid_picker.session import SESSION
+        from app.codroid_picker.auto_operation import _detection_coord5_mm
+
+        robot_xy = (0.0, 0.0)
+        try:
+            robot_session = registry().get_or_create_robot_session()
+            if robot_session.posture_seen():
+                pos = robot_session.position_snapshot()
+                robot_xy = (float(pos.x), float(pos.y))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Auto: failed to read robot XY for ranking: %s", exc)
+
+        return rank_targets(
+            targets,
+            robot_xy=robot_xy,
+            coord5_fn=lambda det: _detection_coord5_mm(det, SESSION.workspace_definition),
+            neighbor_radius_mm=neighbor_radius_mm,
+        )
+
+    async def _execute_separation_nudge(
+        self,
+        robot_api: "CodroidAPI",
+        *,
+        pick_plan: PickPlan,
+        approach_mm: float,
+        orientation: Tuple[float, float, float],
+    ) -> None:
+        """Push a clustered target sideways, then retreat for camera re-scan."""
+        settings = registry().settings
+        coordinate_id = registry().robot_coordinate_id
+        separation = pick_plan.separation
+        if separation is None:
+            raise RuntimeError("Separation plan missing.")
+
+        command_gripper(settings.gripper_profile.open_width_default, "opened")
+
+        entry_pose = {
+            "x": float(separation.entry_xy[0]),
+            "y": float(separation.entry_xy[1]),
+            "z": float(approach_mm),
+            "a": float(orientation[0]),
+            "b": float(orientation[1]),
+            "c": float(orientation[2]),
+        }
+        push_pose = dict(entry_pose)
+        push_pose["x"] = float(separation.push_end_xy[0])
+        push_pose["y"] = float(separation.push_end_xy[1])
+
+        await self._move_linear_with_hold(
+            robot_api,
+            entry_pose,
+            coordinate_id,
+            label="auto_cluster_nudge_entry",
+            hold_s=settings.auto_hold_s,
+        )
+        await self._move_linear_with_hold(
+            robot_api,
+            push_pose,
+            coordinate_id,
+            label="auto_cluster_nudge_push",
+            hold_s=settings.auto_hold_s,
+        )
+        await self._move_linear_with_hold(
+            robot_api,
+            entry_pose,
+            coordinate_id,
+            label="auto_cluster_nudge_retreat",
             hold_s=settings.auto_hold_s,
         )
 
@@ -780,12 +1027,3 @@ class AutoPickPlaceProgram(RobotProgram):
             targets.append(det)
 
         return targets
-
-    def _select_nearest_target(self, targets: list, workspace_def) -> Optional[dict]:
-        """Select the nearest valid target from the list."""
-        if not targets:
-            return None
-
-        # For now, just return the first target
-        # Could be improved to calculate actual distance from gripper
-        return targets[0]

@@ -547,5 +547,9 @@
   "Camera calib": "Калібрування камери",
   "No OAK-D camera detected after retries. Connect/power the camera, then enable the camera stream to retry.": "Камеру OAK-D не знайдено після повторних спроб. Підключіть/увімкніть камеру, потім увімкніть потік камери для повторної спроби.",
   "Camera not connected.": "Камера не підключена.",
-  "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry.": "Камеру OAK-D не знайдено (виконано 8 спроб). Підключіть/увімкніть камеру, потім увімкніть потік камери для повторної спроби."
+  "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry.": "Камеру OAK-D не знайдено (виконано 8 спроб). Підключіть/увімкніть камеру, потім увімкніть потік камери для повторної спроби.",
+  "Target is too clustered for manual pick.": "Ціль надто щільно оточена для ручного захоплення.",
+  "Separating cluster attempt {attempt}/{max_attempts}...": "Спроба розділення кластера {attempt}/{max_attempts}...",
+  "Auto: target crowded, trying side-separation before pick.": "Авто: ціль у щільному кластері, виконується бокове розділення перед захопленням.",
+  "Auto: selected C-axis {c:.1f} for pick.": "Авто: для захоплення вибрано вісь C {c:.1f}."
 }

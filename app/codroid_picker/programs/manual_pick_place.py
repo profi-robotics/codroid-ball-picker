@@ -67,6 +67,7 @@ class ManualPickPlaceProgram(RobotProgram):
         # Gripper settings
         gripper_close_width: Optional[float] = None,
         gripper_open_width: Optional[float] = None,
+        pick_final_c: Optional[float] = None,
         # Callbacks for state updates
         on_pick_complete: Optional[Callable[[], None]] = None,
         on_drop_complete: Optional[Callable[[], None]] = None,
@@ -86,6 +87,7 @@ class ManualPickPlaceProgram(RobotProgram):
         self._segment_fraction = segment_fraction
         self._gripper_close_width = gripper_close_width
         self._gripper_open_width = gripper_open_width
+        self._pick_final_c = pick_final_c
         self._on_pick_complete = on_pick_complete
         self._on_drop_complete = on_drop_complete
 
@@ -179,7 +181,7 @@ class ManualPickPlaceProgram(RobotProgram):
 
         # Get approach pose
         await wait_for_operation_resume(self._run_id)
-        self.update_message("Moving to approach position...")
+        self.update_message("Moving to target XY...")
         approach_pose = self._pick_approach_pose_fn(
         ) if self._pick_approach_pose_fn else None
         if approach_pose is None:
@@ -187,6 +189,19 @@ class ManualPickPlaceProgram(RobotProgram):
                 status=ProgramStatus.ERROR,
                 message="Could not compute approach pose - no target detected.",
             )
+        posture = registry().get_or_create_robot_session().position_snapshot()
+        transit_pose = dict(approach_pose)
+        transit_pose["z"] = float(posture.z)
+        transit_pose["a"] = float(posture.a)
+        transit_pose["b"] = float(posture.b)
+        transit_pose["c"] = float(posture.c)
+        await self.move_with_hold(
+            transit_pose,
+            coordinate_id=coordinate_id,
+            hold_seconds=2.0,
+        )
+
+        self.update_message("Moving to approach position...")
 
         log_move_target("pick_approach", approach_pose,
                         coordinate_id=coordinate_id)
@@ -209,6 +224,17 @@ class ManualPickPlaceProgram(RobotProgram):
                 hold_seconds=2.0,
             )
 
+        # Rotate only when already above the target.
+        await wait_for_operation_resume(self._run_id)
+        align_pose = dict(approach_pose)
+        if self._pick_final_c is not None:
+            align_pose["c"] = float(self._pick_final_c)
+        await self.move_with_hold(
+            align_pose,
+            coordinate_id=coordinate_id,
+            hold_seconds=2.0,
+        )
+
         # Get pick pose - for segment tracking, this uses the last tracked position
         await wait_for_operation_resume(self._run_id)
         self.update_message("Moving to pick position...")
@@ -218,6 +244,8 @@ class ManualPickPlaceProgram(RobotProgram):
                 status=ProgramStatus.ERROR,
                 message="Could not compute pick pose.",
             )
+        if self._pick_final_c is not None:
+            pick_pose["c"] = float(self._pick_final_c)
 
         log_move_target("pick_pose", pick_pose, coordinate_id=coordinate_id)
 
@@ -256,6 +284,8 @@ class ManualPickPlaceProgram(RobotProgram):
         ) if self._pick_approach_pose_fn else approach_pose
         if retreat_pose is None:
             retreat_pose = approach_pose
+        if self._pick_final_c is not None:
+            retreat_pose["c"] = float(self._pick_final_c)
         await self.move_with_hold(
             retreat_pose,
             coordinate_id=coordinate_id,
@@ -439,4 +469,3 @@ class ManualPickPlaceProgram(RobotProgram):
             status=ProgramStatus.COMPLETED,
             message="Drop complete.",
         )
-

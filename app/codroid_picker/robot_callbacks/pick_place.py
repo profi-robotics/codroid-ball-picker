@@ -279,20 +279,41 @@ def register_pick_place_callbacks(app: Dash) -> None:
             if not filtered_detections:
                 return t("No objects with label '{label}' detected.", label=target_label), drop_text
 
-            # Find closest detection from filtered list
-            from app.codroid_picker.pick_place_helpers import select_closest_detection
-            detection = select_closest_detection(
+            from app.codroid_picker.target_planner import (
+                plan_pick_strategy,
+                rank_targets,
+            )
+
+            robot_xy = (0.0, 0.0)
+            if "pos" in locals():
+                robot_xy = (float(pos.x), float(pos.y))
+            ranked = rank_targets(
                 filtered_detections,
-                reference_xy=(0.0, 0.0),  # Pick closest to origin
+                robot_xy=robot_xy,
                 coord5_fn=lambda d: codroid_picker_module._detection_coord5_xy(
                     d, workspace_def
                 ),
+                neighbor_radius_mm=float(SETTINGS.auto_cluster_neighbor_mm),
             )
-
-            coord5_xy = codroid_picker_module._detection_coord5_xy(
-                detection, workspace_def)
-            if coord5_xy is None:
+            if not ranked:
                 return t("Could not map detection to robot coordinates."), drop_text
+            selected_candidate = ranked[0]
+            pick_plan = plan_pick_strategy(
+                selected_candidate,
+                ranked,
+                current_c_deg=float(pick_orientation[2]),
+                rotation_step_deg=float(SETTINGS.auto_rotation_step_deg),
+                rotation_max_delta_deg=float(SETTINGS.auto_rotation_max_delta_deg),
+                body_radius_mm=float(SETTINGS.auto_collision_body_radius_mm),
+                finger_reach_mm=float(SETTINGS.auto_collision_finger_reach_mm),
+                clearance_mm=float(SETTINGS.auto_rotation_clearance_mm),
+                separation_entry_mm=float(SETTINGS.auto_separation_entry_mm),
+                separation_push_mm=float(SETTINGS.auto_separation_push_mm),
+            )
+            if pick_plan.mode != "rotate_pick":
+                return t("Target is too clustered for manual pick."), drop_text
+            coord5_xy = selected_candidate.coord5_xy
+            pick_final_c = float(pick_plan.final_c)
 
             # Determine tracking mode
             use_segment_tracking = (tracking_mode or "move").strip().lower() == "segment"
@@ -415,6 +436,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 pick_pose_fn=make_pick_pose_fn,
                 drop_approach_pose=drop_approach_pose,
                 drop_pose=drop_pose,
+                pick_final_c=pick_final_c,
                 approach_mm=approach_mm,
                 pick_mm=pick_mm,
                 drop_mm=drop_mm,

@@ -54,6 +54,16 @@ _BASE_AUTO_SETTLE_S = 0.1
 _BASE_AUTO_TOLERANCE_MM = 2.0
 _BASE_AUTO_Z_TOLERANCE_MM = 3.0
 _BASE_AUTO_HOLD_S = 0.5
+_BASE_AUTO_CLUSTER_NEIGHBOR_MM = 35.0
+_BASE_AUTO_ROTATION_CLEARANCE_MM = 8.0
+_BASE_AUTO_ROTATION_STEP_DEG = 15.0
+_BASE_AUTO_ROTATION_MAX_DELTA_DEG = 90.0
+_BASE_AUTO_COLLISION_BODY_RADIUS_MM = 12.0
+_BASE_AUTO_COLLISION_FINGER_REACH_MM = 20.0
+_BASE_AUTO_SEPARATION_PUSH_MM = 28.0
+_BASE_AUTO_SEPARATION_ENTRY_MM = 10.0
+_BASE_AUTO_SEPARATION_MAX_ATTEMPTS = 2
+_BASE_AUTO_RESCAN_DELAY_S = 0.25
 _BASE_PICK_FOLLOW_TIMEOUT_S = 15.0
 _BASE_PICK_FOLLOW_UPDATE_S = 0.05
 _BASE_PICK_FOLLOW_SEGMENT_S = 0.1
@@ -203,6 +213,16 @@ class AppSettings(BaseSettings):
     auto_tolerance_mm: float = _BASE_AUTO_TOLERANCE_MM
     auto_z_tolerance_mm: float = _BASE_AUTO_Z_TOLERANCE_MM
     auto_hold_s: float = _BASE_AUTO_HOLD_S
+    auto_cluster_neighbor_mm: float = _BASE_AUTO_CLUSTER_NEIGHBOR_MM
+    auto_rotation_clearance_mm: float = _BASE_AUTO_ROTATION_CLEARANCE_MM
+    auto_rotation_step_deg: float = _BASE_AUTO_ROTATION_STEP_DEG
+    auto_rotation_max_delta_deg: float = _BASE_AUTO_ROTATION_MAX_DELTA_DEG
+    auto_collision_body_radius_mm: float = _BASE_AUTO_COLLISION_BODY_RADIUS_MM
+    auto_collision_finger_reach_mm: float = _BASE_AUTO_COLLISION_FINGER_REACH_MM
+    auto_separation_push_mm: float = _BASE_AUTO_SEPARATION_PUSH_MM
+    auto_separation_entry_mm: float = _BASE_AUTO_SEPARATION_ENTRY_MM
+    auto_separation_max_attempts: int = _BASE_AUTO_SEPARATION_MAX_ATTEMPTS
+    auto_rescan_delay_s: float = _BASE_AUTO_RESCAN_DELAY_S
 
     @property
     def gripper_profile(self) -> GripperProfile:

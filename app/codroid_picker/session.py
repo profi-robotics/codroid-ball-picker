@@ -56,6 +56,16 @@ class UISession:
             "segment_min_mm": SETTINGS.segment_min,
             "segment_max_mm": SETTINGS.segment_max,
             "segment_fraction": SETTINGS.segment_fraction,
+            "cluster_neighbor_mm": SETTINGS.auto_cluster_neighbor_mm,
+            "rotation_clearance_mm": SETTINGS.auto_rotation_clearance_mm,
+            "rotation_step_deg": SETTINGS.auto_rotation_step_deg,
+            "rotation_max_delta_deg": SETTINGS.auto_rotation_max_delta_deg,
+            "collision_body_radius_mm": SETTINGS.auto_collision_body_radius_mm,
+            "collision_finger_reach_mm": SETTINGS.auto_collision_finger_reach_mm,
+            "separation_push_mm": SETTINGS.auto_separation_push_mm,
+            "separation_entry_mm": SETTINGS.auto_separation_entry_mm,
+            "separation_max_attempts": SETTINGS.auto_separation_max_attempts,
+            "rescan_delay_s": SETTINGS.auto_rescan_delay_s,
         }
     )
     auto_detection_updated_at: float = 0.0
@@ -146,6 +156,36 @@ def _refresh_session_auto_config_defaults() -> None:
             ),
             "segment_fraction": SESSION.auto_config.get(
                 "segment_fraction", SETTINGS.segment_fraction
+            ),
+            "cluster_neighbor_mm": SESSION.auto_config.get(
+                "cluster_neighbor_mm", SETTINGS.auto_cluster_neighbor_mm
+            ),
+            "rotation_clearance_mm": SESSION.auto_config.get(
+                "rotation_clearance_mm", SETTINGS.auto_rotation_clearance_mm
+            ),
+            "rotation_step_deg": SESSION.auto_config.get(
+                "rotation_step_deg", SETTINGS.auto_rotation_step_deg
+            ),
+            "rotation_max_delta_deg": SESSION.auto_config.get(
+                "rotation_max_delta_deg", SETTINGS.auto_rotation_max_delta_deg
+            ),
+            "collision_body_radius_mm": SESSION.auto_config.get(
+                "collision_body_radius_mm", SETTINGS.auto_collision_body_radius_mm
+            ),
+            "collision_finger_reach_mm": SESSION.auto_config.get(
+                "collision_finger_reach_mm", SETTINGS.auto_collision_finger_reach_mm
+            ),
+            "separation_push_mm": SESSION.auto_config.get(
+                "separation_push_mm", SETTINGS.auto_separation_push_mm
+            ),
+            "separation_entry_mm": SESSION.auto_config.get(
+                "separation_entry_mm", SETTINGS.auto_separation_entry_mm
+            ),
+            "separation_max_attempts": SESSION.auto_config.get(
+                "separation_max_attempts", SETTINGS.auto_separation_max_attempts
+            ),
+            "rescan_delay_s": SESSION.auto_config.get(
+                "rescan_delay_s", SETTINGS.auto_rescan_delay_s
             ),
         }
     )
