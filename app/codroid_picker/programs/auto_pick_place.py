@@ -35,6 +35,7 @@ from app.codroid_picker.robot_motion import (
     resolve_gripper_limits,
 )
 from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
+from app.codroid_picker.gripper_utils import await_grip_status
 from app.codroid_picker.target_planner import (
     PickPlan,
     TargetCandidate,
@@ -43,6 +44,10 @@ from app.codroid_picker.target_planner import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+class EmptyGripError(RuntimeError):
+    """Raised when a pick closes without detecting a gripped object."""
 
 
 class AutoPickPlaceProgram(RobotProgram):
@@ -321,6 +326,7 @@ class AutoPickPlaceProgram(RobotProgram):
 
                 SESSION.auto_waiting_at_drop = False
                 picked_this_cycle = False
+                missed_grip_this_cycle = False
                 for candidate in ranked_candidates:
                     pick_plan = plan_pick_strategy(
                         candidate,
@@ -433,12 +439,18 @@ class AutoPickPlaceProgram(RobotProgram):
                             f"Cycle complete. Total: {cycles_completed} picked, {cycles_failed} failed."
                         )
                         break
+                    except EmptyGripError as exc:
+                        LOGGER.info("Auto: empty grip detected, rescanning workspace: %s", exc)
+                        missed_grip_this_cycle = True
+                        break
                     except Exception as exc:
                         LOGGER.warning(f"Pick/place cycle failed for candidate: {exc}")
                         continue
 
                 if not picked_this_cycle:
                     cycles_failed += 1
+                    if missed_grip_this_cycle:
+                        continue
                     try:
                         await self._move_to_drop(
                             robot_api,
@@ -685,7 +697,9 @@ class AutoPickPlaceProgram(RobotProgram):
         )
         result = command_gripper(gripper_close, "closed", force=grip_force)
         LOGGER.info(f"Gripper close result: {result}")
-        SESSION.robot_has_object = True
+        grip_timeout_s = max(float(settings.plate_test_grip_timeout_s), 0.5)
+        gripped = await await_grip_status(grip_timeout_s)
+        LOGGER.info("Auto: grip verification result=%s timeout=%.2fs", gripped, grip_timeout_s)
 
         # Retreat
         await wait_for_operation_resume(self._run_id)
@@ -699,6 +713,13 @@ class AutoPickPlaceProgram(RobotProgram):
             label="auto_pick_retreat",
             hold_s=settings.auto_hold_s,
         )
+
+        if not gripped:
+            SESSION.robot_has_object = False
+            command_gripper(settings.gripper_profile.open_width_default, "opened")
+            raise EmptyGripError("No object detected after grip close.")
+
+        SESSION.robot_has_object = True
 
     def _rank_target_candidates(
         self,

@@ -68,6 +68,11 @@ def _record_gripper_sync(width: Optional[float], force: Optional[float]) -> None
 
 
 async def _await_grip_status(timeout_s: float) -> bool:
+    """Backward-compatible alias for await_grip_status."""
+    return await await_grip_status(timeout_s)
+
+
+async def await_grip_status(timeout_s: float) -> bool:
     """Poll the gripper until it reports a gripped state or timeout."""
     session = registry().session
     gripper_defaults = registry().gripper_defaults

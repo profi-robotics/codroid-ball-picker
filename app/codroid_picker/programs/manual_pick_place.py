@@ -29,6 +29,7 @@ from app.codroid_picker.robot_motion import (
     ensure_coordinate_active,
     log_move_target,
 )
+from app.codroid_picker.gripper_utils import await_grip_status
 
 LOGGER = logging.getLogger(__name__)
 
@@ -276,6 +277,9 @@ class ManualPickPlaceProgram(RobotProgram):
         close_width = self._gripper_close_width or settings.gripper_profile.close_width_default
         result = command_gripper(close_width, "closed", force=grip_force)
         LOGGER.info(f"Gripper close result: {result}")
+        grip_timeout_s = max(float(settings.plate_test_grip_timeout_s), 0.5)
+        gripped = await await_grip_status(grip_timeout_s)
+        LOGGER.info("Manual: grip verification result=%s timeout=%.2fs", gripped, grip_timeout_s)
 
         # Retreat
         await wait_for_operation_resume(self._run_id)
@@ -291,6 +295,15 @@ class ManualPickPlaceProgram(RobotProgram):
             coordinate_id=coordinate_id,
             hold_seconds=2.0,
         )
+
+        if not gripped:
+            open_width = self._gripper_open_width or settings.gripper_profile.open_width_default
+            command_gripper(open_width, "opened")
+            SESSION.robot_has_object = False
+            return ProgramResult(
+                status=ProgramStatus.ERROR,
+                message="No object detected after closing gripper.",
+            )
 
         SESSION.robot_has_object = True
         if self._on_pick_complete:
