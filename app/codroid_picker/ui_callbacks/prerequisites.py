@@ -25,6 +25,7 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         Input("camera-connection-state", "data"),
         Input("gripper-connection-state", "data"),
         Input("robot-connection-state", "data"),
+        Input("robot-control-state", "data"),
         Input("model-status", "children"),
         Input("workspace-action-status", "children"),
         prevent_initial_call=True,
@@ -34,6 +35,7 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         camera_state: Optional[dict],
         gripper_state: Optional[dict],
         robot_state: Optional[dict],
+        robot_control_state: Optional[dict],
         _model_status: Optional[str],
         _workspace_status: Optional[str],
     ) -> dict:
@@ -43,9 +45,14 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         system prerequisites and returns a dict indicating which are ready.
         Other callbacks can use this state to enable/disable features.
         """
+        import app.codroid_picker as codroid_picker_module
+
         session = registry().session
         camera_live = (camera_state or {}).get("status") == "live"
-        robot_connected = (robot_state or {}).get("status") == "online"
+        robot_connected = (
+            (robot_state or {}).get("status") == "online"
+            and not codroid_picker_module._robot_control_released(robot_control_state)
+        )
 
         result = {
             "camera_live": camera_live,

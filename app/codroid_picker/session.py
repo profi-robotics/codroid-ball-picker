@@ -44,6 +44,9 @@ class UISession:
     auto_message: str = ""
     auto_stop_requested: bool = False
     auto_waiting_at_drop: bool = False
+    auto_plan_snapshot: dict = field(default_factory=dict)
+    auto_plan_stage: str = "idle"
+    auto_plan_updated_at: float = 0.0
     auto_config: dict = field(
         default_factory=lambda: {
             "target_label": SETTINGS.auto_target_label,
@@ -88,6 +91,8 @@ class UISession:
     robot_last_connection_error: Optional[str] = None
     robot_probe_inflight: bool = False
     robot_last_probe_started_at: float = 0.0
+    robot_control_mode: str = "acquired"
+    robot_control_released_at: float = 0.0
     last_pick_mm: Optional[Tuple[float, float]] = None
     last_action: Optional[str] = None
     last_plate_test_capture: Optional[str] = None
@@ -98,6 +103,7 @@ class UISession:
     detection_iou: float = 0.45
     detection_max: int = 10
     detection_classes: Optional[str] = None
+    monitor_detection_history: Deque[dict] = field(default_factory=lambda: deque(maxlen=90))
     gripper_sync: dict = field(default_factory=dict)
     gripper_orientation: Optional[str] = None
     gripper_min_width: Optional[float] = None

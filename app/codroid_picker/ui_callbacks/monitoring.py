@@ -1,20 +1,202 @@
-"""Monitoring and operation state callbacks.
+"""Monitoring and operation state callbacks."""
 
-This module contains Dash callbacks for:
-- Auto operation config updates
-- Button states during operations
-- Operation lock reset
-- Plate test status refresh
-- Monitoring summary display
-- Plate detection summary
-- Verification button state
-"""
+from __future__ import annotations
 
-from typing import Optional, Tuple
+import time
+from typing import Optional, Sequence, Tuple
 
 import dash_mantine_components as dmc
+import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, no_update
+
+from app.codroid_picker.auto_plan_state import DEFAULT_PLAN_STALE_S, get_auto_plan_snapshot
 from app.codroid_picker.i18n import t
+
+DETECTION_HISTORY_WINDOW_S = 180.0
+
+
+def _status_color(status: str) -> str:
+    """Map status text to badge color."""
+    normalized = (status or "").strip().lower()
+    if normalized in {"live", "online", "on", "ready", "loaded"}:
+        return "teal"
+    if normalized in {"error", "offline", "missing"}:
+        return "red"
+    if normalized in {"pending", "probing"}:
+        return "yellow"
+    return "gray"
+
+
+def _append_detection_history(
+    session: object,
+    detection_count: int,
+    *,
+    now_ts: float,
+    window_s: float = DETECTION_HISTORY_WINDOW_S,
+) -> list[dict]:
+    """Append detection count and trim history window."""
+    history = getattr(session, "monitor_detection_history", None)
+    if history is None:
+        return []
+
+    history.append({"ts": float(now_ts), "count": int(detection_count)})
+    cutoff = float(now_ts) - float(window_s)
+    while history and float(history[0].get("ts", 0.0)) < cutoff:
+        history.popleft()
+    return list(history)
+
+
+def _empty_trend_figure(title: str, yaxis_title: str) -> go.Figure:
+    """Build an empty trend chart with consistent styling."""
+    figure = go.Figure()
+    figure.update_layout(
+        template="plotly_white",
+        title={"text": title, "x": 0.02, "xanchor": "left", "font": {"size": 12}},
+        margin={"l": 36, "r": 20, "t": 38, "b": 32},
+        xaxis={"title": "Samples", "showgrid": False},
+        yaxis={"title": yaxis_title, "rangemode": "tozero", "showgrid": True},
+        showlegend=False,
+    )
+    return figure
+
+
+def _build_detection_trend_figure(history: Sequence[dict]) -> go.Figure:
+    """Build detection trend line chart."""
+    figure = _empty_trend_figure(t("Detections (Last ~3m)"), t("Detections"))
+    if not history:
+        return figure
+
+    y_vals = [int(item.get("count", 0)) for item in history]
+    x_vals = list(range(1, len(y_vals) + 1))
+    figure.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode="lines+markers",
+            line={"color": "#f15b5f", "width": 2},
+            marker={"size": 5},
+            fill="tozeroy",
+            fillcolor="rgba(241, 91, 95, 0.12)",
+        )
+    )
+    return figure
+
+
+def _build_cycle_trend_figure(cycle_times: Sequence[float]) -> go.Figure:
+    """Build cycle duration trend line chart."""
+    figure = _empty_trend_figure(t("Cycle Time (Last 50)"), t("Seconds"))
+    if not cycle_times:
+        return figure
+
+    y_vals = [float(value) for value in cycle_times]
+    x_vals = list(range(1, len(y_vals) + 1))
+    figure.add_trace(
+        go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode="lines+markers",
+            line={"color": "#1f8f4f", "width": 2},
+            marker={"size": 5},
+            fill="tozeroy",
+            fillcolor="rgba(31, 143, 79, 0.10)",
+        )
+    )
+    return figure
+
+
+def _fmt_pair(value: Optional[Sequence[float]], *, precision: int = 1, suffix: str = "") -> str:
+    """Format pair values for compact UI rendering."""
+    if not value or len(value) < 2:
+        return "--"
+    return f"{value[0]:.{precision}f}, {value[1]:.{precision}f}{suffix}"
+
+
+def _build_auto_plan_items(plan_snapshot: dict) -> list:
+    """Build auto-plan summary UI elements."""
+    if not plan_snapshot.get("available"):
+        return [dmc.Text(t("No auto plan available."), c="dimmed", size="sm")]
+
+    stage = str(plan_snapshot.get("stage") or "idle")
+    stale = bool(plan_snapshot.get("stale"))
+    age_s = plan_snapshot.get("age_s")
+    message = str(plan_snapshot.get("message") or "")
+    pick_plan = plan_snapshot.get("pick_plan") or {}
+    selected = plan_snapshot.get("selected_candidate") or {}
+    ranked = plan_snapshot.get("ranked_candidates") or []
+
+    items = [
+        dmc.Group(
+            [
+                dmc.Badge(t("Stage: {stage}", stage=stage.replace("_", " ")), color="blue", variant="light"),
+                dmc.Badge(
+                    t("Stale") if stale else t("Fresh"),
+                    color="red" if stale else "teal",
+                    variant="light",
+                ),
+                dmc.Text(
+                    t("Age: {age:.1f}s", age=float(age_s)) if isinstance(age_s, (int, float)) else t("Age: --"),
+                    size="xs",
+                    c="dimmed",
+                ),
+            ],
+            gap="xs",
+            align="center",
+        )
+    ]
+
+    if message:
+        items.append(dmc.Text(message, size="sm"))
+
+    selected_label = str(selected.get("label") or t("none"))
+    selected_coord = selected.get("coord5_xy")
+    items.append(
+        dmc.Text(
+            t("Selected target: {label} @ {coord}", label=selected_label, coord=_fmt_pair(selected_coord, suffix=" mm")),
+            size="sm",
+        )
+    )
+
+    mode_text = str(pick_plan.get("mode") or "--")
+    final_c = pick_plan.get("final_c")
+    c_text = f"{float(final_c):.1f}" if isinstance(final_c, (int, float)) else "--"
+    items.append(dmc.Text(t("Strategy: {mode} · C={c}", mode=mode_text, c=c_text), size="sm"))
+
+    gripper_close = plan_snapshot.get("gripper_close_mm")
+    if isinstance(gripper_close, (int, float)):
+        items.append(dmc.Text(t("Planned gripper close: {width:.1f} mm", width=float(gripper_close)), size="sm"))
+
+    drop_target_mm = plan_snapshot.get("drop_target_mm")
+    items.append(
+        dmc.Text(
+            t("Drop target: {coord}", coord=_fmt_pair(drop_target_mm, suffix=" mm")),
+            size="sm",
+        )
+    )
+
+    if ranked:
+        ranked_lines = []
+        for candidate in ranked:
+            rank = int(candidate.get("rank") or 0)
+            label = str(candidate.get("label") or t("target"))
+            neighbor_count = int(candidate.get("neighbor_count") or 0)
+            nearest = candidate.get("nearest_neighbor_mm")
+            nearest_text = f"{float(nearest):.1f}" if isinstance(nearest, (int, float)) else "--"
+            ranked_lines.append(
+                dmc.Text(
+                    t(
+                        "#{rank} {label} · neighbors={neighbors} · nearest={nearest}mm",
+                        rank=rank,
+                        label=label,
+                        neighbors=neighbor_count,
+                        nearest=nearest_text,
+                    ),
+                    size="xs",
+                    c="dimmed",
+                )
+            )
+        items.append(dmc.Stack(ranked_lines, gap=2))
+
+    return items
 
 
 def register_monitoring_callbacks(app: Dash) -> None:
@@ -93,15 +275,10 @@ def register_monitoring_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def _update_button_states(_n: int) -> Tuple[bool, bool, bool, bool]:
-        """Disable buttons during operations to prevent rapid clicking.
-
-        Includes a 120-second watchdog to auto-reset stuck operations.
-        """
-        import time
+        """Disable buttons during operations to prevent rapid clicking."""
         import logging
         from app.codroid_picker.session import SESSION
 
-        # Watchdog: auto-reset if operation has been running for more than 120 seconds
         if SESSION.operation_in_progress and SESSION.operation_started_at is not None:
             elapsed = time.monotonic() - SESSION.operation_started_at
             if elapsed > 120.0:
@@ -113,7 +290,6 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 SESSION.operation_started_at = None
 
         disabled = SESSION.operation_in_progress
-        # Only enable reset when operation is in progress
         reset_disabled = not SESSION.operation_in_progress
         return disabled, disabled, disabled, reset_disabled
 
@@ -129,8 +305,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
 
         SESSION.operation_in_progress = False
         SESSION.operation_started_at = None
-        codroid_picker_module.LOGGER.info(
-            "Operation lock manually reset by user")
+        codroid_picker_module.LOGGER.info("Operation lock manually reset by user")
         return t("Operation lock reset.")
 
     @app.callback(
@@ -151,6 +326,9 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Output("monitor-system-summary", "children"),
         Output("monitor-detection-summary", "children"),
         Output("monitor-pick-summary", "children"),
+        Output("monitor-auto-plan-summary", "children"),
+        Output("monitor-detection-trend", "figure"),
+        Output("monitor-cycle-trend", "figure"),
         Output("use-existing-calibration", "style"),
         Output("use-existing-workspace", "style"),
         Output("use-existing-calibration", "disabled"),
@@ -174,8 +352,8 @@ def register_monitoring_callbacks(app: Dash) -> None:
         robot_speed: Optional[dict],
         bundle_path_value: Optional[str],
         robot_calib_path_value: Optional[str],
-    ) -> Tuple[list, list, list, dict, dict, bool, bool]:
-        """Update monitoring summary panels with system, detection, and pick info."""
+    ) -> Tuple[list, list, list, list, go.Figure, go.Figure, dict, dict, bool, bool]:
+        """Update monitoring panels, trends, and utility button states."""
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.session import SESSION
 
@@ -183,31 +361,33 @@ def register_monitoring_callbacks(app: Dash) -> None:
         camera_message = (camera_state or {}).get("message") or ""
         robot_status = (robot_state or {}).get("status", "offline")
         gripper_status = (gripper_state or {}).get("status", "offline")
-        calibration_state = (
-            "loaded" if SESSION.calibration_bundle is not None else "missing"
-        )
-        workspace_state = (
-            "ready" if SESSION.workspace_definition is not None else "pending"
-        )
+        calibration_state = "loaded" if SESSION.calibration_bundle is not None else "missing"
+        workspace_state = "ready" if SESSION.workspace_definition is not None else "pending"
         plate_state = "ready" if SESSION.plate_calibration is not None else "pending"
-        model_state = (
-            SESSION.active_model_path.name if SESSION.active_model_path else "none"
-        )
+        model_state = SESSION.active_model_path.name if SESSION.active_model_path else "none"
         detection_count = len(SESSION.detections)
-        last_action = SESSION.last_action or t("No recent actions.")
+
+        now_ts = time.time()
+        detection_history = _append_detection_history(SESSION, detection_count, now_ts=now_ts)
+        detection_trend_figure = _build_detection_trend_figure(detection_history)
+        cycle_trend_figure = _build_cycle_trend_figure(list(SESSION.cycle_times))
 
         stream = SESSION.camera_stream
         stream_fps = stream.get_fps() if stream else 0.0
-        stream_cfg_fps = (
-            stream.config.fps if stream else codroid_picker_module.DEFAULT_FPS
-        )
-        res_w, res_h = (
-            stream.config.resolution
-            if stream
-            else codroid_picker_module.DEFAULT_RESOLUTION
-        )
+        stream_cfg_fps = stream.config.fps if stream else codroid_picker_module.DEFAULT_FPS
+        res_w, res_h = stream.config.resolution if stream else codroid_picker_module.DEFAULT_RESOLUTION
 
         system_items = [
+            dmc.Group(
+                [
+                    dmc.Badge(t("Camera: {status}", status=t(camera_status)), color=_status_color(camera_status), variant="light"),
+                    dmc.Badge(t("Robot: {status}", status=t(robot_status)), color=_status_color(robot_status), variant="light"),
+                    dmc.Badge(t("Gripper: {status}", status=t(gripper_status)), color=_status_color(gripper_status), variant="light"),
+                    dmc.Badge(t("Power: {state}", state=t("on") if (robot_power or {}).get("value") else t("off")), color="teal" if (robot_power or {}).get("value") else "gray", variant="light"),
+                ],
+                gap="xs",
+                wrap="wrap",
+            ),
             dmc.Text(
                 t("Camera: {status} · {details}", status=t(camera_status), details=camera_message)
                 if camera_status != "live" and camera_message
@@ -222,72 +402,54 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 size="sm",
             ),
             dmc.Text(
-                t(
-                    "Robot: {status} · speed {speed}%",
-                    status=t(robot_status),
-                    speed=int((robot_speed or {}).get("value", SESSION.robot_speed_rate * 100)),
-                ),
-                size="sm",
-            ),
-            dmc.Text(
-                t("Power: {state}", state=(t("on") if (robot_power or {}).get("value") else t("off"))),
+                t("Robot speed: {speed}%", speed=int((robot_speed or {}).get("value", SESSION.robot_speed_rate * 100))),
                 size="sm",
             ),
             dmc.Text(t("Calibration bundle: {state}", state=t(calibration_state)), size="sm"),
             dmc.Text(t("Workspace: {state}", state=t(workspace_state)), size="sm"),
             dmc.Text(t("Plate calibration: {state}", state=t(plate_state)), size="sm"),
-            dmc.Text(
-                t("Gripper: {status}", status=t(gripper_status)),
-                size="sm",
-            ),
         ]
 
         detection_items = [
-            dmc.Text(t("Model: {model}", model=t(model_state)), size="sm"),
-            dmc.Text(t("Detections: {count}", count=detection_count), size="sm"),
+            dmc.SimpleGrid(
+                [
+                    dmc.Paper([dmc.Text(t("Model"), size="xs", c="dimmed"), dmc.Text(t(model_state), fw=600)], p="xs", radius="md", withBorder=True),
+                    dmc.Paper([dmc.Text(t("Detections"), size="xs", c="dimmed"), dmc.Text(str(detection_count), fw=700)], p="xs", radius="md", withBorder=True),
+                ],
+                cols=2,
+                spacing="xs",
+            )
         ]
         if SESSION.last_detection_error:
             detection_items.append(
-                dmc.Text(
+                dmc.Alert(
                     t("Last error: {error}", error=SESSION.last_detection_error),
-                    size="sm",
-                    c="red",
+                    color="red",
+                    variant="light",
                 )
             )
 
         attempts = SESSION.pick_attempts
         successes = SESSION.pick_successes
         failures = SESSION.pick_failures
-        processed = successes
         success_rate = (successes / attempts * 100.0) if attempts else None
-        avg_cycle = (
-            sum(SESSION.cycle_times) / len(SESSION.cycle_times)
-            if SESSION.cycle_times
-            else None
-        )
+        avg_cycle = (sum(SESSION.cycle_times) / len(SESSION.cycle_times)) if SESSION.cycle_times else None
+        last_action = SESSION.last_action or t("No recent actions.")
+
         pick_items = [
-            dmc.Text(
-                t("Holding object: {state}", state=(t("yes") if SESSION.robot_has_object else t("no"))),
-                size="sm",
+            dmc.SimpleGrid(
+                [
+                    dmc.Paper([dmc.Text(t("Attempts"), size="xs", c="dimmed"), dmc.Text(str(attempts), fw=700)], p="xs", radius="md", withBorder=True),
+                    dmc.Paper([dmc.Text(t("Success rate"), size="xs", c="dimmed"), dmc.Text(f"{success_rate:.1f}%" if success_rate is not None else t("n/a"), fw=700)], p="xs", radius="md", withBorder=True),
+                    dmc.Paper([dmc.Text(t("Avg cycle"), size="xs", c="dimmed"), dmc.Text(f"{avg_cycle:.2f}s" if avg_cycle is not None else t("n/a"), fw=700)], p="xs", radius="md", withBorder=True),
+                    dmc.Paper([dmc.Text(t("Holding"), size="xs", c="dimmed"), dmc.Text(t("yes") if SESSION.robot_has_object else t("no"), fw=700)], p="xs", radius="md", withBorder=True),
+                ],
+                cols=2,
+                spacing="xs",
             ),
             dmc.Text(t("Last action: {action}", action=last_action), size="sm"),
-            dmc.Text(t("Processed objects: {count}", count=processed), size="sm"),
-            dmc.Text(
-                t("Attempts: {attempts} · Failures: {failures}", attempts=attempts, failures=failures),
-                size="sm",
-            ),
-            dmc.Text(
-                t("Success rate: {rate:.1f}%", rate=success_rate)
-                if success_rate is not None
-                else t("Success rate: n/a"),
-                size="sm",
-            ),
-            dmc.Text(
-                t("Avg cycle: {avg:.2f}s", avg=avg_cycle)
-                if avg_cycle is not None
-                else t("Avg cycle: n/a"),
-                size="sm",
-            ),
+            dmc.Text(t("Processed objects: {count}", count=successes), size="sm"),
+            dmc.Text(t("Attempts: {attempts} · Failures: {failures}", attempts=attempts, failures=failures), size="sm"),
             dmc.Text(
                 t("Last cycle: {cycle:.2f}s", cycle=SESSION.last_cycle_s)
                 if SESSION.last_cycle_s is not None
@@ -295,6 +457,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 size="sm",
             ),
         ]
+
         if SESSION.last_pick_mm:
             pick_items.append(
                 dmc.Text(
@@ -309,39 +472,13 @@ def register_monitoring_callbacks(app: Dash) -> None:
                     size="sm",
                 )
             )
-        if SESSION.drop_target_orientation:
-            pick_items.append(
-                dmc.Text(
-                    t(
-                        "Drop orientation: a={a:.1f}, b={b:.1f}, c={c:.1f}",
-                        a=SESSION.drop_target_orientation[0],
-                        b=SESSION.drop_target_orientation[1],
-                        c=SESSION.drop_target_orientation[2],
-                    ),
-                    size="sm",
-                )
-            )
-        if SESSION.drop_target_robot:
-            pick_items.append(
-                dmc.Text(
-                    t(
-                        "Drop robot pose: x={x:.1f}, y={y:.1f}, z={z:.1f}",
-                        x=SESSION.drop_target_robot[0],
-                        y=SESSION.drop_target_robot[1],
-                        z=SESSION.drop_target_robot[2],
-                    ),
-                    size="sm",
-                )
-            )
-        bundle_path = codroid_picker_module._safe_path(
-            bundle_path_value, codroid_picker_module.DEFAULT_BUNDLE_PATH
-        )
+
+        plan_snapshot = get_auto_plan_snapshot(stale_after_s=DEFAULT_PLAN_STALE_S)
+        auto_plan_items = _build_auto_plan_items(plan_snapshot)
+
+        bundle_path = codroid_picker_module._safe_path(bundle_path_value, codroid_picker_module.DEFAULT_BUNDLE_PATH)
         bundle_style = {}
-        workspace_style = (
-            {}
-            if codroid_picker_module.DEFAULT_WORKSPACE_PATH.exists()
-            else {"display": "none"}
-        )
+        workspace_style = {} if codroid_picker_module.DEFAULT_WORKSPACE_PATH.exists() else {"display": "none"}
         bundle_disabled = not bundle_path.exists()
         robot_path = codroid_picker_module._safe_path(
             robot_calib_path_value, codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH
@@ -352,6 +489,9 @@ def register_monitoring_callbacks(app: Dash) -> None:
             system_items,
             detection_items,
             pick_items,
+            auto_plan_items,
+            detection_trend_figure,
+            cycle_trend_figure,
             bundle_style,
             workspace_style,
             bundle_disabled,
@@ -381,11 +521,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         ok = bool(plate_data.get("ok"))
         stable = bool(plate_data.get("stable", ok))
         calib_status = (calib_state or {}).get("status")
-        in_progress = calib_status in {
-            "running",
-            "awaiting_verification",
-            "verifying",
-        }
+        in_progress = calib_status in {"running", "awaiting_verification", "verifying"}
         if state.get_calibration_guidance_snapshot().get("status") in {
             "running",
             "awaiting_verification",
@@ -398,7 +534,6 @@ def register_monitoring_callbacks(app: Dash) -> None:
         if robot_online:
             posture_ready, posture_message = codroid_picker_module._robot_posture_ready()
 
-        # Determine message based on the actual blocking issue
         if in_progress:
             if calib_status == "awaiting_verification":
                 message = t("Awaiting verification move.")
@@ -410,18 +545,13 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 message = t("Calibration in progress...")
                 color = "blue"
         elif not robot_online:
-            message = (
-                t("Robot not connected. Click 'Test robot connection' to establish connection.")
-            )
+            message = t("Robot not connected. Click 'Test robot connection' to establish connection.")
             color = "red"
         elif not ok:
-            message = plate_data.get(
-                "message") or t("Detected {count} marker(s).", count=count)
+            message = plate_data.get("message") or t("Detected {count} marker(s).", count=count)
             color = "yellow"
         elif not stable:
-            message = plate_data.get(
-                "message"
-            ) or t("Calibration plate moved; hold it steady.")
+            message = plate_data.get("message") or t("Calibration plate moved; hold it steady.")
             color = "yellow"
         elif not posture_ready:
             message = posture_message
@@ -430,9 +560,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
             message = t("Plate markers stable. Ready to calibrate.")
             color = "green"
 
-        disabled = (
-            not ok or not stable or not posture_ready or in_progress or not robot_online
-        )
+        disabled = not ok or not stable or not posture_ready or in_progress or not robot_online
         variant = "filled" if not disabled else "light"
         return message, color, disabled, variant
 
@@ -454,8 +582,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         plate_stable = bool((plate_state or {}).get("stable", plate_ok))
         guidance = calibration_state or {}
         status = guidance.get("status")
-        in_progress = status in {"running",
-                                 "awaiting_verification", "verifying"}
+        in_progress = status in {"running", "awaiting_verification", "verifying"}
         robot_online = (robot_state or {}).get("status") == "online"
         has_calibration_points = len(SESSION.robot_calibration_points) >= 3
         return not (

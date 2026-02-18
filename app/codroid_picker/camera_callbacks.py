@@ -200,6 +200,77 @@ def _resolve_camera_message(camera_state: Optional[dict]) -> str:
     return t("Camera not connected.")
 
 
+def _auto_program_running() -> bool:
+    """Return True when Auto Pick & Place is actively running/paused."""
+    try:
+        from app.codroid_picker.programs import get_registry
+
+        active_program = get_registry().active_program
+        if active_program is None:
+            return False
+        return active_program.name == "auto_pick_place" and active_program.is_running
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _resolve_overlay_task(
+    *,
+    requested_overlay: str,
+    tab: str,
+    calibration_step: int,
+    application_tab: str,
+    board_path: Path,
+    marker_ids: tuple[int, int],
+    marker_size_mm: float,
+    plate_path: Path,
+) -> tuple[Optional[OverlayTask], str]:
+    """Resolve overlay task and effective mode."""
+    import app.codroid_picker as codroid_picker_module
+
+    requested = (requested_overlay or "auto").strip().lower()
+    task = codroid_picker_module._select_overlay_task(
+        tab,
+        calibration_step,
+        application_tab,
+        board_path,
+        marker_ids,
+        marker_size_mm,
+        plate_path,
+    )
+    effective_mode = requested
+
+    if requested == "auto":
+        if (
+            tab == "applications"
+            and application_tab == "pick-place"
+            and _auto_program_running()
+        ):
+            task = OverlayTask("auto-plan", codroid_picker_module._run_auto_plan_task())
+            effective_mode = "auto-plan"
+        return task, effective_mode
+
+    if requested == "calibration":
+        task = OverlayTask("manual-calibration", codroid_picker_module._run_charuco_task(board_path))
+    elif requested == "workspace":
+        task = OverlayTask(
+            "manual-workspace",
+            codroid_picker_module._run_workspace_task(marker_ids, marker_size_mm),
+        )
+    elif requested == "plate":
+        task = OverlayTask("manual-plate", codroid_picker_module._run_plate_task(plate_path))
+    elif requested == "detection":
+        task = OverlayTask("manual-detection", codroid_picker_module._run_detection_task())
+    elif requested == "auto-plan":
+        task = OverlayTask("manual-auto-plan", codroid_picker_module._run_auto_plan_task())
+        effective_mode = "auto-plan"
+    elif requested == "none":
+        task = None
+    else:
+        effective_mode = "auto"
+
+    return task, effective_mode
+
+
 def register_camera_callbacks(app: Dash) -> None:
     """Register all camera-related callbacks.
 
@@ -889,34 +960,17 @@ def register_camera_callbacks(app: Dash) -> None:
         marker_size_mm = _safe_float(
             marker_size, SESSION.marker_size_mm)
 
-        requested_overlay = overlay_mode or "auto"
-        task = codroid_picker_module._select_overlay_task(
-            tab,
-            calibration_step,
-            application_tab,
-            board_path,
-            marker_ids,
-            marker_size_mm,
-            plate_path,
+        requested_overlay = (overlay_mode or "auto").strip().lower()
+        task, effective_overlay = _resolve_overlay_task(
+            requested_overlay=requested_overlay,
+            tab=tab,
+            calibration_step=calibration_step,
+            application_tab=application_tab,
+            board_path=board_path,
+            marker_ids=marker_ids,
+            marker_size_mm=marker_size_mm,
+            plate_path=plate_path,
         )
-        if requested_overlay != "auto":
-            if requested_overlay == "calibration":
-                task = OverlayTask("manual-calibration",
-                                   codroid_picker_module._run_charuco_task(board_path))
-            elif requested_overlay == "workspace":
-                task = OverlayTask(
-                    "manual-workspace",
-                    codroid_picker_module._run_workspace_task(
-                        marker_ids, marker_size_mm),
-                )
-            elif requested_overlay == "plate":
-                task = OverlayTask(
-                    "manual-plate", codroid_picker_module._run_plate_task(plate_path))
-            elif requested_overlay == "detection":
-                task = OverlayTask("manual-detection",
-                                   codroid_picker_module._run_detection_task())
-            elif requested_overlay == "none":
-                task = None
 
         set_active_overlay_task(task)
 
@@ -944,8 +998,9 @@ def register_camera_callbacks(app: Dash) -> None:
             "workspace": t("Overlay: Workspace"),
             "plate": t("Overlay: Plate"),
             "detection": t("Overlay: Detections"),
+            "auto-plan": t("Overlay: Auto Plan"),
             "none": t("Overlay: Off"),
-        }.get(requested_overlay, t("Overlay: Auto"))
+        }.get(effective_overlay, t("Overlay: Auto"))
         status_text = t("{mode} · {status}", mode=mode_label, status=status_text)
 
         # Get plate status from state module

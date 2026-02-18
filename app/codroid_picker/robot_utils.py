@@ -16,6 +16,26 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+
+def _robot_control_mode(control_state: dict | None = None) -> str:
+    """Return the active robot control mode."""
+    if isinstance(control_state, dict):
+        mode = str(control_state.get("mode", "")).strip().lower()
+        if mode in {"acquired", "released"}:
+            return mode
+        if mode:
+            return "acquired"
+    session = registry().session
+    mode = str(getattr(session, "robot_control_mode", "acquired")).strip().lower()
+    if mode not in {"acquired", "released"}:
+        return "acquired"
+    return mode
+
+
+def _robot_control_released(control_state: dict | None = None) -> bool:
+    """Return True when robot control has been explicitly released."""
+    return _robot_control_mode(control_state) == "released"
+
 async def _probe_robot(uri: str) -> dict:
     """Probe a robot at the given URI and return status info."""
     robot_session = registry().get_or_create_robot_session()
@@ -83,5 +103,3 @@ def _log_move_target(
     coord_info = f" (coord={coordinate_id})" if coordinate_id is not None else ""
     pos_str = ", ".join(f"{k}={v:.2f}" for k, v in target_pose.items() if isinstance(v, (int, float)))
     LOGGER.debug("Move target [%s]%s: %s", label, coord_info, pos_str)
-
-

@@ -9,6 +9,7 @@ from app.codroid_picker.i18n import t
 
 async def _execute_robot_action(
     robot_uri: Optional[str],
+    control_state: Optional[dict],
     action_fn: Callable,
     success_title: str,
     success_message: str,
@@ -19,6 +20,15 @@ async def _execute_robot_action(
     This helper consolidates the try/except pattern used in rescue mode callbacks.
     """
     import app.codroid_picker as codroid_picker_module
+
+    if codroid_picker_module._robot_control_released(control_state):
+        return codroid_picker_module.dmc.Notification(
+            action="show",
+            title=t("Robot control released"),
+            message=t("Robot control is released. Acquire control first."),
+            color="yellow",
+            autoClose=5000,
+        )
 
     try:
         await codroid_picker_module._with_robot_api(
@@ -51,6 +61,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         State("robot-uri", "value"),
         State("robot-connection-state", "data"),
         State("robot-rescue-state", "data"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _enable_rescue_mode(
@@ -58,6 +69,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         robot_uri: Optional[str],
         robot_state: Optional[dict],
         rescue_state: Optional[dict],
+        control_state: Optional[dict],
     ) -> dmc.Notification:
         import app.codroid_picker as codroid_picker_module
 
@@ -83,6 +95,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
 
         return await _execute_robot_action(
             robot_uri,
+            control_state,
             _enter,
             success_title=t("Rescue mode requested"),
             success_message=t("Rescue mode command sent."),
@@ -94,12 +107,14 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         Input("rescue-mode-exit", "n_clicks"),
         State("robot-uri", "value"),
         State("robot-rescue-state", "data"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _exit_rescue_mode(
         _clicks: int,
         robot_uri: Optional[str],
         rescue_state: Optional[dict],
+        control_state: Optional[dict],
     ) -> dmc.Notification:
         import app.codroid_picker as codroid_picker_module
 
@@ -117,6 +132,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
 
         return await _execute_robot_action(
             robot_uri,
+            control_state,
             _exit,
             success_title=t("Rescue mode exit requested"),
             success_message=t("Exit command sent."),
@@ -139,6 +155,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         Input("rescue-joint-6-plus", "n_clicks"),
         State("robot-uri", "value"),
         State("robot-rescue-state", "data"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_rescue_joint_jog(
@@ -156,9 +173,12 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         _j6_plus: int,
         robot_uri: Optional[str],
         rescue_state: Optional[dict],
+        control_state: Optional[dict],
     ) -> str:
         import app.codroid_picker as codroid_picker_module
 
+        if codroid_picker_module._robot_control_released(control_state):
+            return t("Robot control is released. Acquire control first.")
         if not (rescue_state or {}).get("active"):
             return t("Rescue mode is not active.")
 

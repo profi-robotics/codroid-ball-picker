@@ -508,59 +508,92 @@ def build_monitoring_tab() -> dmc.Stack:
     """Build the monitoring/diagnostics tab."""
     summary_card = dmc.Card(
         [
-            dmc.Text(t("System Summary"), fw=600, size="lg"),
-            dmc.Stack(
+            dmc.Group(
                 [
-                    dmc.Text(t("Camera: off"), size="sm"),
-                    dmc.Text(t("Robot: offline"), size="sm"),
-                    dmc.Text(t("Gripper: offline"), size="sm"),
-                    dmc.Text(t("Calibration bundle: missing"), size="sm"),
-                    dmc.Text(t("Workspace: pending"), size="sm"),
+                    dmc.Text(t("System Summary"), fw=700, size="lg"),
+                    dmc.Badge(t("Live"), color="teal", variant="light"),
                 ],
-                id="monitor-system-summary",
-                gap="xs",
+                justify="space-between",
+                align="center",
             ),
+            dmc.Stack(id="monitor-system-summary", gap="xs"),
         ],
         withBorder=True,
         radius="lg",
-        className="panel-card",
+        className="panel-card monitor-card",
     )
     detection_card = dmc.Card(
         [
-            dmc.Text(t("Detection Summary"), fw=600, size="lg"),
-            dmc.Stack(
-                [
-                    dmc.Text(t("Model: none"), size="sm"),
-                    dmc.Text(t("Detections: 0"), size="sm"),
-                ],
-                id="monitor-detection-summary",
-                gap="xs",
-            ),
+            dmc.Text(t("Detection Summary"), fw=700, size="lg"),
+            dmc.Stack(id="monitor-detection-summary", gap="xs"),
         ],
         withBorder=True,
         radius="lg",
-        className="panel-card",
+        className="panel-card monitor-card",
     )
     pick_card = dmc.Card(
         [
-            dmc.Text(t("Pick & Drop Summary"), fw=600, size="lg"),
-            dmc.Stack(
-                [
-                    dmc.Text(t("Holding object: no"), size="sm"),
-                    dmc.Text(t("Last action: No recent actions."), size="sm"),
-                    dmc.Text(t("Processed objects: 0"), size="sm"),
-                    dmc.Text(t("Attempts: 0 · Failures: 0"), size="sm"),
-                    dmc.Text(t("Success rate: n/a"), size="sm"),
-                    dmc.Text(t("Avg cycle: n/a"), size="sm"),
-                    dmc.Text(t("Last cycle: n/a"), size="sm"),
-                ],
-                id="monitor-pick-summary",
-                gap="xs",
+            dmc.Text(t("Pick & Drop Summary"), fw=700, size="lg"),
+            dmc.Stack(id="monitor-pick-summary", gap="xs"),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card monitor-card",
+    )
+    plan_card = dmc.Card(
+        [
+            dmc.Text(t("Auto Plan Summary"), fw=700, size="lg"),
+            dmc.Stack(id="monitor-auto-plan-summary", gap="xs"),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card monitor-card",
+    )
+    detection_trend_card = dmc.Card(
+        [
+            dmc.Text(t("Detection Trend"), fw=700, size="lg"),
+            dcc.Graph(
+                id="monitor-detection-trend",
+                config={"displayModeBar": False},
+                style={"height": "220px"},
             ),
         ],
         withBorder=True,
         radius="lg",
-        className="panel-card",
+        className="panel-card monitor-chart-card",
+    )
+    cycle_trend_card = dmc.Card(
+        [
+            dmc.Text(t("Cycle Time Trend"), fw=700, size="lg"),
+            dcc.Graph(
+                id="monitor-cycle-trend",
+                config={"displayModeBar": False},
+                style={"height": "220px"},
+            ),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card monitor-chart-card",
     )
 
-    return dmc.Stack([summary_card, detection_card, pick_card], gap="md")
+    return dmc.Stack(
+        [
+            dmc.SimpleGrid(
+                [summary_card, detection_card],
+                cols={"base": 1, "md": 2},
+                spacing="md",
+            ),
+            dmc.SimpleGrid(
+                [pick_card, plan_card],
+                cols={"base": 1, "md": 2},
+                spacing="md",
+            ),
+            dmc.SimpleGrid(
+                [detection_trend_card, cycle_trend_card],
+                cols={"base": 1, "md": 2},
+                spacing="md",
+            ),
+        ],
+        gap="md",
+        className="monitor-stack",
+    )

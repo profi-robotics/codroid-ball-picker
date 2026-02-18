@@ -116,6 +116,11 @@ _LAZY_EXPORTS = {
         "app.codroid_picker.robot_utils",
         "_ensure_robot_coord5_for_uri",
     ),
+    "_robot_control_mode": ("app.codroid_picker.robot_utils", "_robot_control_mode"),
+    "_robot_control_released": (
+        "app.codroid_picker.robot_utils",
+        "_robot_control_released",
+    ),
     "_log_move_target": ("app.codroid_picker.robot_utils", "_log_move_target"),
     "_coord5_to_workspace_mm": ("app.codroid_picker.transforms", "_coord5_to_workspace_mm"),
     "_pose_from_coord5_mm": ("app.codroid_picker.transforms", "_pose_from_coord5_mm"),
@@ -189,6 +194,7 @@ _LAZY_EXPORTS = {
     "_run_plate_task": ("app.codroid_picker.overlay_tasks", "_run_plate_task"),
     "_run_detection_task": ("app.codroid_picker.overlay_tasks", "_run_detection_task"),
     "_run_drop_marker_task": ("app.codroid_picker.overlay_tasks", "_run_drop_marker_task"),
+    "_run_auto_plan_task": ("app.codroid_picker.overlay_tasks", "_run_auto_plan_task"),
     # Settings helpers
     "_save_settings": ("app.settings", "_save_settings"),
     "_commit_settings": ("app.settings", "_commit_settings"),

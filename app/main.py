@@ -141,6 +141,7 @@ from app.codroid_picker.overlay_tasks import (  # noqa: F401
     _run_plate_task,
     _run_detection_task,
     _run_drop_marker_task,
+    _run_auto_plan_task,
 )
 from app.settings import (  # noqa: F401
     _save_settings,
@@ -323,6 +324,7 @@ globals_to_expose = [
     # Overlay tasks
     '_select_overlay_task', '_run_charuco_task', '_run_workspace_task',
     '_run_plate_task', '_run_detection_task', '_run_drop_marker_task',
+    '_run_auto_plan_task',
 
     # API classes
     'CodroidAPI', 'RobotSession', 'GripperDevice', 'TwoFG7Gripper',

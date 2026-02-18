@@ -20,6 +20,7 @@ from app.codroid_picker.overlays import (
     draw_plate_overlay,
     draw_detection_overlay,
     draw_drop_marker_overlay,
+    draw_auto_plan_overlay,
 )
 
 
@@ -75,6 +76,17 @@ def _run_drop_marker_task(marker_id: int) -> Callable[[np.ndarray], OverlayResul
 
     def _runner(frame: np.ndarray) -> OverlayResult:
         vis, status, metric = draw_drop_marker_overlay(frame, marker_id)
+        _apply_workspace_overlay(vis)
+        return OverlayResult(vis, status, metric)
+
+    return _runner
+
+
+def _run_auto_plan_task() -> Callable[[np.ndarray], OverlayResult]:
+    """Create a task runner for auto planning intent overlay."""
+
+    def _runner(frame: np.ndarray) -> OverlayResult:
+        vis, status, metric = draw_auto_plan_overlay(frame)
         _apply_workspace_overlay(vis)
         return OverlayResult(vis, status, metric)
 

@@ -37,6 +37,7 @@ robot motion commands.
    ```
 Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
+When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
 For Jetson runtime FPS benchmarking, run without debug mode:
@@ -90,7 +91,10 @@ camera, detection, and robot flows together. It provides:
 - A tabbed layout for Calibration, Applications (workspace definition + per-app
   panels like Pick & Place), and Monitoring.
 - A live camera view with overlays for ChArUco detection, workspace markers,
-  YOLO detections, and the drop marker.
+  YOLO detections, drop marker, and an auto-planning overlay that shows the
+  next target/approach/drop intent during Auto Pick & Place.
+- A Monitoring dashboard with KPI cards and trend charts (detections + cycle
+  timing), plus a live auto-plan summary panel.
 - A guided robot calibration modal with a verification move; the calibration
   points and safe Z floor are persisted in `data/robot_calibration.json` and
   loaded on startup when available.
@@ -234,3 +238,6 @@ Auto mode uses YOLO detections to continuously pick the nearest target:
 - The robot pauses if any other detection enters the workspace and resumes once clear.
 - Auto uses the shared **Tracking mode** controls; segmented tracking keeps the last known target when it is obscured.
 - Coordinate mapping uses the saved plate homography from robot calibration; re-run plate calibration if coord5 overlays drift.
+- Overlay selector includes **Auto Plan** mode. When overlay is set to **Auto**
+  and Auto Pick & Place is running in Applications → Pick & Place, the camera
+  view auto-switches to planning overlay rendering.

@@ -99,6 +99,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Input("program-reset", "n_clicks"),
         State("robot-operation-state", "data"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_program_controls(
@@ -107,9 +108,18 @@ def register_monitoring_callbacks(app: Dash) -> None:
         _reset_clicks: int,
         operation_state: Optional[dict],
         robot_uri: Optional[str],
+        control_state: Optional[dict],
     ) -> dmc.Notification:
         import app.codroid_picker as codroid_picker_module
 
+        if codroid_picker_module._robot_control_released(control_state):
+            return dmc.Notification(
+                action="show",
+                title=t("Robot control released"),
+                message=t("Robot control is released. Acquire control first."),
+                color="yellow",
+                autoClose=5000,
+            )
         trigger = callback_context.triggered_id
         status = (operation_state or {}).get("status", "idle")
 

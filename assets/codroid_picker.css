@@ -366,6 +366,26 @@ body {
   border: 1px solid rgba(13, 110, 130, 0.08);
 }
 
+.monitor-stack .panel-card {
+  min-height: 180px;
+}
+
+.monitor-card .mantine-SimpleGrid-root,
+.monitor-card .mantine-Group-root {
+  width: 100%;
+}
+
+.monitor-chart-card .js-plotly-plot,
+.monitor-chart-card .plot-container {
+  width: 100% !important;
+}
+
+@media (max-width: 900px) {
+  .monitor-stack .panel-card {
+    min-height: auto;
+  }
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;

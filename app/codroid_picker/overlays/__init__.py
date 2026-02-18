@@ -23,6 +23,7 @@ from .detection import (
     draw_drop_marker_overlay,
     draw_monitor_overlay,
 )
+from .auto_plan import draw_auto_plan_overlay
 
 __all__ = [
     # Base utilities
@@ -41,4 +42,5 @@ __all__ = [
     "draw_detection_overlay",
     "draw_drop_marker_overlay",
     "draw_monitor_overlay",
+    "draw_auto_plan_overlay",
 ]

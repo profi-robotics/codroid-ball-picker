@@ -1,11 +1,50 @@
 """Robot connection, gripper, and power management callbacks."""
 
+import contextlib
 import time
 from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, html, no_update
 from app.codroid_picker.i18n import t
+
+
+def _control_state_payload(
+    *,
+    mode: str,
+    message: str = "",
+    released_at: float = 0.0,
+) -> dict:
+    """Build a normalized control state payload."""
+    normalized_mode = "released" if mode == "released" else "acquired"
+    return {
+        "mode": normalized_mode,
+        "released_at": float(released_at if normalized_mode == "released" else 0.0),
+        "message": message,
+    }
+
+
+async def _release_robot_ownership(
+    codroid_picker_module,
+    resolved_uri: str,
+) -> None:
+    """Stop active operations, power off, and close the robot session."""
+    from app.codroid_picker.programs import get_registry
+
+    registry = get_registry()
+    if registry.active_program is not None:
+        registry.stop()
+
+    async def _stop_and_power_off(api) -> None:
+        with contextlib.suppress(Exception):
+            await api.stop_command()
+        with contextlib.suppress(Exception):
+            await api.power_off()
+
+    with contextlib.suppress(Exception):
+        await codroid_picker_module._with_robot_api(resolved_uri, _stop_and_power_off)
+
+    await codroid_picker_module._get_robot_session().close()
 
 
 def register_connection_callbacks(app: Dash) -> None:
@@ -16,20 +55,25 @@ def register_connection_callbacks(app: Dash) -> None:
         Output("header-robot-badge", "children"),
         Output("header-robot-badge", "color"),
         Output("robot-connection-state", "data"),
+        Output("robot-control-state", "data"),
         Input("robot-test", "n_clicks"),
-        Input("robot-disconnect", "n_clicks"),
+        Input("robot-acquire-control", "n_clicks"),
+        Input("robot-release-control", "n_clicks"),
         Input("auto-init", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _test_robot(
         _clicks: int,
-        _disconnect_clicks: int,
+        _acquire_clicks: int,
+        _release_clicks: int,
         _init: int,
         _monitor: int,
         uri: str,
-    ) -> Tuple[str, str, str, dict]:
+        control_state: Optional[dict],
+    ) -> Tuple[str, str, str, dict, dict]:
         import app.codroid_picker as codroid_picker_module
 
         trigger = callback_context.triggered_id
@@ -37,15 +81,24 @@ def register_connection_callbacks(app: Dash) -> None:
         ui_session = codroid_picker_module.SESSION
         resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
         probe_retry_interval_s = 5.0
+        control_released = codroid_picker_module._robot_control_released(control_state)
 
         if trigger == "auto-init":
             # Keep first paint lightweight on embedded devices:
             # don't block page load on websocket probes.
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
-        if trigger == "robot-disconnect":
-            await session.close()
-            ui_session.robot_connection_attempted = True
+        if trigger == "robot-release-control":
+            try:
+                await _release_robot_ownership(codroid_picker_module, resolved_uri)
+            except Exception as exc:  # noqa: BLE001
+                codroid_picker_module.LOGGER.warning(
+                    "Robot release sequence encountered errors: %s", exc
+                )
+            now = time.time()
+            ui_session.robot_control_mode = "released"
+            ui_session.robot_control_released_at = now
+            ui_session.robot_connection_attempted = False
             ui_session.robot_last_connection_error = None
             ui_session.robot_probe_inflight = False
             ui_session.robot_last_probe_started_at = 0.0
@@ -56,29 +109,53 @@ def register_connection_callbacks(app: Dash) -> None:
                 step=0,
                 verification_ready=False,
             )
-            status = t("Robot disconnected.")
-            return status, t("Robot: offline"), "gray", {"status": "offline", "message": status}
+            status = t("Robot control released. Acquire control to reconnect.")
+            return (
+                status,
+                t("Robot: released"),
+                "yellow",
+                {"status": "offline", "message": status},
+                _control_state_payload(mode="released", message=status, released_at=now),
+            )
+        if trigger in {"robot-acquire-control", "robot-test"}:
+            control_released = False
+            ui_session.robot_control_mode = "acquired"
+            ui_session.robot_control_released_at = 0.0
+        if trigger == "monitor-interval" and control_released:
+            return no_update, no_update, no_update, no_update, no_update
         if trigger == "monitor-interval":
             if session.is_connected(resolved_uri):
                 target = session.resolve_robot_target(resolved_uri)
                 status = t("Robot connected to {host}:{port}.", host=target["host"], port=target["port"])
                 ui_session.robot_connection_attempted = True
                 ui_session.robot_last_connection_error = None
-                return status, t("Robot: online"), "brand", {"status": "online", "message": status}
+                return (
+                    status,
+                    t("Robot: online"),
+                    "brand",
+                    {"status": "online", "message": status},
+                    _control_state_payload(mode="acquired"),
+                )
             # Skip background probes until the user explicitly requests
             # a connection test at least once.
             if not ui_session.robot_connection_attempted:
-                return no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update
             if ui_session.robot_probe_inflight:
-                return no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update
             now = time.time()
             if now - ui_session.robot_last_probe_started_at < probe_retry_interval_s:
                 if ui_session.robot_connection_attempted and ui_session.robot_last_connection_error:
-                    return no_update, no_update, no_update, no_update
-                return no_update, no_update, no_update, no_update
+                    return no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
             status = t("Robot connection check already in progress.")
-            return status, t("Robot: probing"), "yellow", {"status": "probing", "message": status}
+            return (
+                status,
+                t("Robot: probing"),
+                "yellow",
+                {"status": "probing", "message": status},
+                _control_state_payload(mode="acquired"),
+            )
         ui_session.robot_probe_inflight = True
         ui_session.robot_last_probe_started_at = time.time()
         try:
@@ -90,12 +167,24 @@ def register_connection_callbacks(app: Dash) -> None:
             status = t("Robot connected to {host}:{port}.", host=host, port=port)
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = None
-            return status, t("Robot: online"), "brand", {"status": "online", "message": status}
+            return (
+                status,
+                t("Robot: online"),
+                "brand",
+                {"status": "online", "message": status},
+                _control_state_payload(mode="acquired"),
+            )
         except Exception as exc:
             error = t("Robot connection failed: {error}", error=exc)
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = error
-            return error, t("Robot: error"), "yellow", {"status": "error", "message": error}
+            return (
+                error,
+                t("Robot: error"),
+                "yellow",
+                {"status": "error", "message": error},
+                _control_state_payload(mode="acquired"),
+            )
         finally:
             ui_session.robot_probe_inflight = False
 
@@ -310,15 +399,25 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("robot-power-toggle", "checked"),
         State("robot-uri", "value"),
         State("robot-power-state", "data"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_power_toggle(
         checked: bool,
         robot_uri: Optional[str],
         power_state: Optional[dict],
+        control_state: Optional[dict],
     ) -> dmc.Notification:
         import app.codroid_picker as codroid_picker_module
 
+        if codroid_picker_module._robot_control_released(control_state):
+            return dmc.Notification(
+                action="show",
+                title=t("Robot control released"),
+                message=t("Robot control is released. Acquire control first."),
+                color="yellow",
+                autoClose=5000,
+            )
         if power_state and power_state.get("value") == checked:
             return no_update
         try:
@@ -354,6 +453,7 @@ def register_connection_callbacks(app: Dash) -> None:
         Output("robot-power-state", "data"),
         Input("robot-status-interval", "n_intervals"),
         Input("robot-connection-state", "data"),
+        Input("robot-control-state", "data"),
         State("robot-uri", "value"),
         State("robot-power-state", "data"),
         prevent_initial_call=False,
@@ -361,12 +461,15 @@ def register_connection_callbacks(app: Dash) -> None:
     async def _sync_robot_power_state(
         _intervals: int,
         robot_state: Optional[dict],
+        control_state: Optional[dict],
         robot_uri: Optional[str],
         current_state: Optional[dict],
     ) -> dict:
         import asyncio
         import app.codroid_picker as codroid_picker_module
 
+        if codroid_picker_module._robot_control_released(control_state):
+            return no_update
         if (robot_state or {}).get("status") != "online":
             return no_update
         now = time.time()

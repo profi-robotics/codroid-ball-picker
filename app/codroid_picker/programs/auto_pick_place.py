@@ -36,11 +36,17 @@ from app.codroid_picker.robot_motion import (
 )
 from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
 from app.codroid_picker.gripper_utils import await_grip_status
+from app.codroid_picker.persistence import _record_pick_cycle
 from app.codroid_picker.target_planner import (
     PickPlan,
     TargetCandidate,
     plan_pick_strategy,
     rank_targets,
+)
+from app.codroid_picker.auto_plan_state import (
+    clear_auto_plan_snapshot,
+    publish_auto_plan_snapshot,
+    update_auto_plan_snapshot,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +54,22 @@ LOGGER = logging.getLogger(__name__)
 
 class EmptyGripError(RuntimeError):
     """Raised when a pick closes without detecting a gripped object."""
+
+
+def _record_cycle_metrics_safe(success: bool, cycle_started_at: Optional[float]) -> None:
+    """Record cycle metrics, with a lightweight fallback for unit tests."""
+    try:
+        _record_pick_cycle(success, cycle_started_at)
+        return
+    except RuntimeError:
+        # App registry may be intentionally uninitialized in isolated unit tests.
+        from app.codroid_picker.session import SESSION
+
+        SESSION.pick_attempts += 1
+        if success:
+            SESSION.pick_successes += 1
+        else:
+            SESSION.pick_failures += 1
 
 
 class AutoPickPlaceProgram(RobotProgram):
@@ -143,6 +165,8 @@ class AutoPickPlaceProgram(RobotProgram):
         """Execute the auto pick and place loop."""
         from app.codroid_picker.session import SESSION
 
+        clear_auto_plan_snapshot()
+
         settings = registry().settings
         coordinate_id = registry().robot_coordinate_id
         workspace_def = SESSION.workspace_definition
@@ -210,6 +234,11 @@ class AutoPickPlaceProgram(RobotProgram):
             run_orientation[0],
             run_orientation[1],
             run_orientation[2],
+        )
+        publish_auto_plan_snapshot(
+            stage="starting",
+            message="Auto program started.",
+            orientation=run_orientation,
         )
 
         self.update_message("Starting auto loop...")
@@ -301,6 +330,18 @@ class AutoPickPlaceProgram(RobotProgram):
 
                 if not targets:
                     # No targets - wait at drop position
+                    publish_auto_plan_snapshot(
+                        stage="waiting_for_targets",
+                        message="No targets detected. Waiting at drop.",
+                        ranked_candidates=[],
+                        selected_candidate=None,
+                        approach_mm=approach_mm,
+                        pick_mm=pick_mm,
+                        drop_mm=drop_mm,
+                        orientation=run_orientation,
+                        gripper_open_mm=settings.gripper_profile.open_width_default,
+                        meta={"detections": len(detections)},
+                    )
                     if not SESSION.auto_waiting_at_drop:
                         self.update_message(
                             "No targets, moving to drop position...")
@@ -327,6 +368,21 @@ class AutoPickPlaceProgram(RobotProgram):
                 SESSION.auto_waiting_at_drop = False
                 picked_this_cycle = False
                 missed_grip_this_cycle = False
+                cycle_started_at = time.monotonic()
+                publish_auto_plan_snapshot(
+                    stage="ranked",
+                    message="Targets ranked.",
+                    ranked_candidates=ranked_candidates,
+                    selected_candidate=ranked_candidates[0],
+                    approach_mm=approach_mm,
+                    pick_mm=pick_mm,
+                    drop_mm=drop_mm,
+                    orientation=run_orientation,
+                    meta={
+                        "targets": len(targets),
+                        "detections": len(detections),
+                    },
+                )
                 for candidate in ranked_candidates:
                     pick_plan = plan_pick_strategy(
                         candidate,
@@ -345,6 +401,17 @@ class AutoPickPlaceProgram(RobotProgram):
                     self.update_message(
                         f"Picking target at ({target_coord5[0]:.1f}, {target_coord5[1]:.1f})..."
                     )
+                    publish_auto_plan_snapshot(
+                        stage="candidate_selected",
+                        message="Candidate selected for planning.",
+                        ranked_candidates=ranked_candidates,
+                        selected_candidate=candidate,
+                        pick_plan=pick_plan,
+                        approach_mm=approach_mm,
+                        pick_mm=pick_mm,
+                        drop_mm=drop_mm,
+                        orientation=run_orientation,
+                    )
                     if pick_plan.mode == "separate_then_rescan":
                         LOGGER.info(
                             "Auto: target crowded, trying side-separation before pick."
@@ -353,6 +420,11 @@ class AutoPickPlaceProgram(RobotProgram):
                         for attempt in range(1, max(1, separation_max_attempts) + 1):
                             self.update_message(
                                 f"Separating cluster attempt {attempt}/{max(1, separation_max_attempts)}..."
+                            )
+                            update_auto_plan_snapshot(
+                                stage="separation_attempt",
+                                message="Target is clustered. Executing separation nudge.",
+                                meta={"attempt": attempt, "max_attempts": max(1, separation_max_attempts)},
                             )
                             await self._execute_separation_nudge(
                                 robot_api,
@@ -399,10 +471,26 @@ class AutoPickPlaceProgram(RobotProgram):
                                 attempt,
                                 pick_plan.mode,
                             )
+                            publish_auto_plan_snapshot(
+                                stage="replan_after_separation",
+                                message="Re-planned after separation attempt.",
+                                ranked_candidates=ranked_candidates,
+                                selected_candidate=candidate,
+                                pick_plan=pick_plan,
+                                approach_mm=approach_mm,
+                                pick_mm=pick_mm,
+                                drop_mm=drop_mm,
+                                orientation=run_orientation,
+                                meta={"attempt": attempt},
+                            )
                             if pick_plan.mode == "rotate_pick":
                                 separated = True
                                 break
                         if not separated:
+                            update_auto_plan_snapshot(
+                                stage="separation_failed",
+                                message="Unable to isolate candidate after separation attempts.",
+                            )
                             continue
 
                     target = candidate.detection
@@ -434,24 +522,44 @@ class AutoPickPlaceProgram(RobotProgram):
                             orientation=run_orientation,
                         )
                         cycles_completed += 1
+                        _record_cycle_metrics_safe(True, cycle_started_at)
                         picked_this_cycle = True
+                        update_auto_plan_snapshot(
+                            stage="cycle_complete",
+                            message="Pick/drop cycle completed.",
+                            meta={"cycles_completed": cycles_completed, "cycles_failed": cycles_failed},
+                        )
                         self.update_message(
                             f"Cycle complete. Total: {cycles_completed} picked, {cycles_failed} failed."
                         )
                         break
                     except EmptyGripError as exc:
                         LOGGER.info("Auto: empty grip detected, rescanning workspace: %s", exc)
+                        update_auto_plan_snapshot(
+                            stage="empty_grip",
+                            message="Grip closed without object; rescanning.",
+                            meta={"error": str(exc)},
+                        )
                         missed_grip_this_cycle = True
                         break
                     except Exception as exc:
                         LOGGER.warning(f"Pick/place cycle failed for candidate: {exc}")
+                        update_auto_plan_snapshot(
+                            stage="candidate_failed",
+                            message=f"Candidate failed: {exc}",
+                        )
                         continue
 
                 if not picked_this_cycle:
                     cycles_failed += 1
+                    _record_cycle_metrics_safe(False, cycle_started_at)
                     if missed_grip_this_cycle:
                         continue
                     try:
+                        update_auto_plan_snapshot(
+                            stage="returning_to_drop",
+                            message="No successful pick. Returning to drop pose.",
+                        )
                         await self._move_to_drop(
                             robot_api,
                             approach_mm=approach_mm,
@@ -463,9 +571,18 @@ class AutoPickPlaceProgram(RobotProgram):
                         pass
 
         except OperationAbort:
+            update_auto_plan_snapshot(
+                stage="stopped",
+                message="Auto program stopped.",
+            )
             pass
 
         message = f"Auto operation stopped. {cycles_completed} cycles completed, {cycles_failed} failed."
+        update_auto_plan_snapshot(
+            stage="stopped",
+            message=message,
+            meta={"cycles_completed": cycles_completed, "cycles_failed": cycles_failed},
+        )
         self.finish(status="idle", message=message)
         return ProgramResult(
             status=ProgramStatus.COMPLETED,
@@ -505,6 +622,18 @@ class AutoPickPlaceProgram(RobotProgram):
             # Simple estimation - would need calibration for accuracy
             width_mm = width_px * 0.2  # rough estimate
             gripper_close = max(gripper_close, width_mm * 0.9)
+
+        publish_auto_plan_snapshot(
+            stage="executing_pick",
+            message="Executing pick motion.",
+            selected_candidate=target,
+            pick_plan=PickPlan(mode="rotate_pick", final_c=final_c, separation=None),
+            approach_mm=approach_mm,
+            pick_mm=pick_mm,
+            orientation=(orientation[0], orientation[1], final_c),
+            gripper_close_mm=gripper_close,
+            gripper_open_mm=settings.gripper_profile.open_width_default,
+        )
 
         posture = registry().get_or_create_robot_session().position_snapshot()
         transit_z = float(posture.z)
@@ -717,6 +846,10 @@ class AutoPickPlaceProgram(RobotProgram):
         if not gripped:
             SESSION.robot_has_object = False
             command_gripper(settings.gripper_profile.open_width_default, "opened")
+            update_auto_plan_snapshot(
+                stage="empty_grip",
+                message="No object detected after close command.",
+            )
             raise EmptyGripError("No object detected after grip close.")
 
         SESSION.robot_has_object = True
@@ -822,6 +955,19 @@ class AutoPickPlaceProgram(RobotProgram):
             orientation=orientation,
             approach_mm=approach_mm,
             drop_mm=drop_mm,
+        )
+        update_auto_plan_snapshot(
+            stage="executing_drop",
+            message="Executing drop sequence.",
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+            orientation=orientation,
+            gripper_open_mm=settings.gripper_profile.open_width_default,
+            drop_target_robot=drop_target,
+            meta={
+                "drop_approach_pose": dict(approach_pose),
+                "drop_pose": dict(drop_pose),
+            },
         )
 
         # Move to approach
@@ -937,6 +1083,13 @@ class AutoPickPlaceProgram(RobotProgram):
             gripper_open = settings.gripper_profile.open_width_default
             command_gripper(gripper_open, "opened")
             SESSION.robot_has_object = False
+        update_auto_plan_snapshot(
+            stage="waiting_at_drop",
+            message="Robot is waiting at drop pose.",
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+            orientation=orientation,
+        )
 
     async def _move_linear_with_hold(
         self,

@@ -37,18 +37,27 @@ def register_controls_callbacks(app: Dash) -> None:
         Input("robot-speed-slider", "value"),
         State("robot-connection-state", "data"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _apply_robot_speed(
         value: Optional[float],
         robot_state: Optional[dict],
         robot_uri: Optional[str],
+        control_state: Optional[dict],
     ) -> dict:
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.programs import get_registry
 
         if value is None:
             return no_update
+        if codroid_picker_module._robot_control_released(control_state):
+            return {
+                "status": "released",
+                "value": value,
+                "error": t("Robot control is released. Acquire control first."),
+                "updated": time.time(),
+            }
         rate = max(0.0, min(1.0, float(value) / 100.0))
         now = time.time()
 
@@ -94,14 +103,27 @@ def register_controls_callbacks(app: Dash) -> None:
         Output("robot-error-state", "data", allow_duplicate=True),
         Input("safety-stop", "n_clicks"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_safety_stop(
         _clicks: int,
         robot_uri: Optional[str],
+        control_state: Optional[dict],
     ) -> Tuple[dmc.Notification, dict]:
         import app.codroid_picker as codroid_picker_module
 
+        if codroid_picker_module._robot_control_released(control_state):
+            return (
+                dmc.Notification(
+                    action="show",
+                    title=t("Robot control released"),
+                    message=t("Robot control is released. Acquire control first."),
+                    color="yellow",
+                    autoClose=5000,
+                ),
+                no_update,
+            )
         try:
             async def _power_off(api: codroid_picker_module.CodroidAPI) -> None:
                 await api.stop_command()
@@ -151,8 +173,14 @@ def register_controls_callbacks(app: Dash) -> None:
         Output("robot-speed-decrease", "disabled"),
         Output("robot-speed-increase", "disabled"),
         Input("robot-connection-state", "data"),
+        Input("robot-control-state", "data"),
     )
-    def _sync_robot_controls(robot_state: Optional[dict]) -> Tuple[bool, bool, bool, bool, bool]:
+    def _sync_robot_controls(
+        robot_state: Optional[dict],
+        control_state: Optional[dict],
+    ) -> Tuple[bool, bool, bool, bool, bool]:
+        import app.codroid_picker as codroid_picker_module
+
         status = (robot_state or {}).get("status") or "offline"
-        disabled = status != "online"
+        disabled = status != "online" or codroid_picker_module._robot_control_released(control_state)
         return disabled, disabled, disabled, disabled, disabled

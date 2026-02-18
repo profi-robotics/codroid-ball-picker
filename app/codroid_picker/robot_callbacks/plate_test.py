@@ -29,6 +29,7 @@ def register_plate_test_callbacks(app: Dash) -> None:
         State("plate-test-grip-timeout", "value"),
         State("robot-uri", "value"),
         State("robot-connection-state", "data"),
+        State("robot-control-state", "data"),
         State("gripper-connection-state", "data"),
         prevent_initial_call=True,
     )
@@ -44,6 +45,7 @@ def register_plate_test_callbacks(app: Dash) -> None:
         grip_timeout_s: Optional[float],
         robot_uri: Optional[str],
         robot_state: Optional[dict],
+        control_state: Optional[dict],
         gripper_state: Optional[dict],
     ) -> Tuple[str, str]:
         """Run plate pick & place test using the PlateTestProgram.
@@ -65,6 +67,9 @@ def register_plate_test_callbacks(app: Dash) -> None:
         def _abort(message: str) -> Tuple[str, str]:
             _set_plate_test_state(message, running=False)
             return message, ""
+
+        if codroid_picker_module._robot_control_released(control_state):
+            return _abort(t("Robot control is released. Acquire control first."))
 
         # Validate connection states
         if (robot_state or {}).get("status") != "online":

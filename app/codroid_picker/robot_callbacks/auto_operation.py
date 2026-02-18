@@ -129,6 +129,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         Input("auto-stop", "n_clicks"),
         State("auto-operation-state", "data"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_auto_operation(
@@ -136,6 +137,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         stop_clicks: int,
         current_state: Optional[dict],
         robot_uri: Optional[str],
+        control_state: Optional[dict],
     ) -> Tuple[dict, dmc.Notification]:
         """Handle auto operation start/stop.
 
@@ -152,6 +154,17 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         SESSION = codroid_picker_module.SESSION
         LOGGER = codroid_picker_module.LOGGER
         DEFAULT_ROBOT_URI = codroid_picker_module.DEFAULT_ROBOT_URI
+
+        if codroid_picker_module._robot_control_released(control_state):
+            return (
+                no_update,
+                dmc.Notification(
+                    title=t("Robot control released"),
+                    message=t("Robot control is released. Acquire control first."),
+                    color="yellow",
+                    action="show",
+                ),
+            )
 
         if trigger_id == "auto-start":
             # Check if already running

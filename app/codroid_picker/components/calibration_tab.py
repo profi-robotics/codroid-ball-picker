@@ -297,6 +297,7 @@ def build_camera_panel(title: str | None = None) -> dmc.Card:
                                     {"label": t("Workspace"), "value": "workspace"},
                                     {"label": t("Plate"), "value": "plate"},
                                     {"label": t("Detections"), "value": "detection"},
+                                    {"label": t("Auto Plan"), "value": "auto-plan"},
                                     {"label": t("Off"), "value": "none"},
                                 ],
                                 value="auto",

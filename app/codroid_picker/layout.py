@@ -137,8 +137,14 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.Button(t("Test robot connection"),
                                    id="robot-test", variant="light"),
                         dmc.Button(
-                            t("Disconnect robot"),
-                            id="robot-disconnect",
+                            t("Acquire robot control"),
+                            id="robot-acquire-control",
+                            variant="light",
+                            color="teal",
+                        ),
+                        dmc.Button(
+                            t("Release robot control"),
+                            id="robot-release-control",
                             variant="outline",
                             color="red",
                         ),
@@ -560,6 +566,10 @@ def build_layout() -> dmc.MantineProvider:
                 dcc.Location(id="app-location", refresh=True),
                 dcc.Store(id="camera-connection-state"),
                 dcc.Store(id="robot-connection-state"),
+                dcc.Store(
+                    id="robot-control-state",
+                    data={"mode": "acquired", "released_at": 0.0, "message": ""},
+                ),
                 dcc.Store(id="ui-language-state", data={"value": current_locale()}),
                 dcc.Store(
                     id="gripper-connection-state",

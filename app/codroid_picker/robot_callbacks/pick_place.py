@@ -37,6 +37,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
         State("shared-segment-max", "value"),
         State("shared-segment-fraction", "value"),
         State("robot-uri", "value"),
+        State("robot-control-state", "data"),
         prevent_initial_call=True,
     )
     async def _handle_pick_place(
@@ -54,6 +55,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
         segment_max: Optional[float],
         segment_fraction: Optional[float],
         robot_uri: Optional[str],
+        control_state: Optional[dict],
     ) -> Tuple[str, str]:
         """Handle manual pick and place operations.
 
@@ -69,6 +71,8 @@ def register_pick_place_callbacks(app: Dash) -> None:
         trigger = callback_context.triggered_id
         if trigger is None:
             return no_update, no_update
+        if codroid_picker_module._robot_control_released(control_state):
+            return t("Robot control is released. Acquire control first."), no_update
 
         SESSION = codroid_picker_module.SESSION
         LOGGER = codroid_picker_module.LOGGER

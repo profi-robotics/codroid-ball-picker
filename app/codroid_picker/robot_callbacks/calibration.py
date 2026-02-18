@@ -330,6 +330,7 @@ def register_calibration_callbacks(app: Dash) -> None:
         Input("start-robot-calibration", "n_clicks"),
         State("plate-detection-state", "data"),
         State("robot-connection-state", "data"),
+        State("robot-control-state", "data"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
@@ -337,9 +338,19 @@ def register_calibration_callbacks(app: Dash) -> None:
         _clicks: int,
         plate_state: Optional[dict],
         robot_state: Optional[dict],
+        control_state: Optional[dict],
         robot_uri: Optional[str],
     ) -> dict:
         import app.codroid_picker as codroid_picker_module
+
+        if codroid_picker_module._robot_control_released(control_state):
+            message = "Robot control is released. Acquire control first."
+            codroid_picker_module._set_robot_guidance(
+                message,
+                status="error",
+                verification_ready=False,
+            )
+            return {"status": "error", "message": message}
 
         codroid_picker_module.LOGGER.info(
             "=== Robot calibration button clicked ===")
@@ -514,18 +525,27 @@ def register_calibration_callbacks(app: Dash) -> None:
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("robot-calibration-verify", "n_clicks"),
         Input("run-verification-inline", "n_clicks"),
+        State("robot-control-state", "data"),
         State("robot-uri", "value"),
         prevent_initial_call=True,
     )
     async def _run_robot_calibration_verification(
         _verify_clicks: int,
         _inline_clicks: int,
+        control_state: Optional[dict],
         robot_uri: Optional[str],
     ) -> dict:
         """Run the verification move using the VerificationProgram via registry."""
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.programs import get_registry
         from app.codroid_picker.programs.base import ProgramStatus
+
+        if codroid_picker_module._robot_control_released(control_state):
+            message = "Robot control is released. Acquire control first."
+            codroid_picker_module._set_robot_guidance(
+                message, status="error", step=5, verification_ready=False
+            )
+            return {"status": "error", "message": message, "step": 5}
 
         registry = get_registry()
 
