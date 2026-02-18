@@ -11,6 +11,7 @@ import time
 from typing import Optional, Tuple
 
 from dash import Dash, Input, no_update, Output, State
+from app.codroid_picker.i18n import t
 
 
 def register_state_sync_callbacks(app: Dash) -> None:
@@ -36,19 +37,16 @@ def register_state_sync_callbacks(app: Dash) -> None:
         # Show position if we have recent data (from any source)
         if session.posture_seen() and age_s < 2.0:
             return (
-                f"🤖 Robot position: "
-                f"X={pos.x:.1f}, "
-                f"Y={pos.y:.1f}, "
-                f"Z={pos.z:.1f}"
+                t("🤖 Robot position: X={x:.1f}, Y={y:.1f}, Z={z:.1f}", x=pos.x, y=pos.y, z=pos.z)
             )
 
         # Check if robot is connected via test connection
         if (robot_conn_state or {}).get("status") == "online":
             if not session.posture_seen():
-                return "Robot: Awaiting posture stream..."
-            return f"Robot: Position stale (last seen {age_s:.1f}s ago)"
+                return t("Robot: Awaiting posture stream...")
+            return t("Robot: Position stale (last seen {age:.1f}s ago)", age=age_s)
 
-        return "Robot: --"
+        return t("Robot: --")
 
     @app.callback(
         Output("robot-error-state", "data", allow_duplicate=True),
@@ -110,31 +108,31 @@ def register_state_sync_callbacks(app: Dash) -> None:
         if emergency_active:
             snapshot = codroid_picker_module._activate_robot_error(
                 "emergency_stop",
-                message="Emergency stop reported by robot controller.",
+                message=t("Emergency stop reported by robot controller."),
                 physical_pressed=physical_pressed,
             )
         elif overspeed_active:
             snapshot = codroid_picker_module._activate_robot_error(
                 "overspeed",
-                message="Overspeed alarm reported by robot controller.",
+                message=t("Overspeed alarm reported by robot controller."),
                 physical_pressed=False,
             )
         elif joint_active:
             snapshot = codroid_picker_module._activate_robot_error(
                 "joint_protection",
-                message="Joint protection alarm reported by robot controller.",
+                message=t("Joint protection alarm reported by robot controller."),
                 physical_pressed=False,
             )
         elif wrong_tool_active:
             snapshot = codroid_picker_module._activate_robot_error(
                 "wrong_tool",
-                message="Tool/payload mismatch reported by robot controller.",
+                message=t("Tool/payload mismatch reported by robot controller."),
                 physical_pressed=False,
             )
         elif drag_active:
             snapshot = codroid_picker_module._activate_robot_error(
                 "drag_not_allowed",
-                message="Drag not allowed warning reported by robot controller.",
+                message=t("Drag not allowed warning reported by robot controller."),
                 physical_pressed=False,
             )
         else:
@@ -191,14 +189,14 @@ def register_state_sync_callbacks(app: Dash) -> None:
             return (
                 {"display": "none"},
                 {"display": "block"},
-                "Rescue mode active.",
+                t("Rescue mode active."),
                 True,
                 {"display": "inline-flex"},
             )
         return (
             {"display": "flex"},
             {"display": "none"},
-            "Rescue mode idle." if robot_connected else "Rescue mode unavailable (robot not connected).",
+            t("Rescue mode idle.") if robot_connected else t("Rescue mode unavailable (robot not connected)."),
             not robot_connected,  # Disabled when robot not connected
             {"display": "none"},
         )
@@ -218,8 +216,8 @@ def register_state_sync_callbacks(app: Dash) -> None:
         session = codroid_picker_module._get_robot_session()
         if not session.posture_seen():
             if (robot_conn_state or {}).get("status") == "online":
-                return "X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---"
-            return "X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---"
+                return t("X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---")
+            return t("X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---")
 
         pos = session.position_snapshot()
         text = (

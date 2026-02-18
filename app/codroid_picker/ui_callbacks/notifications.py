@@ -7,6 +7,7 @@ This module contains Dash callbacks for:
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_notification_callbacks(app: Dash) -> None:
@@ -40,20 +41,20 @@ def register_notification_callbacks(app: Dash) -> None:
             # Determine notification color and title based on status
             if status == "live":
                 color = "teal"
-                title = f"{name.capitalize()} connected"
+                title = t("{name} connected", name=name.capitalize())
             elif status == "unavailable":
                 color = "orange"
-                title = f"{name.capitalize()} unavailable"
+                title = t("{name} unavailable", name=name.capitalize())
             elif status == "error":
                 color = "red"
-                title = f"{name.capitalize()} error"
+                title = t("{name} error", name=name.capitalize())
             elif status == "off":
                 color = "gray"
-                title = f"{name.capitalize()} disconnected"
+                title = t("{name} disconnected", name=name.capitalize())
             else:
                 # Default for unknown statuses
                 color = "gray"
-                title = f"{name.capitalize()} status changed"
+                title = t("{name} status changed", name=name.capitalize())
 
             notifications.append(
                 {

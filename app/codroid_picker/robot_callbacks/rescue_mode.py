@@ -4,6 +4,7 @@ from typing import Callable, Optional
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State
+from app.codroid_picker.i18n import t
 
 
 async def _execute_robot_action(
@@ -63,16 +64,16 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         if (robot_state or {}).get("status") != "online":
             return codroid_picker_module.dmc.Notification(
                 action="show",
-                title="Rescue mode unavailable",
-                message="Robot is not connected.",
+                title=t("Rescue mode unavailable"),
+                message=t("Robot is not connected."),
                 color="red",
                 autoClose=5000,
             )
         if (rescue_state or {}).get("active"):
             return codroid_picker_module.dmc.Notification(
                 action="show",
-                title="Rescue mode",
-                message="Rescue mode is already active.",
+                title=t("Rescue mode"),
+                message=t("Rescue mode is already active."),
                 color="orange",
                 autoClose=4000,
             )
@@ -83,9 +84,9 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         return await _execute_robot_action(
             robot_uri,
             _enter,
-            success_title="Rescue mode requested",
-            success_message="Rescue mode command sent.",
-            failure_title="Rescue mode failed",
+            success_title=t("Rescue mode requested"),
+            success_message=t("Rescue mode command sent."),
+            failure_title=t("Rescue mode failed"),
         )
 
     @app.callback(
@@ -105,8 +106,8 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         if not (rescue_state or {}).get("active"):
             return codroid_picker_module.dmc.Notification(
                 action="show",
-                title="Rescue mode",
-                message="Rescue mode is not active.",
+                title=t("Rescue mode"),
+                message=t("Rescue mode is not active."),
                 color="gray",
                 autoClose=4000,
             )
@@ -117,9 +118,9 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         return await _execute_robot_action(
             robot_uri,
             _exit,
-            success_title="Rescue mode exit requested",
-            success_message="Exit command sent.",
-            failure_title="Exit rescue mode failed",
+            success_title=t("Rescue mode exit requested"),
+            success_message=t("Exit command sent."),
+            failure_title=t("Exit rescue mode failed"),
         )
 
     @app.callback(
@@ -159,7 +160,7 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         if not (rescue_state or {}).get("active"):
-            return "Rescue mode is not active."
+            return t("Rescue mode is not active.")
 
         trigger = codroid_picker_module.callback_context.triggered_id
         if not trigger:
@@ -199,6 +200,6 @@ def register_rescue_mode_callbacks(app: Dash) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.exception("Rescue joint jog failed")
-            return f"Rescue jog failed: {exc}"
+            return t("Rescue jog failed: {error}", error=exc)
         sign = "+" if direction > 0 else "-"
-        return f"Jogged J{axis}{sign} for {codroid_picker_module.SETTINGS.rescue_jog_hold_s:.2f}s."
+        return t("Jogged J{axis}{sign} for {seconds:.2f}s.", axis=axis, sign=sign, seconds=codroid_picker_module.SETTINGS.rescue_jog_hold_s)

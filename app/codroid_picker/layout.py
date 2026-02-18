@@ -36,6 +36,7 @@ from app.codroid_picker.modals import (
     build_wrong_tool_modal,
     build_drag_not_allowed_modal,
 )
+from app.codroid_picker.i18n import current_locale, t
 
 
 def build_setup_drawer() -> dmc.Drawer:
@@ -43,7 +44,7 @@ def build_setup_drawer() -> dmc.Drawer:
     return dmc.Drawer(
         id="setup-drawer",
         opened=False,
-        title="Setup & Connections",
+        title=t("setup.title"),
         padding="md",
         size="lg",
         zIndex=2000,
@@ -52,14 +53,27 @@ def build_setup_drawer() -> dmc.Drawer:
         withinPortal=True,
         children=dmc.Stack(
             [
-                dmc.Text("Camera connection", fw=600),
+                dmc.Select(
+                    id="language-select-setup",
+                    label=t("language.label"),
+                    data=[
+                        {"value": "en", "label": t("language.english")},
+                        {"value": "uk", "label": t("language.ukrainian")},
+                    ],
+                    value=current_locale(),
+                    clearable=False,
+                    allowDeselect=False,
+                    comboboxProps={"withinPortal": False},
+                    size="sm",
+                ),
+                dmc.Text(t("Camera connection"), fw=600),
                 dmc.Group(
                     [
-                        dmc.Button("Scan for camera",
+                        dmc.Button(t("Scan for camera"),
                                    id="camera-scan", variant="light"),
                         dmc.Switch(
                             id="camera-enable",
-                            label="Enable live camera stream",
+                            label=t("Enable live camera stream"),
                             checked=True,
                             color="teal",
                         ),
@@ -70,21 +84,21 @@ def build_setup_drawer() -> dmc.Drawer:
                     [
                         dmc.NumberInput(
                             id="camera-width",
-                            label="Width",
+                            label=t("Width"),
                             value=DEFAULT_RESOLUTION[0],
                             min=320,
                             max=3840,
                         ),
                         dmc.NumberInput(
                             id="camera-height",
-                            label="Height",
+                            label=t("Height"),
                             value=DEFAULT_RESOLUTION[1],
                             min=240,
                             max=2160,
                         ),
                         dmc.NumberInput(
                             id="camera-fps-input",
-                            label="FPS",
+                            label=t("FPS"),
                             value=DEFAULT_FPS,
                             min=1,
                             max=120,
@@ -95,7 +109,7 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Switch(
                     id="camera-lock-af",
-                    label="Lock autofocus",
+                    label=t("Lock autofocus"),
                     checked=False,
                     color="teal",
                     size="md",
@@ -103,27 +117,27 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Text(id="camera-status-text", size="sm", c="dimmed"),
                 html.Div(id="camera-device-info"),
                 dmc.Divider(),
-                dmc.Text("Robot connection", fw=600),
+                dmc.Text(t("Robot connection"), fw=600),
                 dmc.TextInput(
                     id="robot-uri",
-                    label="WebSocket URI",
+                    label=t("WebSocket URI"),
                     value=app_settings.DEFAULT_ROBOT_URI,
                 ),
                 dmc.NumberInput(
                     id="settings-robot-coordinate-id",
-                    label="Robot coordinate ID",
+                    label=t("Robot coordinate ID"),
                     value=SETTINGS.robot_coordinate_id,
-                    description="Coordinate system used for plate + pick controls.",
+                    description=t("Coordinate system used for plate + pick controls."),
                     min=0,
                     max=10,
                     size="sm",
                 ),
                 dmc.Group(
                     [
-                        dmc.Button("Test robot connection",
+                        dmc.Button(t("Test robot connection"),
                                    id="robot-test", variant="light"),
                         dmc.Button(
-                            "Disconnect robot",
+                            t("Disconnect robot"),
                             id="robot-disconnect",
                             variant="outline",
                             color="red",
@@ -133,23 +147,23 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Text(id="robot-status-text", size="sm", c="dimmed"),
                 dmc.Divider(),
-                dmc.Text("OnRobot 2FG7 Gripper", fw=600),
+                dmc.Text(t("OnRobot 2FG7 Gripper"), fw=600),
                 dmc.TextInput(
                     id="gripper-cb-ip",
-                    label="Compute Box IP Address",
+                    label=t("Compute Box IP Address"),
                     value=app_settings.DEFAULT_GRIPPER_IP,
                     placeholder="192.168.101.95",
-                    description="IP address of the OnRobot Compute Box",
+                    description=t("IP address of the OnRobot Compute Box"),
                 ),
                 dmc.Group(
                     [
                         dmc.Switch(
                             id="gripper-enable",
-                            label="Enable gripper connection",
+                            label=t("Enable gripper connection"),
                             checked=True,
                             color="teal",
                         ),
-                        dmc.Button("Test gripper",
+                        dmc.Button(t("Test gripper"),
                                    id="gripper-test", variant="light"),
                     ],
                     gap="md",
@@ -158,12 +172,12 @@ def build_setup_drawer() -> dmc.Drawer:
                 html.Div(id="gripper-device-info"),
                 dmc.Stack(
                     [
-                        dmc.Text("Finger orientation", fw=600, size="sm"),
+                        dmc.Text(t("Finger orientation"), fw=600, size="sm"),
                         dmc.SegmentedControl(
                             id="gripper-orientation",
                             data=[
-                                {"label": "Inward", "value": "inward"},
-                                {"label": "Outward", "value": "outward"},
+                                {"label": t("Inward"), "value": "inward"},
+                                {"label": t("Outward"), "value": "outward"},
                             ],
                             value="inward",
                             size="sm",
@@ -179,13 +193,13 @@ def build_setup_drawer() -> dmc.Drawer:
                     gap=4,
                 ),
                 dmc.Divider(),
-                dmc.Text("Calibration & settings", fw=600),
+                dmc.Text(t("Calibration & settings"), fw=600),
                 dmc.Grid(
                     [
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-marker-a",
-                                label="Marker ID A",
+                                label=t("Marker ID A"),
                                 value=SETTINGS.marker_ids[0],
                                 min=0,
                                 max=49,
@@ -196,7 +210,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-marker-b",
-                                label="Marker ID B",
+                                label=t("Marker ID B"),
                                 value=SETTINGS.marker_ids[1],
                                 min=0,
                                 max=49,
@@ -207,7 +221,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-marker-size",
-                                label="Marker size (mm)",
+                                label=t("Marker size (mm)"),
                                 value=SETTINGS.marker_size_mm,
                                 min=1,
                                 max=200,
@@ -218,7 +232,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.TextInput(
                                 id="settings-calib-path",
-                                label="Calibration bundle path",
+                                label=t("Calibration bundle path"),
                                 value=str(DEFAULT_BUNDLE_PATH),
                                 size="sm",
                             ),
@@ -227,7 +241,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.TextInput(
                                 id="settings-workspace-path",
-                                label="Workspace path",
+                                label=t("Workspace path"),
                                 value=str(DEFAULT_WORKSPACE_PATH),
                                 size="sm",
                             ),
@@ -236,7 +250,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.TextInput(
                                 id="settings-robot-calib-path",
-                                label="Robot calibration path",
+                                label=t("Robot calibration path"),
                                 value=str(DEFAULT_ROBOT_CALIBRATION_PATH),
                                 size="sm",
                             ),
@@ -245,23 +259,23 @@ def build_setup_drawer() -> dmc.Drawer:
                     ],
                     gutter="sm",
                 ),
-                dmc.Text("Auto pick & place defaults", fw=600),
+                dmc.Text(t("Auto pick & place defaults"), fw=600),
                 dmc.Grid(
                     [
                         dmc.GridCol(
                             dmc.TextInput(
                                 id="settings-auto-target-label",
-                                label="Target label",
+                                label=t("Target label"),
                                 value=SETTINGS.auto_target_label,
                                 size="sm",
-                                description="YOLO label the auto routine should pick.",
+                                description=t("YOLO label the auto routine should pick."),
                             ),
                             span=12,
                         ),
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-drop-ignore-radius",
-                                label="Drop ignore radius (mm)",
+                                label=t("Drop ignore radius (mm)"),
                                 value=SETTINGS.auto_drop_ignore_radius_mm,
                                 min=0,
                                 max=200,
@@ -273,7 +287,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-intrusion-match",
-                                label="Intrusion match (mm)",
+                                label=t("Intrusion match (mm)"),
                                 value=SETTINGS.auto_intrusion_match_mm,
                                 min=10,
                                 max=200,
@@ -285,7 +299,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-detection-stale",
-                                label="Detection stale (s)",
+                                label=t("Detection stale (s)"),
                                 value=SETTINGS.auto_detection_stale_s,
                                 min=0.05,
                                 max=2.0,
@@ -297,7 +311,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-idle-sleep",
-                                label="Idle sleep (s)",
+                                label=t("Idle sleep (s)"),
                                 value=SETTINGS.auto_idle_sleep_s,
                                 min=0.05,
                                 max=1.0,
@@ -309,7 +323,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.Switch(
                                 id="settings-auto-estimate-width",
-                                label="Estimate width",
+                                label=t("Estimate width"),
                                 checked=SETTINGS.auto_estimate_width,
                                 size="sm",
                             ),
@@ -318,7 +332,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-approach-height",
-                                label="Approach height (mm)",
+                                label=t("Approach height (mm)"),
                                 value=SETTINGS.auto_approach_mm,
                                 min=-200,
                                 max=0,
@@ -330,7 +344,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-pick-height",
-                                label="Pick height (mm)",
+                                label=t("Pick height (mm)"),
                                 value=SETTINGS.auto_pick_mm,
                                 min=-50,
                                 max=200,
@@ -342,7 +356,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-drop-height",
-                                label="Drop height (mm)",
+                                label=t("Drop height (mm)"),
                                 value=SETTINGS.auto_drop_mm,
                                 min=-50,
                                 max=200,
@@ -354,14 +368,14 @@ def build_setup_drawer() -> dmc.Drawer:
                     ],
                     gutter="sm",
                 ),
-                dmc.Text("Pick follow tuning", fw=600),
+                dmc.Text(t("Pick follow tuning"), fw=600),
                 dmc.Grid(
                     [
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-pick-follow-timeout",
-                                label="Timeout (s)",
-                                description="Max follow loop duration.",
+                                label=t("Timeout (s)"),
+                                description=t("Max follow loop duration."),
                                 value=SETTINGS.pick_follow_timeout_s,
                                 min=1,
                                 max=60,
@@ -373,7 +387,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-pick-follow-interval",
-                                label="Update interval (s)",
+                                label=t("Update interval (s)"),
                                 value=SETTINGS.pick_follow_update_interval_s,
                                 min=0.01,
                                 max=0.5,
@@ -385,7 +399,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-pick-follow-segment",
-                                label="Segment hold (s)",
+                                label=t("Segment hold (s)"),
                                 value=SETTINGS.pick_follow_segment_hold_s,
                                 min=0.01,
                                 max=1.0,
@@ -397,7 +411,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-pick-follow-settle",
-                                label="Settle time (s)",
+                                label=t("Settle time (s)"),
                                 value=SETTINGS.pick_follow_settle_s,
                                 min=0.01,
                                 max=5.0,
@@ -409,7 +423,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-pick-follow-tolerance",
-                                label="Tolerance (mm)",
+                                label=t("Tolerance (mm)"),
                                 value=SETTINGS.pick_follow_tolerance_mm,
                                 min=0.1,
                                 max=20.0,
@@ -421,13 +435,13 @@ def build_setup_drawer() -> dmc.Drawer:
                     ],
                     gutter="sm",
                 ),
-                dmc.Text("Safety guards", fw=600),
+                dmc.Text(t("Safety guards"), fw=600),
                 dmc.Grid(
                     [
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-rescue-jog-hold",
-                                label="Rescue jog hold (s)",
+                                label=t("Rescue jog hold (s)"),
                                 value=SETTINGS.rescue_jog_hold_s,
                                 min=0.1,
                                 max=1.5,
@@ -439,9 +453,9 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-coord5-max-z",
-                                label="Coord5 max Z (mm)",
+                                label=t("Coord5 max Z (mm)"),
                                 value=SETTINGS.coord5_max_z_mm,
-                                description="Positive Z moves downward; clamp to safe range.",
+                                description=t("Positive Z moves downward; clamp to safe range."),
                                 min=-50,
                                 max=50,
                                 step=1,
@@ -454,9 +468,9 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Group(
                     [
-                        dmc.Button("Save settings",
+                        dmc.Button(t("Save settings"),
                                    id="settings-save", color="teal"),
-                        dmc.Button("Reset to defaults", id="settings-reset",
+                        dmc.Button(t("Reset to defaults"), id="settings-reset",
                                    variant="outline", color="red"),
                         dmc.Text(id="settings-status", size="sm", c="dimmed"),
                     ],
@@ -465,7 +479,7 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Group(
                     [
-                        dmc.Button("Close", id="setup-close",
+                        dmc.Button(t("setup.close"), id="setup-close",
                                    variant="subtle"),
                     ],
                     justify="flex-end",
@@ -504,8 +518,10 @@ def build_layout() -> dmc.MantineProvider:
             [
                 dmc.NotificationContainer(
                     id="app-notifications", position="top-right", limit=3),
+                dcc.Location(id="app-location", refresh=True),
                 dcc.Store(id="camera-connection-state"),
                 dcc.Store(id="robot-connection-state"),
+                dcc.Store(id="ui-language-state", data={"value": current_locale()}),
                 dcc.Store(
                     id="gripper-connection-state",
                     data={"status": "offline", "message": ""},
@@ -650,11 +666,11 @@ def build_layout() -> dmc.MantineProvider:
                                                         dmc.TabsList(
                                                             [
                                                                 dmc.TabsTab(
-                                                                    "Applications", value="applications"),
+                                                                    t("tabs.applications"), value="applications"),
                                                                 dmc.TabsTab(
-                                                                    "Monitoring", value="monitoring"),
+                                                                    t("tabs.monitoring"), value="monitoring"),
                                                                 dmc.TabsTab(
-                                                                    "Calibration", value="calibration"),
+                                                                    t("tabs.calibration"), value="calibration"),
                                                             ],
                                                             style={
                                                                 "width": "100%",

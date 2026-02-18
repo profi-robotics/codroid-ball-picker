@@ -3,6 +3,7 @@
 from typing import Optional
 
 from dash import callback_context, Dash, Input, Output, State
+from app.codroid_picker.i18n import t
 
 
 def register_workspace_callbacks(app: Dash) -> None:
@@ -52,19 +53,27 @@ def register_workspace_callbacks(app: Dash) -> None:
             trigger = callback_context.triggered_id
             if trigger == "clear-workspace":
                 _clear_workspace_definition(DEFAULT_WORKSPACE_PATH)
-                return "Workspace definition cleared; robot movement unrestricted."
+                return t("Workspace definition cleared; robot movement unrestricted.")
             if trigger == "use-existing-workspace":
                 ws = load_workspace_definition(DEFAULT_WORKSPACE_PATH)
                 return (
-                    f"Workspace loaded from {DEFAULT_WORKSPACE_PATH}: "
-                    f"{ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+                    t(
+                        "Workspace loaded from {path}: {w:.1f} x {h:.1f} mm",
+                        path=DEFAULT_WORKSPACE_PATH,
+                        w=ws.width_mm,
+                        h=ws.height_mm,
+                    )
                 )
             ws = compute_workspace_from_latest(marker_ids, marker_size_mm)
             return (
-                f"Workspace computed and saved ({DEFAULT_WORKSPACE_PATH}): "
-                f"{ws.width_mm:.1f} x {ws.height_mm:.1f} mm"
+                t(
+                    "Workspace computed and saved ({path}): {w:.1f} x {h:.1f} mm",
+                    path=DEFAULT_WORKSPACE_PATH,
+                    w=ws.width_mm,
+                    h=ws.height_mm,
+                )
             )
         except Exception as exc:
-            return f"Workspace error: {exc}"
+            return t("Workspace error: {error}", error=exc)
 
     # Note: _handle_plate_actions callback removed - it was a no-op returning no_update

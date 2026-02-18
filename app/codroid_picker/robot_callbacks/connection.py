@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, html, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_connection_callbacks(app: Dash) -> None:
@@ -50,20 +51,20 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_last_probe_started_at = 0.0
             session.clear_position()
             codroid_picker_module._set_robot_guidance(
-                "Robot calibration idle. Click 'Begin calibrating robot' to start.",
+                t("Robot calibration idle. Click 'Begin calibrating robot' to start."),
                 status="idle",
                 step=0,
                 verification_ready=False,
             )
-            status = "Robot disconnected."
-            return status, "Robot: offline", "gray", {"status": "offline", "message": status}
+            status = t("Robot disconnected.")
+            return status, t("Robot: offline"), "gray", {"status": "offline", "message": status}
         if trigger == "monitor-interval":
             if session.is_connected(resolved_uri):
                 target = session.resolve_robot_target(resolved_uri)
-                status = f"Robot connected to {target['host']}:{target['port']}."
+                status = t("Robot connected to {host}:{port}.", host=target["host"], port=target["port"])
                 ui_session.robot_connection_attempted = True
                 ui_session.robot_last_connection_error = None
-                return status, "Robot: online", "brand", {"status": "online", "message": status}
+                return status, t("Robot: online"), "brand", {"status": "online", "message": status}
             # Skip background probes until the user explicitly requests
             # a connection test at least once.
             if not ui_session.robot_connection_attempted:
@@ -76,25 +77,25 @@ def register_connection_callbacks(app: Dash) -> None:
                     return no_update, no_update, no_update, no_update
                 return no_update, no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
-            status = "Robot connection check already in progress."
-            return status, "Robot: probing", "yellow", {"status": "probing", "message": status}
+            status = t("Robot connection check already in progress.")
+            return status, t("Robot: probing"), "yellow", {"status": "probing", "message": status}
         ui_session.robot_probe_inflight = True
         ui_session.robot_last_probe_started_at = time.time()
         try:
             response = await codroid_picker_module._probe_robot(resolved_uri)
             if not response:
-                raise RuntimeError("Robot probe returned no response.")
-            host = response.get("host", "unknown")
-            port = response.get("port", "unknown")
-            status = f"Robot connected to {host}:{port}."
+                raise RuntimeError(t("Robot probe returned no response."))
+            host = response.get("host", t("unknown"))
+            port = response.get("port", t("unknown"))
+            status = t("Robot connected to {host}:{port}.", host=host, port=port)
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = None
-            return status, "Robot: online", "brand", {"status": "online", "message": status}
+            return status, t("Robot: online"), "brand", {"status": "online", "message": status}
         except Exception as exc:
-            error = f"Robot connection failed: {exc}"
+            error = t("Robot connection failed: {error}", error=exc)
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = error
-            return error, "Robot: error", "yellow", {"status": "error", "message": error}
+            return error, t("Robot: error"), "yellow", {"status": "error", "message": error}
         finally:
             ui_session.robot_probe_inflight = False
 
@@ -130,11 +131,11 @@ def register_connection_callbacks(app: Dash) -> None:
                 codroid_picker_module.SESSION.gripper = None
                 codroid_picker_module.SESSION.gripper_device = None
             return (
-                "Gripper disabled",
+                t("Gripper disabled"),
                 html.Div(),
-                "Gripper: off",
+                t("Gripper: off"),
                 "gray",
-                {"status": "disabled", "message": "Gripper disabled"},
+                {"status": "disabled", "message": t("Gripper disabled")},
             )
 
         if not enabled:
@@ -151,19 +152,19 @@ def register_connection_callbacks(app: Dash) -> None:
 
                 if cb is None:
                     return (
-                        f"Failed to connect to Compute Box at {cb_ip}",
+                        t("Failed to connect to Compute Box at {ip}", ip=cb_ip),
                         html.Div(
                             dmc.Alert(
-                                "Cannot reach the gripper control box. Check power and network.",
-                                title="Gripper Unavailable",
+                                t("Cannot reach the gripper control box. Check power and network."),
+                                title=t("Gripper Unavailable"),
                                 color="yellow",
                             )
                         ),
-                        "Gripper: error",
+                        t("Gripper: error"),
                         "yellow",
                         {
                             "status": "error",
-                            "message": f"Failed to connect to Compute Box at {cb_ip}",
+                            "message": t("Failed to connect to Compute Box at {ip}", ip=cb_ip),
                         },
                     )
 
@@ -180,44 +181,42 @@ def register_connection_callbacks(app: Dash) -> None:
                 codroid_picker_module.SESSION.gripper = None
                 codroid_picker_module.SESSION.gripper_device = None
                 return (
-                    f"Failed to query gripper at {cb_ip}: {exc}",
+                    t("Failed to query gripper at {ip}: {error}", ip=cb_ip, error=exc),
                     html.Div(
                         dmc.Alert(
-                            "Could not reach the gripper. Verify the Compute Box IP and network connection.",
-                            title="Gripper Unavailable",
+                            t("Could not reach the gripper. Verify the Compute Box IP and network connection."),
+                            title=t("Gripper Unavailable"),
                             color="yellow",
                         )
                     ),
-                    "Gripper: error",
+                    t("Gripper: error"),
                     "yellow",
                     {
                         "status": "error",
-                        "message": f"Failed to query gripper at {cb_ip}: {exc}",
+                        "message": t("Failed to query gripper at {ip}: {error}", ip=cb_ip, error=exc),
                     },
                 )
 
             if not is_connected:
                 return (
-                    f"No 2FG7 gripper detected at Compute Box {cb_ip}",
+                    t("No 2FG7 gripper detected at Compute Box {ip}", ip=cb_ip),
                     html.Div(
                         dmc.Alert(
-                            "Ensure the 2FG7 gripper is connected to the Compute Box "
-                            "and powered on. Check the tool index setting if using "
-                            "a dual gripper setup.",
-                            title="Gripper Not Detected",
+                            t("Ensure the 2FG7 gripper is connected to the Compute Box and powered on. Check the tool index setting if using a dual gripper setup."),
+                            title=t("Gripper Not Detected"),
                             color="yellow",
                         )
                     ),
-                    "Gripper: error",
+                    t("Gripper: error"),
                     "yellow",
                     {
                         "status": "error",
-                        "message": f"No 2FG7 gripper detected at Compute Box {cb_ip}",
+                        "message": t("No 2FG7 gripper detected at Compute Box {ip}", ip=cb_ip),
                     },
                 )
 
             # Get gripper status and information
-            status_text = f"2FG7 connected at {cb_ip}"
+            status_text = t("2FG7 connected at {ip}", ip=cb_ip)
             t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
             codroid_picker_module.SESSION.gripper.start_status_stream()
 
@@ -238,10 +237,10 @@ def register_connection_callbacks(app: Dash) -> None:
                                 dmc.Stack(
                                     [
                                         dmc.Text(
-                                            "Width", size="sm", c="dimmed"),
+                                            t("Width"), size="sm", c="dimmed"),
                                         dmc.Text(
                                             f"{width:.1f} mm" if isinstance(
-                                                width, (int, float)) and width > -2 else "N/A",
+                                                width, (int, float)) and width > -2 else t("N/A"),
                                             fw=500,
                                         ),
                                     ],
@@ -250,10 +249,10 @@ def register_connection_callbacks(app: Dash) -> None:
                                 dmc.Stack(
                                     [
                                         dmc.Text(
-                                            "Force", size="sm", c="dimmed"),
+                                            t("Force"), size="sm", c="dimmed"),
                                         dmc.Text(
                                             f"{force:.1f} N" if isinstance(
-                                                force, (int, float)) and force > -2 else "N/A",
+                                                force, (int, float)) and force > -2 else t("N/A"),
                                             fw=500,
                                         ),
                                     ],
@@ -262,9 +261,9 @@ def register_connection_callbacks(app: Dash) -> None:
                                 dmc.Stack(
                                     [
                                         dmc.Text(
-                                            "Status", size="sm", c="dimmed"),
+                                            t("Status"), size="sm", c="dimmed"),
                                         dmc.Badge(
-                                            "Gripped" if is_gripped else "Open",
+                                            t("Gripped") if is_gripped else t("Open"),
                                             color="teal" if is_gripped else "gray",
                                             variant="light",
                                         ),
@@ -284,7 +283,7 @@ def register_connection_callbacks(app: Dash) -> None:
             return (
                 status_text,
                 info_card,
-                "Gripper: online",
+                t("Gripper: online"),
                 "brand",
                 {"status": "online", "message": status_text},
             )
@@ -293,17 +292,17 @@ def register_connection_callbacks(app: Dash) -> None:
             codroid_picker_module.LOGGER.exception(
                 "Gripper connection failed: %s", exc)
             return (
-                f"Gripper error: {exc}",
+                t("Gripper error: {error}", error=exc),
                 html.Div(
                     dmc.Alert(
-                        "Failed to connect to gripper. Check network configuration and hardware.",
-                        title="Connection Error",
+                        t("Failed to connect to gripper. Check network configuration and hardware."),
+                        title=t("Connection Error"),
                         color="red",
                     )
                 ),
-                "Gripper: error",
+                t("Gripper: error"),
                 "red",
-                {"status": "error", "message": f"Gripper error: {exc}"},
+                {"status": "error", "message": t("Gripper error: {error}", error=exc)},
             )
 
     @app.callback(
@@ -330,14 +329,14 @@ def register_connection_callbacks(app: Dash) -> None:
                     await api.power_off()
 
             await codroid_picker_module._with_robot_api(robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _apply_power)
-            action = "Power on" if checked else "Power off"
-            codroid_picker_module.SESSION.last_action = f"{action} command sent."
+            action = t("Power on") if checked else t("Power off")
+            codroid_picker_module.SESSION.last_action = t("{action} command sent.", action=action)
             # Set a debounce timestamp to prevent sync from overriding user action immediately
             codroid_picker_module.SESSION.robot_power_toggle_time = time.time()
             return dmc.Notification(
                 action="show",
-                title="Robot power",
-                message=f"{action} command sent to robot controller.",
+                title=t("Robot power"),
+                message=t("{action} command sent to robot controller.", action=action),
                 color="red" if not checked else "teal",
                 autoClose=4000,
             )
@@ -345,7 +344,7 @@ def register_connection_callbacks(app: Dash) -> None:
             codroid_picker_module.LOGGER.exception("Power toggle failed")
             return dmc.Notification(
                 action="show",
-                title="Robot power failed",
+                title=t("Robot power failed"),
                 message=str(exc),
                 color="red",
                 autoClose=7000,

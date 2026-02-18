@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, no_update
+from app.codroid_picker.i18n import t
 
 from app.codroid_picker.programs import (
     get_registry,
@@ -63,15 +64,17 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         prereqs = prerequisites or {}
 
         # Build badge items
+        translated_labels = [(key, t(label)) for key, label in prereq_labels]
+
         badge_items = [
             dmc.Badge(
                 label,
-                color="green" if prereqs.get(key, False) else "gray",
+                color="green" if prereqs.get(key, False) else "red",
                 variant="light",
                 size="xs",
                 radius="sm",
             )
-            for key, label in prereq_labels
+            for key, label in translated_labels
         ]
 
         # Check if all prerequisites are met
@@ -93,19 +96,14 @@ def register_auto_operation_callbacks(app: Dash) -> None:
         # Stop button: enabled only when running
         stop_disabled = not running
 
-        # Build status text with missing items
-        missing = [label for key,
-                   label in prereq_labels if not prereqs.get(key, False)]
-        status_text = dmc.Text(
-            "Ready for auto run" if not missing else f"Missing: {', '.join(missing)}",
-            size="xs",
-            c="green" if not missing else "red",
-        )
-
         prereq_children = [
-            status_text,
-            dmc.Group(badge_items, gap=6, align="center",
-                      wrap="wrap", justify="center"),
+            dmc.Group(
+                badge_items,
+                gap=6,
+                align="center",
+                wrap="wrap",
+                justify="center",
+            ),
         ]
 
         return start_disabled, stop_disabled, prereq_children
@@ -146,10 +144,10 @@ def register_auto_operation_callbacks(app: Dash) -> None:
             if registry.is_program_running:
                 return (
                     {"running": True, "paused": False,
-                        "message": "Program already running"},
+                        "message": t("Program already running")},
                     dmc.Notification(
-                        title="Auto Operation",
-                        message=f"A program is already running: {registry.active_program_name}",
+                        title=t("Auto Operation"),
+                        message=t("A program is already running: {name}", name=registry.active_program_name),
                         color="yellow",
                         action="show",
                     ),
@@ -164,7 +162,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                 return (
                     no_update,
                     dmc.Notification(
-                        title="Auto Operation",
+                        title=t("Auto Operation"),
                         message=message,
                         color="red",
                         action="show",
@@ -187,7 +185,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                     {"running": False, "paused": False,
                         "message": result.message},
                     dmc.Notification(
-                        title="Auto Operation",
+                        title=t("Auto Operation"),
                         message=result.message,
                         color="green" if result.status == ProgramStatus.COMPLETED else "orange",
                         action="show",
@@ -198,8 +196,8 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                 return (
                     no_update,
                     dmc.Notification(
-                        title="Auto Operation",
-                        message=f"Failed to start: {exc}",
+                        title=t("Auto Operation"),
+                        message=t("Failed to start: {error}", error=exc),
                         color="red",
                         action="show",
                     ),
@@ -209,10 +207,10 @@ def register_auto_operation_callbacks(app: Dash) -> None:
             if registry.stop():
                 return (
                     {"running": False, "paused": False,
-                        "message": "Auto operation stopped"},
+                        "message": t("Auto operation stopped")},
                     dmc.Notification(
-                        title="Auto Operation",
-                        message="Auto pick & place operation stopped",
+                        title=t("Auto Operation"),
+                        message=t("Auto pick & place operation stopped"),
                         color="orange",
                         action="show",
                     ),

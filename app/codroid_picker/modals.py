@@ -8,6 +8,7 @@ robot calibration workflows, and user interactions.
 from __future__ import annotations
 
 import dash_mantine_components as dmc
+from app.codroid_picker.i18n import t
 
 
 def _modal_shell(
@@ -38,7 +39,7 @@ def build_robot_calibration_modal() -> dmc.Modal:
     return dmc.Modal(
         id="robot-calibration-modal",
         opened=False,
-        title="Robot calibration guide",
+        title=t("Robot calibration guide"),
         centered=True,
         size="lg",
         withCloseButton=False,
@@ -51,20 +52,20 @@ def build_robot_calibration_modal() -> dmc.Modal:
                     orientation="vertical",
                     children=[
                         dmc.StepperStep(
-                            label="Point 1",
-                            description="Indentation 1 (origin)",
+                            label=t("Point 1"),
+                            description=t("Indentation 1 (origin)"),
                         ),
                         dmc.StepperStep(
-                            label="Point 2",
-                            description="Indentation 2 (+X)",
+                            label=t("Point 2"),
+                            description=t("Indentation 2 (+X)"),
                         ),
                         dmc.StepperStep(
-                            label="Point 3",
-                            description="Indentation 3 (+X/+Y)",
+                            label=t("Point 3"),
+                            description=t("Indentation 3 (+X/+Y)"),
                         ),
                         dmc.StepperStep(
-                            label="Verification",
-                            description="Safe motion check",
+                            label=t("Verification"),
+                            description=t("Safe motion check"),
                         ),
                     ],
                 ),
@@ -85,7 +86,7 @@ def build_robot_calibration_modal() -> dmc.Modal:
                             dmc.Group(
                                 [
                                     dmc.Button(
-                                        "Repeat calibration",
+                                        t("Repeat calibration"),
                                         id="robot-calibration-retry",
                                         variant="outline",
                                         color="red",
@@ -93,7 +94,7 @@ def build_robot_calibration_modal() -> dmc.Modal:
                                         disabled=True,
                                     ),
                                     dmc.Button(
-                                        "Proceed to verification",
+                                        t("Proceed to verification"),
                                         id="robot-calibration-continue",
                                         color="teal",
                                         size="xs",
@@ -108,21 +109,21 @@ def build_robot_calibration_modal() -> dmc.Modal:
                 ),
                 dmc.Alert(
                     id="robot-calibration-modal-alert",
-                    title="Calibration status",
+                    title=t("Calibration status"),
                     color="blue",
                     variant="light",
-                    children="Waiting for calibration to start.",
+                    children=t("Waiting for calibration to start."),
                 ),
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Run verification move",
+                            t("Run verification move"),
                             id="robot-calibration-verify",
                             color="teal",
                             disabled=True,
                         ),
                         dmc.Button(
-                            "Close",
+                            t("Close"),
                             id="robot-calibration-modal-close",
                             variant="outline",
                         ),
@@ -143,28 +144,29 @@ def build_emergency_stop_modal() -> dmc.Modal:
         children=dmc.Stack(
             [
                 dmc.Text(
-                    "Emergency stop triggered",
+                    t("Emergency stop triggered"),
                     fw=700,
                     size="xl",
                     c="red",
                 ),
                 dmc.Text(
-                    "The current program has been paused. Clear the physical E-stop "
-                    "and acknowledge to continue.",
+                    t(
+                        "The current program has been paused. Clear the physical E-stop and acknowledge to continue."
+                    ),
                     size="sm",
                     c="dimmed",
                 ),
                 dmc.Alert(
                     id="emergency-stop-modal-text",
-                    title="Emergency stop status",
+                    title=t("Emergency stop status"),
                     color="red",
                     variant="light",
-                    children="Emergency stop detected.",
+                    children=t("Emergency stop detected."),
                 ),
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Clear",
+                            t("Clear"),
                             id="emergency-ack",
                             color="red",
                             size="md",
@@ -192,47 +194,47 @@ def build_overspeed_modal() -> dmc.Modal:
         children=dmc.Stack(
             [
                 dmc.Text(
-                    "Overspeed detected",
+                    t("Overspeed detected"),
                     fw=700,
                     size="xl",
                     c="orange",
                 ),
                 dmc.Text(
-                    "The program has been paused. Choose how to proceed.",
+                    t("The program has been paused. Choose how to proceed."),
                     size="sm",
                     c="dimmed",
                 ),
                 dmc.Alert(
                     id="overspeed-modal-text",
-                    title="Overspeed status",
+                    title=t("Overspeed status"),
                     color="orange",
                     variant="light",
-                    children="Overspeed alarm detected.",
+                    children=t("Overspeed alarm detected."),
                 ),
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Clear",
+                            t("Clear"),
                             id="overspeed-clear",
                             color="orange",
                             size="md",
                         ),
                         dmc.Button(
-                            "Stay paused",
+                            t("Stay paused"),
                             id="overspeed-stay-paused",
                             color="yellow",
                             size="md",
                             variant="outline",
                         ),
                         dmc.Button(
-                            "Clear & resume",
+                            t("Clear & resume"),
                             id="overspeed-continue",
                             color="teal",
                             size="md",
                             variant="outline",
                         ),
                         dmc.Button(
-                            "Cancel & reset",
+                            t("Cancel & reset"),
                             id="overspeed-reset",
                             color="red",
                             size="md",
@@ -324,10 +326,10 @@ def build_joint_protection_modal() -> dmc.Modal:
         alert_id="joint-protection-modal-text",
         clear_id="joint-protection-clear",
         stay_id="joint-protection-stay-paused",
-        title_text="Joint protection detected",
-        subtitle_text="The program has been paused. Clear the protection alarm to continue.",
-        alert_title="Joint protection status",
-        alert_children="Joint protection warning detected.",
+        title_text=t("Joint protection detected"),
+        subtitle_text=t("The program has been paused. Clear the protection alarm to continue."),
+        alert_title=t("Joint protection status"),
+        alert_children=t("Joint protection warning detected."),
         title_color="orange",
     )
 
@@ -345,34 +347,34 @@ def build_wrong_tool_modal() -> dmc.Modal:
         children=dmc.Stack(
             [
                 dmc.Text(
-                    "Tool/payload mismatch",
+                    t("Tool/payload mismatch"),
                     fw=700,
                     size="xl",
                     c="red",
                 ),
                 dmc.Text(
-                    "The program has been paused. Clear the tool error or enter rescue mode.",
+                    t("The program has been paused. Clear the tool error or enter rescue mode."),
                     size="sm",
                     c="dimmed",
                 ),
                 dmc.Alert(
                     id="wrong-tool-modal-text",
-                    title="Tool error status",
+                    title=t("Tool error status"),
                     color="red",
                     variant="light",
-                    children="Tool/payload mismatch detected.",
+                    children=t("Tool/payload mismatch detected."),
                 ),
                 dmc.Group(
                     [
                         dmc.Button(
-                            "Enter rescue mode",
+                            t("Enter rescue mode"),
                             id="wrong-tool-rescue",
                             color="orange",
                             size="md",
                             variant="outline",
                         ),
                         dmc.Button(
-                            "Clear",
+                            t("Clear"),
                             id="wrong-tool-clear",
                             color="red",
                             size="md",
@@ -393,9 +395,9 @@ def build_drag_not_allowed_modal() -> dmc.Modal:
         alert_id="drag-not-allowed-modal-text",
         clear_id="drag-not-allowed-clear",
         stay_id="drag-not-allowed-stay-paused",
-        title_text="Drag not allowed",
-        subtitle_text="Manual dragging is blocked. Clear the warning to continue.",
-        alert_title="Drag warning status",
-        alert_children="Drag not allowed warning detected.",
+        title_text=t("Drag not allowed"),
+        subtitle_text=t("Manual dragging is blocked. Clear the warning to continue."),
+        alert_title=t("Drag warning status"),
+        alert_children=t("Drag not allowed warning detected."),
         title_color="orange",
     )

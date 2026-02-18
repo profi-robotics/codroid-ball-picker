@@ -8,6 +8,7 @@ import time
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, callback_context, no_update
+from app.codroid_picker.i18n import t
 
 from app.codroid_picker.programs import (
     get_registry,
@@ -98,7 +99,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
 
         # Prevent multiple rapid operations
         if SESSION.operation_in_progress:
-            return "Operation already in progress, please wait...", no_update
+            return t("Operation already in progress, please wait..."), no_update
 
         workspace_def = SESSION.workspace_definition
         approach_mm = _safe_float(approach_height, -30.0)
@@ -108,15 +109,15 @@ def register_pick_place_callbacks(app: Dash) -> None:
         # Handle teach-drop-position
         if trigger == "teach-drop-position":
             if workspace_def is None:
-                return "Workspace is not defined; compute it first.", drop_text
+                return t("Workspace is not defined; compute it first."), drop_text
             try:
                 await _ensure_robot_coord5_for_uri(robot_uri)
             except Exception as exc:
-                return f"Failed to set CoordinateId 5: {exc}", drop_text
+                return t("Failed to set CoordinateId 5: {error}", error=exc), drop_text
 
             session = _get_robot_session()
             if not session.posture_seen():
-                return "Robot posture stream not available yet.", drop_text
+                return t("Robot posture stream not available yet."), drop_text
 
             pos = session.position_snapshot()
             coord_id = _current_coordinate_id(session)
@@ -127,14 +128,14 @@ def register_pick_place_callbacks(app: Dash) -> None:
                     )
                     if drop_mm_xy is None:
                         raise RuntimeError(
-                            "Coord5 transform unavailable; check calibration.")
+                            t("Coord5 transform unavailable; check calibration."))
                 else:
                     import numpy as np
                     robot_xyz = np.array([pos.x, pos.y, pos.z], dtype=float)
                     drop_mm_xy = _robot_to_workspace_mm(
                         workspace_def, robot_xyz)
             except Exception as exc:
-                return f"Failed to record drop position: {exc}", drop_text
+                return t("Failed to record drop position: {error}", error=exc), drop_text
 
             SESSION.drop_target_mm = drop_mm_xy
             SESSION.drop_target_orientation = (pos.a, pos.b, pos.c)
@@ -148,28 +149,37 @@ def register_pick_place_callbacks(app: Dash) -> None:
             )
             _save_settings(SETTINGS.model_copy(
                 update={"drop_target": drop_mm_xy}))
-            SESSION.last_action = "Drop position taught."
+            SESSION.last_action = t("Drop position taught.")
             drop_text = (
-                f"Drop at {drop_mm_xy[0]:.1f}, {drop_mm_xy[1]:.1f} mm (z={pos.z:.1f}) · "
-                f"a={pos.a:.1f}, b={pos.b:.1f}, c={pos.c:.1f}"
+                t(
+                    "Drop at {x:.1f}, {y:.1f} mm (z={z:.1f}) · a={a:.1f}, b={b:.1f}, c={c:.1f}",
+                    x=drop_mm_xy[0],
+                    y=drop_mm_xy[1],
+                    z=pos.z,
+                    a=pos.a,
+                    b=pos.b,
+                    c=pos.c,
+                )
             )
-            return "Drop position recorded from robot pose.", drop_text
+            return t("Drop position recorded from robot pose."), drop_text
 
         # Handle return-to-drop-position
         if trigger == "return-to-drop-position":
             if SESSION.drop_target_robot is None:
-                return "No drop position has been taught yet.", drop_text
+                return t("No drop position has been taught yet."), drop_text
             try:
                 await _ensure_robot_coord5_for_uri(robot_uri)
             except Exception as exc:
-                return f"Failed to set CoordinateId 5: {exc}", drop_text
+                return t("Failed to set CoordinateId 5: {error}", error=exc), drop_text
 
             session = _get_robot_session()
             target_coord_id = SESSION.drop_target_coord_id or 5
             if target_coord_id != _current_coordinate_id(session):
                 return (
-                    f"Robot is not in coordinate system {target_coord_id}; "
-                    "switch coordinate systems first."
+                    t(
+                        "Robot is not in coordinate system {coord_id}; switch coordinate systems first.",
+                        coord_id=target_coord_id,
+                    )
                 ), drop_text
 
             drop_robot_xyz = SESSION.drop_target_robot
@@ -212,16 +222,16 @@ def register_pick_place_callbacks(app: Dash) -> None:
 
             try:
                 await _with_robot_api(robot_uri or DEFAULT_ROBOT_URI, _return_to_drop)
-                SESSION.last_action = "Returned to drop position."
-                return "Returned to drop position.", drop_text
+                SESSION.last_action = t("Returned to drop position.")
+                return t("Returned to drop position."), drop_text
             except Exception as exc:
                 LOGGER.exception("Return to drop position failed")
-                return f"Return to drop failed: {exc}", drop_text
+                return t("Return to drop failed: {error}", error=exc), drop_text
 
         # For pick operations, check camera is running
         frame, _depth = get_latest_frame()
         if frame is None and trigger not in {"teach-drop-position", "return-to-drop-position"}:
-            return "Camera stream is not running.", drop_text
+            return t("Camera stream is not running."), drop_text
 
         # Use the programs registry for pick/drop operations
         registry = get_registry()
@@ -229,7 +239,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
         # Resolve detection target for pick operations
         if trigger in {"manual-pick-closest", "manual-pick-place-target"}:
             if not SESSION.detections:
-                return "No objects detected.", drop_text
+                return t("No objects detected."), drop_text
 
             # Keep pick moves in the current wrist orientation to avoid
             # unnecessary re-orientation during manual mode.
@@ -267,7 +277,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
 
             filtered_detections = filter_by_label(SESSION.detections)
             if not filtered_detections:
-                return f"No objects with label '{target_label}' detected.", drop_text
+                return t("No objects with label '{label}' detected.", label=target_label), drop_text
 
             # Find closest detection from filtered list
             from app.codroid_picker.pick_place_helpers import select_closest_detection
@@ -282,7 +292,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
             coord5_xy = codroid_picker_module._detection_coord5_xy(
                 detection, workspace_def)
             if coord5_xy is None:
-                return "Could not map detection to robot coordinates.", drop_text
+                return t("Could not map detection to robot coordinates."), drop_text
 
             # Determine tracking mode
             use_segment_tracking = (tracking_mode or "move").strip().lower() == "segment"
@@ -395,7 +405,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 action = "pick"
             else:  # manual-pick-place-target
                 if SESSION.drop_target_mm is None:
-                    return "Teach a drop position first.", drop_text
+                    return t("Teach a drop position first."), drop_text
                 action = "pick_drop"
 
             # Create and run program with tracking configuration
@@ -422,15 +432,15 @@ def register_pick_place_callbacks(app: Dash) -> None:
                     await codroid_picker_module._get_robot_api(robot_uri or DEFAULT_ROBOT_URI),
                 )
                 if result.status == ProgramStatus.COMPLETED:
-                    SESSION.last_action = f"{action.replace('_', ' ').title()} completed."
+                    SESSION.last_action = t("{action} completed.", action=action.replace("_", " ").title())
                     if action == "pick_drop" and SESSION.drop_target_mm:
-                        drop_text = f"Drop at {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm"
-                    return f"{action.replace('_', ' ').title()} command sent.", drop_text
+                        drop_text = t("Drop at {x:.1f}, {y:.1f} mm", x=SESSION.drop_target_mm[0], y=SESSION.drop_target_mm[1])
+                    return t("{action} command sent.", action=action.replace("_", " ").title()), drop_text
                 else:
-                    return f"{action.replace('_', ' ').title()} failed: {result.message}", drop_text
+                    return t("{action} failed: {error}", action=action.replace("_", " ").title(), error=result.message), drop_text
             except Exception as exc:
                 LOGGER.exception("Pick/place action failed")
-                return f"Pick/place action failed: {exc}", drop_text
+                return t("Pick/place action failed: {error}", error=exc), drop_text
             finally:
                 SESSION.operation_in_progress = False
                 SESSION.operation_started_at = None
@@ -438,7 +448,7 @@ def register_pick_place_callbacks(app: Dash) -> None:
         # Handle execute-drop
         if trigger == "execute-drop":
             if SESSION.drop_target_mm is None:
-                return "Teach a drop position first.", drop_text
+                return t("Teach a drop position first."), drop_text
 
             drop_approach_pose = None
             drop_pose = None
@@ -480,14 +490,14 @@ def register_pick_place_callbacks(app: Dash) -> None:
                     await codroid_picker_module._get_robot_api(robot_uri or DEFAULT_ROBOT_URI),
                 )
                 if result.status == ProgramStatus.COMPLETED:
-                    SESSION.last_action = "Drop completed."
-                    drop_text = f"Drop at {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm"
-                    return "Drop command sent.", drop_text
+                    SESSION.last_action = t("Drop completed.")
+                    drop_text = t("Drop at {x:.1f}, {y:.1f} mm", x=SESSION.drop_target_mm[0], y=SESSION.drop_target_mm[1])
+                    return t("Drop command sent."), drop_text
                 else:
-                    return f"Drop failed: {result.message}", drop_text
+                    return t("Drop failed: {error}", error=result.message), drop_text
             except Exception as exc:
                 LOGGER.exception("Drop action failed")
-                return f"Drop action failed: {exc}", drop_text
+                return t("Drop action failed: {error}", error=exc), drop_text
             finally:
                 SESSION.operation_in_progress = False
                 SESSION.operation_started_at = None

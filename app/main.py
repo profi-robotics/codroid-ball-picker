@@ -17,6 +17,7 @@ from app.codroid_picker.camera_callbacks import register_camera_callbacks
 from app.codroid_picker.gpu_utils import (
     format_gpu_status,
 )
+from app.codroid_picker.i18n import t
 from app.codroid_picker.layout import build_layout
 from app.codroid_picker.models import (
     _model_options,
@@ -391,9 +392,9 @@ def create_app() -> Dash:
         suppress_callback_exceptions=True,
         update_title=None,
     )
-    app.title = "Estun Codroid Pick-and-Place"
+    app.title = t("header.title")
     app._favicon = "favicon.ico"
-    app.layout = build_layout()
+    app.layout = build_layout
     register_callbacks(app)
 
     # Register Flask video streaming routes

@@ -3,6 +3,7 @@
 from typing import Optional, Tuple
 
 from dash import Dash, Input, no_update, Output, State
+from app.codroid_picker.i18n import t
 
 
 def register_gripper_callbacks(app: Dash) -> None:
@@ -159,12 +160,15 @@ def register_gripper_callbacks(app: Dash) -> None:
             else ("yes" if codroid_picker_module.SESSION.gripper_grip_detected else "no")
         )
         meta_text = (
-            f"Orientation: {codroid_picker_module.SESSION.gripper_orientation or 'unknown'}"
-            f" · Busy: {busy_text}"
-            f" · Grip: {grip_text}"
+            t(
+                "Orientation: {orientation} · Busy: {busy} · Grip: {grip}",
+                orientation=codroid_picker_module.SESSION.gripper_orientation or t("unknown"),
+                busy=busy_text,
+                grip=grip_text,
+            )
         )
         if isinstance(force, (int, float)) and force >= 0:
-            meta_text = f"{meta_text} · Force: {float(force):.0f} N"
+            meta_text = t("{meta} · Force: {force:.0f} N", meta=meta_text, force=float(force))
 
         orientation_update: Optional[str] = no_update
         if orientation in {"inward", "outward"} and orientation != previous_orientation:
@@ -210,9 +214,9 @@ def register_gripper_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         if (gripper_state or {}).get("status") != "online":
-            return "Gripper is offline.", no_update, no_update
+            return t("Gripper is offline."), no_update, no_update
         if codroid_picker_module.SESSION.gripper is None:
-            return "Gripper is unavailable.", no_update, no_update
+            return t("Gripper is unavailable."), no_update, no_update
         if orientation not in {"inward", "outward"}:
             return no_update, no_update, no_update
         if codroid_picker_module.SESSION.gripper_orientation == orientation:
@@ -224,7 +228,7 @@ def register_gripper_callbacks(app: Dash) -> None:
                 orientation=orientation,
             )
             if isinstance(result, (int, float)) and result < 0:
-                return "Failed to update gripper orientation.", no_update, no_update
+                return t("Failed to update gripper orientation."), no_update, no_update
             codroid_picker_module.SESSION.gripper_orientation = orientation
             codroid_picker_module.SESSION.gripper_min_width = None
             codroid_picker_module.SESSION.gripper_max_width = None
@@ -246,11 +250,11 @@ def register_gripper_callbacks(app: Dash) -> None:
                 codroid_picker_module.SESSION.gripper_min_width = min_update
             if max_update is not no_update:
                 codroid_picker_module.SESSION.gripper_max_width = max_update
-            return f"Orientation set to {orientation}.", min_update, max_update
+            return t("Orientation set to {orientation}.", orientation=orientation), min_update, max_update
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.exception(
                 "Failed to set gripper orientation")
-            return f"Failed to set orientation: {exc}", no_update, no_update
+            return t("Failed to set orientation: {error}", error=exc), no_update, no_update
 
     @app.callback(
         Output("holding-status", "children"),
@@ -265,17 +269,17 @@ def register_gripper_callbacks(app: Dash) -> None:
 
         status = (gripper_state or {}).get("status", "offline")
         if status != "online" or codroid_picker_module.SESSION.gripper is None:
-            return "Holding object: unknown (gripper offline)"
+            return t("Holding object: unknown (gripper offline)")
         try:
             t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
             is_gripped = bool(
                 codroid_picker_module.SESSION.gripper.isGripped(t_index=t_index))
             codroid_picker_module.SESSION.robot_has_object = is_gripped
-            return f"Holding object: {'yes' if is_gripped else 'no'}"
+            return t("Holding object: {state}", state=(t("yes") if is_gripped else t("no")))
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.debug(
                 "Unable to query gripper grip state: %s", exc)
-            return "Holding object: unknown"
+            return t("Holding object: unknown")
 
     # --- Footer gripper control callbacks ---
 
@@ -344,7 +348,7 @@ def register_gripper_callbacks(app: Dash) -> None:
 
         try:
             if codroid_picker_module.SESSION.gripper_busy:
-                return "Gripper is busy; wait for motion to finish."
+                return t("Gripper is busy; wait for motion to finish.")
             trigger = callback_context.triggered_id
             if trigger == "footer-gripper-width":
                 if codroid_picker_module._recent_gripper_sync("width", footer_width):
@@ -375,7 +379,7 @@ def register_gripper_callbacks(app: Dash) -> None:
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.exception(
                 "Footer gripper action failed")
-            return f"Robot action failed: {exc}"
+            return t("Robot action failed: {error}", error=exc)
 
     @app.callback(
         Output("footer-gripper-width", "value", allow_duplicate=True),

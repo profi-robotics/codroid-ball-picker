@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import callback_context, Dash, Input, no_update, Output, State
+from app.codroid_picker.i18n import t
 
 # Import from new programs module for registry access
 from app.codroid_picker.programs import (
@@ -57,36 +58,37 @@ def register_monitoring_callbacks(app: Dash) -> None:
         state = operation_state or {}
         status = state.get("status", "idle")
         pause_reason = state.get("pause_reason")
-        label = state.get("label") or "Program"
+        label = state.get("label") or t("Program")
         message = state.get("message") or ""
+        translated_message = t(message) if message else ""
 
         if status == "running":
-            pause_label = "Pause"
+            pause_label = t("Pause")
             pause_disabled = False
             stop_disabled = False
             reset_disabled = True
-            status_text = message or f"{label} running."
+            status_text = translated_message or t("{label} running.", label=label)
         elif status == "paused":
-            pause_label = "Resume"
+            pause_label = t("Resume")
             pause_disabled = False
             stop_disabled = False
             reset_disabled = False
             if pause_reason:
-                status_text = f"Paused ({pause_reason.replace('_', ' ')})."
+                status_text = t("Paused ({reason}).", reason=pause_reason.replace("_", " "))
             else:
-                status_text = message or f"{label} paused."
+                status_text = translated_message or t("{label} paused.", label=label)
         elif status in {"stopping", "stopped"}:
-            pause_label = "Pause"
+            pause_label = t("Pause")
             pause_disabled = True
             stop_disabled = True
             reset_disabled = False
-            status_text = message or "Program stopped."
+            status_text = translated_message or t("Program stopped.")
         else:
-            pause_label = "Pause"
+            pause_label = t("Pause")
             pause_disabled = True
             stop_disabled = True
             reset_disabled = True
-            status_text = message or "Program idle."
+            status_text = translated_message or t("Program idle.")
 
         return pause_label, pause_disabled, stop_disabled, reset_disabled, status_text
 
@@ -121,7 +123,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
                     pause_program("operator")
                 else:
                     codroid_picker_module._pause_operation(
-                        "operator", "Program paused by operator.")
+                        "operator", t("Program paused by operator."))
 
                 async def _stop_motion(api: codroid_picker_module.CodroidAPI) -> None:
                     await api.stop_command()
@@ -135,8 +137,8 @@ def register_monitoring_callbacks(app: Dash) -> None:
                         "Pause stop command failed: %s", exc)
                 return dmc.Notification(
                     action="show",
-                    title="Program paused",
-                    message="Robot program paused.",
+                    title=t("Program paused"),
+                    message=t("Robot program paused."),
                     color="yellow",
                     autoClose=4000,
                 )
@@ -145,11 +147,11 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 if registry.active_program is not None:
                     resume_program()
                 else:
-                    codroid_picker_module._resume_operation("Program resumed.")
+                    codroid_picker_module._resume_operation(t("Program resumed."))
                 return dmc.Notification(
                     action="show",
-                    title="Program resumed",
-                    message="Robot program resumed.",
+                    title=t("Program resumed"),
+                    message=t("Robot program resumed."),
                     color="teal",
                     autoClose=4000,
                 )
@@ -159,7 +161,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 stop_program()
             else:
                 codroid_picker_module._request_stop_operation(
-                    "Program stop requested.")
+                    t("Program stop requested."))
 
             async def _stop_motion(api: codroid_picker_module.CodroidAPI) -> None:
                 await api.stop_command()
@@ -173,8 +175,8 @@ def register_monitoring_callbacks(app: Dash) -> None:
                     "Stop command failed: %s", exc)
             return dmc.Notification(
                 action="show",
-                title="Program stopping",
-                message="Stop command sent. Reset when safe.",
+                title=t("Program stopping"),
+                message=t("Stop command sent. Reset when safe."),
                 color="red",
                 autoClose=4500,
             )
@@ -182,11 +184,11 @@ def register_monitoring_callbacks(app: Dash) -> None:
             # Clear registry if active
             if registry.active_program is not None:
                 registry.clear()
-            codroid_picker_module._reset_operation_state("Program reset.")
+            codroid_picker_module._reset_operation_state(t("Program reset."))
             return dmc.Notification(
                 action="show",
-                title="Program reset",
-                message="Program state cleared.",
+                title=t("Program reset"),
+                message=t("Program state cleared."),
                 color="gray",
                 autoClose=3500,
             )

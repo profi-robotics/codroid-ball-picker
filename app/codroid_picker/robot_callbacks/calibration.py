@@ -13,6 +13,7 @@ from typing import Any, Optional, Tuple
 import dash_mantine_components as dmc
 import numpy as np
 from dash import callback_context, Dash, Input, no_update, Output, State
+from app.codroid_picker.i18n import t
 
 
 def register_calibration_callbacks(app: Dash) -> None:
@@ -28,7 +29,7 @@ def register_calibration_callbacks(app: Dash) -> None:
     def _update_robot_calibration_guidance(_intervals: int) -> str:
         from app.codroid_picker import state
 
-        return state.get_calibration_guidance_snapshot().get("message", "")
+        return t(state.get_calibration_guidance_snapshot().get("message", ""))
 
     @app.callback(
         Output("robot-calibration-state", "data", allow_duplicate=True),
@@ -106,35 +107,35 @@ def register_calibration_callbacks(app: Dash) -> None:
 
         stepper_children = [
             dmc.StepperStep(
-                label="Point 1",
-                description="Indentation 1 (origin)",
+                label=t("Point 1"),
+                description=t("Indentation 1 (origin)"),
                 state=_step_state(step > 1),
             ),
             dmc.StepperStep(
-                label="Point 2",
-                description="Indentation 2 (+X)",
+                label=t("Point 2"),
+                description=t("Indentation 2 (+X)"),
                 state=_step_state(step > 2),
             ),
             dmc.StepperStep(
-                label="Point 3",
-                description="Indentation 3 (+X/+Y)",
+                label=t("Point 3"),
+                description=t("Indentation 3 (+X/+Y)"),
                 state=_step_state(step > 3),
             ),
             dmc.StepperStep(
-                label="Accuracy",
-                description="Calibration accuracy check",
+                label=t("Accuracy"),
+                description=t("Calibration accuracy check"),
                 state=_step_state(step > 4 or bool(
                     state.get("accuracy_ready"))),
             ),
             dmc.StepperStep(
-                label="Verification",
-                description="Safe motion check",
+                label=t("Verification"),
+                description=t("Safe motion check"),
                 state=_step_state(verification_completed),
             ),
         ]
         return (
             active,
-            message or "Waiting for calibration to start.",
+            t(message) if message else t("Waiting for calibration to start."),
             color,
             not verify_enabled,
             stepper_children,
@@ -184,25 +185,31 @@ def register_calibration_callbacks(app: Dash) -> None:
                 "dimmed",
                 True,
                 True,
-                "Proceed to verification",
+                t("Proceed to verification"),
             )
         max_err = float(accuracy.get("max_xy_error", 0.0))
         mean_err = float(accuracy.get("mean_xy_error", 0.0))
         passed = bool(state.get("accuracy_passed"))
         text = (
-            f"Calibration accuracy: max XY error {max_err:.2f} mm · "
-            f"mean XY error {mean_err:.2f} mm."
+            t(
+                "Calibration accuracy: max XY error {max_err:.2f} mm · mean XY error {mean_err:.2f} mm.",
+                max_err=max_err,
+                mean_err=mean_err,
+            )
         )
         if passed:
-            text += f" Within {codroid_picker_module.SETTINGS.verification_tolerance_mm:.2f} mm threshold."
-            continue_label = "Proceed to verification"
+            text += t(
+                " Within {threshold:.2f} mm threshold.",
+                threshold=codroid_picker_module.SETTINGS.verification_tolerance_mm,
+            )
+            continue_label = t("Proceed to verification")
             text_color = "green"
         else:
-            text += (
-                f" Above {codroid_picker_module.SETTINGS.verification_tolerance_mm:.2f} mm threshold; "
-                "consider repeating calibration or proceed with caution."
+            text += t(
+                " Above {threshold:.2f} mm threshold; consider repeating calibration or proceed with caution.",
+                threshold=codroid_picker_module.SETTINGS.verification_tolerance_mm,
             )
-            continue_label = "Proceed with warning"
+            continue_label = t("Proceed with warning")
             text_color = "red"
         return (
             {"display": "flex", "flexDirection": "column", "gap": "0.6rem"},

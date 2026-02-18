@@ -94,6 +94,9 @@ class UISession:
     robot_power_poll_error_logged_at: float = 0.0
     robot_power_toggle_time: float = 0.0
     camera_calibration_in_progress: bool = False
+    camera_auto_init_done: bool = False
+    camera_last_error_message: Optional[str] = None
+    camera_last_error_status: Optional[str] = None
     robot_calibration_points: list[dict] = field(default_factory=list)
     robot_calibration_min_z: Optional[float] = None
     robot_calibration_baseline_px: Optional[np.ndarray] = None

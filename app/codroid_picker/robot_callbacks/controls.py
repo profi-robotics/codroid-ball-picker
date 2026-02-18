@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_controls_callbacks(app: Dash) -> None:
@@ -74,7 +75,7 @@ def register_controls_callbacks(app: Dash) -> None:
                     robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _set_speed
                 )
             codroid_picker_module.SESSION.robot_speed_last_set = now
-            codroid_picker_module.SESSION.last_action = f"Robot speed set to {rate:.2f}"
+            codroid_picker_module.SESSION.last_action = t("Robot speed set to {rate:.2f}", rate=rate)
             codroid_picker_module.LOGGER.info(
                 "Robot speed set to %.0f%%", value)
             return {"status": "ok", "value": value, "rate": rate, "updated": now}
@@ -109,17 +110,17 @@ def register_controls_callbacks(app: Dash) -> None:
             await codroid_picker_module._with_robot_api(
                 robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _power_off
             )
-            codroid_picker_module.SESSION.last_action = "Emergency stop: power off command sent."
+            codroid_picker_module.SESSION.last_action = t("Emergency stop: power off command sent.")
             error_state = codroid_picker_module._activate_robot_error(
                 "emergency_stop",
-                message="Emergency stop triggered from UI.",
+                message=t("Emergency stop triggered from UI."),
                 physical_pressed=False,
             )
             return (
                 dmc.Notification(
                     action="show",
-                    title="Emergency stop",
-                    message="Stop command + power off sent to robot controller.",
+                    title=t("Emergency stop"),
+                    message=t("Stop command + power off sent to robot controller."),
                     color="red",
                     autoClose=5000,
                 ),
@@ -129,13 +130,13 @@ def register_controls_callbacks(app: Dash) -> None:
             codroid_picker_module.LOGGER.exception("Emergency stop failed")
             error_state = codroid_picker_module._activate_robot_error(
                 "emergency_stop",
-                message="Emergency stop triggered from UI.",
+                message=t("Emergency stop triggered from UI."),
                 physical_pressed=False,
             )
             return (
                 dmc.Notification(
                     action="show",
-                    title="Emergency stop failed",
+                    title=t("Emergency stop failed"),
                     message=str(exc),
                     color="red",
                     autoClose=7000,

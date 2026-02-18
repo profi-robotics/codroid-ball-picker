@@ -112,6 +112,7 @@ class AppSettings(BaseSettings):
     robot_host: Optional[str] = None
     robot_port: Optional[int] = None
     user_port: Optional[int] = None
+    ui_language: str = "en"
 
     # Marker and tracking details that define the workspace
     marker_ids: Tuple[int, int] = (1, 2)
@@ -230,7 +231,13 @@ class AppSettings(BaseSettings):
         if not SETTINGS_PATH.exists():
             return {}
         try:
-            return json.loads(SETTINGS_PATH.read_text())
+            raw = json.loads(SETTINGS_PATH.read_text())
+            if not isinstance(raw, dict):
+                return {}
+            # Backward-compatibility for older settings files that persisted
+            # required fields (for example Path fields) as null.
+            # Dropping nulls lets Pydantic apply model defaults.
+            return {key: value for key, value in raw.items() if value is not None}
         except Exception as exc:
             LOGGER.warning(
                 "Failed to read persisted settings from %s: %s", SETTINGS_PATH, exc)

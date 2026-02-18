@@ -18,6 +18,7 @@ import dash_mantine_components as dmc
 from vision import workspace
 from app.codroid_picker.session import SESSION
 import app.settings as app_settings
+from app.codroid_picker.i18n import t
 from app.codroid_picker.state import (
     _operation_snapshot,
 )
@@ -212,7 +213,7 @@ def _run_detection(
 def _format_detection_list(detections: list[dict]) -> list:
     """Format detections for display in the UI."""
     if not detections:
-        return [dmc.Text("No detections yet.", size="sm", c="dimmed")]
+        return [dmc.Text(t("No detections yet."), size="sm", c="dimmed")]
     rows = []
     for idx, det in enumerate(detections, start=1):
         label = det.get("label", "object")
@@ -619,4 +620,3 @@ async def _auto_wait_for_clear(
             _resume_operation("Workspace clear. Resuming.")
             return
         await asyncio.sleep(SETTINGS.auto_idle_sleep_s)
-

@@ -185,25 +185,6 @@ def main() -> None:
 
     # Create and run the app
     app = getattr(codroid_picker, "app", None) or codroid_picker.create_app()
-    try:
-        from app.codroid_picker.streaming import start_camera_stream
-        from app.settings import DEFAULT_FPS, DEFAULT_RESOLUTION
-
-        start_camera_stream(
-            DEFAULT_RESOLUTION[0],
-            DEFAULT_RESOLUTION[1],
-            DEFAULT_FPS,
-            False,
-            enable_depth_override=False,
-        )
-        logging.getLogger(__name__).info(
-            "Camera auto-start attempted at server startup."
-        )
-    except Exception as exc:
-        logging.getLogger(__name__).error(
-            "Camera auto-start failed: %s",
-            exc,
-        )
     app.run(
         host=args.host,
         port=args.port,

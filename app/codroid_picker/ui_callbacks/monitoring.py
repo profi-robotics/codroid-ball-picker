@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_monitoring_callbacks(app: Dash) -> None:
@@ -130,7 +131,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         SESSION.operation_started_at = None
         codroid_picker_module.LOGGER.info(
             "Operation lock manually reset by user")
-        return "Operation lock reset."
+        return t("Operation lock reset.")
 
     @app.callback(
         Output("plate-test-status", "children", allow_duplicate=True),
@@ -179,6 +180,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         from app.codroid_picker.session import SESSION
 
         camera_status = (camera_state or {}).get("status", "off")
+        camera_message = (camera_state or {}).get("message") or ""
         robot_status = (robot_state or {}).get("status", "offline")
         gripper_status = (gripper_state or {}).get("status", "offline")
         calibration_state = (
@@ -192,7 +194,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
             SESSION.active_model_path.name if SESSION.active_model_path else "none"
         )
         detection_count = len(SESSION.detections)
-        last_action = SESSION.last_action or "No recent actions."
+        last_action = SESSION.last_action or t("No recent actions.")
 
         stream = SESSION.camera_stream
         stream_fps = stream.get_fps() if stream else 0.0
@@ -207,34 +209,47 @@ def register_monitoring_callbacks(app: Dash) -> None:
 
         system_items = [
             dmc.Text(
-                f"Camera: {camera_status} · {res_w}x{res_h} @ {stream_fps:.1f}/{stream_cfg_fps:g} FPS",
+                t("Camera: {status} · {details}", status=t(camera_status), details=camera_message)
+                if camera_status != "live" and camera_message
+                else t(
+                    "Camera: {status} · {w}x{h} @ {fps:.1f}/{cfg:g} FPS",
+                    status=t(camera_status),
+                    w=res_w,
+                    h=res_h,
+                    fps=stream_fps,
+                    cfg=stream_cfg_fps,
+                ),
                 size="sm",
             ),
             dmc.Text(
-                f"Robot: {robot_status} · speed {int((robot_speed or {}).get('value', SESSION.robot_speed_rate*100))}%",
+                t(
+                    "Robot: {status} · speed {speed}%",
+                    status=t(robot_status),
+                    speed=int((robot_speed or {}).get("value", SESSION.robot_speed_rate * 100)),
+                ),
                 size="sm",
             ),
             dmc.Text(
-                f"Power: {('on' if (robot_power or {}).get('value') else 'off')}",
+                t("Power: {state}", state=(t("on") if (robot_power or {}).get("value") else t("off"))),
                 size="sm",
             ),
-            dmc.Text(f"Calibration bundle: {calibration_state}", size="sm"),
-            dmc.Text(f"Workspace: {workspace_state}", size="sm"),
-            dmc.Text(f"Plate calibration: {plate_state}", size="sm"),
+            dmc.Text(t("Calibration bundle: {state}", state=t(calibration_state)), size="sm"),
+            dmc.Text(t("Workspace: {state}", state=t(workspace_state)), size="sm"),
+            dmc.Text(t("Plate calibration: {state}", state=t(plate_state)), size="sm"),
             dmc.Text(
-                f"Gripper: {gripper_status}",
+                t("Gripper: {status}", status=t(gripper_status)),
                 size="sm",
             ),
         ]
 
         detection_items = [
-            dmc.Text(f"Model: {model_state}", size="sm"),
-            dmc.Text(f"Detections: {detection_count}", size="sm"),
+            dmc.Text(t("Model: {model}", model=t(model_state)), size="sm"),
+            dmc.Text(t("Detections: {count}", count=detection_count), size="sm"),
         ]
         if SESSION.last_detection_error:
             detection_items.append(
                 dmc.Text(
-                    f"Last error: {SESSION.last_detection_error}",
+                    t("Last error: {error}", error=SESSION.last_detection_error),
                     size="sm",
                     c="red",
                 )
@@ -252,65 +267,69 @@ def register_monitoring_callbacks(app: Dash) -> None:
         )
         pick_items = [
             dmc.Text(
-                f"Holding object: {'yes' if SESSION.robot_has_object else 'no'}",
+                t("Holding object: {state}", state=(t("yes") if SESSION.robot_has_object else t("no"))),
                 size="sm",
             ),
-            dmc.Text(f"Last action: {last_action}", size="sm"),
-            dmc.Text(f"Processed objects: {processed}", size="sm"),
+            dmc.Text(t("Last action: {action}", action=last_action), size="sm"),
+            dmc.Text(t("Processed objects: {count}", count=processed), size="sm"),
             dmc.Text(
-                f"Attempts: {attempts} · Failures: {failures}",
+                t("Attempts: {attempts} · Failures: {failures}", attempts=attempts, failures=failures),
                 size="sm",
             ),
             dmc.Text(
-                f"Success rate: {success_rate:.1f}%"
+                t("Success rate: {rate:.1f}%", rate=success_rate)
                 if success_rate is not None
-                else "Success rate: n/a",
+                else t("Success rate: n/a"),
                 size="sm",
             ),
             dmc.Text(
-                f"Avg cycle: {avg_cycle:.2f}s"
+                t("Avg cycle: {avg:.2f}s", avg=avg_cycle)
                 if avg_cycle is not None
-                else "Avg cycle: n/a",
+                else t("Avg cycle: n/a"),
                 size="sm",
             ),
             dmc.Text(
-                f"Last cycle: {SESSION.last_cycle_s:.2f}s"
+                t("Last cycle: {cycle:.2f}s", cycle=SESSION.last_cycle_s)
                 if SESSION.last_cycle_s is not None
-                else "Last cycle: n/a",
+                else t("Last cycle: n/a"),
                 size="sm",
             ),
         ]
         if SESSION.last_pick_mm:
             pick_items.append(
                 dmc.Text(
-                    f"Last pick: {SESSION.last_pick_mm[0]:.1f}, {SESSION.last_pick_mm[1]:.1f} mm",
+                    t("Last pick: {x:.1f}, {y:.1f} mm", x=SESSION.last_pick_mm[0], y=SESSION.last_pick_mm[1]),
                     size="sm",
                 )
             )
         if SESSION.drop_target_mm:
             pick_items.append(
                 dmc.Text(
-                    f"Drop target: {SESSION.drop_target_mm[0]:.1f}, {SESSION.drop_target_mm[1]:.1f} mm",
+                    t("Drop target: {x:.1f}, {y:.1f} mm", x=SESSION.drop_target_mm[0], y=SESSION.drop_target_mm[1]),
                     size="sm",
                 )
             )
         if SESSION.drop_target_orientation:
             pick_items.append(
                 dmc.Text(
-                    "Drop orientation: "
-                    f"a={SESSION.drop_target_orientation[0]:.1f}, "
-                    f"b={SESSION.drop_target_orientation[1]:.1f}, "
-                    f"c={SESSION.drop_target_orientation[2]:.1f}",
+                    t(
+                        "Drop orientation: a={a:.1f}, b={b:.1f}, c={c:.1f}",
+                        a=SESSION.drop_target_orientation[0],
+                        b=SESSION.drop_target_orientation[1],
+                        c=SESSION.drop_target_orientation[2],
+                    ),
                     size="sm",
                 )
             )
         if SESSION.drop_target_robot:
             pick_items.append(
                 dmc.Text(
-                    "Drop robot pose: "
-                    f"x={SESSION.drop_target_robot[0]:.1f}, "
-                    f"y={SESSION.drop_target_robot[1]:.1f}, "
-                    f"z={SESSION.drop_target_robot[2]:.1f}",
+                    t(
+                        "Drop robot pose: x={x:.1f}, y={y:.1f}, z={z:.1f}",
+                        x=SESSION.drop_target_robot[0],
+                        y=SESSION.drop_target_robot[1],
+                        z=SESSION.drop_target_robot[2],
+                    ),
                     size="sm",
                 )
             )
@@ -375,40 +394,40 @@ def register_monitoring_callbacks(app: Dash) -> None:
             in_progress = True
         robot_online = (robot_conn_state or {}).get("status") == "online"
         posture_ready = robot_online
-        posture_message = "Robot not connected."
+        posture_message = t("Robot not connected.")
         if robot_online:
             posture_ready, posture_message = codroid_picker_module._robot_posture_ready()
 
         # Determine message based on the actual blocking issue
         if in_progress:
             if calib_status == "awaiting_verification":
-                message = "Awaiting verification move."
+                message = t("Awaiting verification move.")
                 color = "yellow"
             elif calib_status == "verifying":
-                message = "Verification in progress..."
+                message = t("Verification in progress...")
                 color = "blue"
             else:
-                message = "Calibration in progress..."
+                message = t("Calibration in progress...")
                 color = "blue"
         elif not robot_online:
             message = (
-                "Robot not connected. Click 'Test robot connection' to establish connection."
+                t("Robot not connected. Click 'Test robot connection' to establish connection.")
             )
             color = "red"
         elif not ok:
             message = plate_data.get(
-                "message") or f"Detected {count} marker(s)."
+                "message") or t("Detected {count} marker(s).", count=count)
             color = "yellow"
         elif not stable:
             message = plate_data.get(
                 "message"
-            ) or "Calibration plate moved; hold it steady."
+            ) or t("Calibration plate moved; hold it steady.")
             color = "yellow"
         elif not posture_ready:
             message = posture_message
             color = "yellow"
         else:
-            message = "Plate markers stable. Ready to calibrate."
+            message = t("Plate markers stable. Ready to calibrate.")
             color = "green"
 
         disabled = (

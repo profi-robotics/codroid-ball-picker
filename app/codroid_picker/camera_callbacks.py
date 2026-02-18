@@ -17,6 +17,7 @@ from typing import Any, Optional, Tuple
 import cv2
 import dash_mantine_components as dmc
 from dash import callback_context, Dash, html, Input, Output, State, no_update
+from app.codroid_picker.i18n import t
 
 from app.codroid_picker.session import CALIBRATION_PROGRESS, SESSION
 from app.codroid_picker.streaming import (
@@ -43,13 +44,13 @@ _CALIBRATION_ACTION_LOCK = threading.Lock()
 
 def _format_fps(capture_fps: float, stream_fps: float) -> str:
     """Format FPS display text."""
-    return f"Camera: {capture_fps:.1f} FPS · Stream: {stream_fps:.1f} FPS"
+    return t("Camera: {capture_fps:.1f} FPS · Stream: {stream_fps:.1f} FPS", capture_fps=capture_fps, stream_fps=stream_fps)
 
 
 def _format_device_list(devices: list[object]) -> html.Ul:
     """Format device list for display."""
     if not devices:
-        return html.Ul([html.Li("No OAK-D devices detected.")])
+        return html.Ul([html.Li(t("No OAK-D devices detected."))])
     items = []
     for idx, device in enumerate(devices, start=1):
         name = None
@@ -127,11 +128,11 @@ def _refresh_plate_status(frame: Any, plate_path: Path) -> None:
         count = status_data.get("count", 0)
         if status_data.get("is_ok"):
             if status_data.get("movement_px") is not None:
-                message = f"Plate markers: {count} (movement: {status_data['movement_px']:.1f}px)"
+                message = t("Plate markers: {count} (movement: {movement:.1f}px)", count=count, movement=status_data["movement_px"])
             else:
-                message = f"Plate markers: {count}"
+                message = t("Plate markers: {count}", count=count)
         else:
-            message = f"Insufficient plate markers: {count}/{status_data.get('min_required', '?')}"
+            message = t("Insufficient plate markers: {count}/{required}", count=count, required=status_data.get("min_required", "?"))
         state.update_plate_status(
             count=count,
             ok=status_data.get("is_ok", False),
@@ -148,7 +149,7 @@ def _refresh_plate_status(frame: Any, plate_path: Path) -> None:
             stable=False,
             center_px=None,
             movement_px=None,
-            message=f"Plate tracking error: {exc}",
+            message=t("Plate tracking error: {error}", error=exc),
         )
 
 
@@ -159,13 +160,13 @@ def _format_detection_metrics() -> str:
     SESSION = codroid_picker_module.SESSION
 
     if not SESSION.model_loaded:
-        return "Model not loaded"
+        return t("Model not loaded")
 
     detections = SESSION.detections or []
-    metrics = f"Live: {len(detections)} object(s)"
+    metrics = t("Live: {count} object(s)", count=len(detections))
 
     if SESSION.last_detection_error:
-        metrics = f"Error: {SESSION.last_detection_error}"
+        metrics = t("Error: {error}", error=SESSION.last_detection_error)
 
     return metrics
 
@@ -204,6 +205,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Input("auto-init", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         Input("camera-lock-af", "checked"),
+        State("camera-connection-state", "data"),
         State("camera-width", "value"),
         State("camera-height", "value"),
         State("camera-fps-input", "value"),
@@ -214,6 +216,7 @@ def register_camera_callbacks(app: Dash) -> None:
         _init: int,
         _monitor: int,
         lock_af: Optional[bool],
+        camera_state: Optional[dict],
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
@@ -239,33 +242,90 @@ def register_camera_callbacks(app: Dash) -> None:
                 no_update,
                 no_update,
             )
+        if trigger == "monitor-interval":
+            # Never auto-retry camera startup from the periodic monitor tick.
+            # Reconnect attempts should be explicit user actions (switch/button),
+            # otherwise missing hardware can cause endless retry loops.
+            return (
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+        if trigger == "auto-init":
+            # Auto-init should run once per worker process. Dash can remount
+            # intervals on client reconnects; avoid restarting camera retries.
+            if SESSION.camera_auto_init_done:
+                return (
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                )
+            SESSION.camera_auto_init_done = True
         stream_running = (
             SESSION.camera_stream is not None
             and SESSION.camera_stream.is_running()
         )
         checked_value = stream_running if checked is None else bool(checked)
+        if (
+            trigger == "camera-enable"
+            and not checked_value
+            and not stream_running
+        ):
+            # Preserve last known startup failure details when camera is already
+            # down and the toggle transitions to false.
+            if SESSION.camera_last_error_message:
+                last_status = SESSION.camera_last_error_status or "unavailable"
+                badge_text = (
+                    t("Camera: unavailable")
+                    if last_status == "unavailable"
+                    else t("Camera: error")
+                )
+                badge_color = "orange" if last_status == "unavailable" else "yellow"
+                state_payload = {
+                    "status": last_status,
+                    "message": SESSION.camera_last_error_message,
+                }
+                return (
+                    SESSION.camera_last_error_message,
+                    badge_text,
+                    badge_color,
+                    False,
+                    state_payload,
+                    True,
+                    True,
+                )
         desired_checked = checked_value
 
         def _describe_stream() -> str:
             stream = SESSION.camera_stream
             if stream is None:
-                return "Camera stream stopped."
+                return t("Camera stream stopped.")
             res_w, res_h = stream.config.resolution
             fps_val = stream.config.fps
-            device_id = stream.device_id() or "unknown"
+            device_id = stream.device_id() or t("unknown")
             return (
-                f"Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, MXID {device_id})."
+                t("Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, MXID {device_id}).", res_w=res_w, res_h=res_h, fps_val=fps_val, device_id=device_id)
             )
 
         if trigger == "camera-lock-af" and stream_running:
             try:
                 assert SESSION.camera_stream is not None
                 SESSION.camera_stream.set_focus_lock(bool(lock_af))
-                state = "locked" if lock_af else "unlocked"
-                status = f"Camera stream running; focus {state}."
+                state = t("locked") if lock_af else t("unlocked")
+                status = t("Camera stream running; focus {state}.", state=state)
+                SESSION.camera_last_error_message = None
+                SESSION.camera_last_error_status = None
                 return (
                     status,
-                    "Camera: live",
+                    t("Camera: live"),
                     "brand",
                     True,
                     {"status": "live", "message": status},
@@ -273,10 +333,10 @@ def register_camera_callbacks(app: Dash) -> None:
                     False,
                 )
             except Exception as exc:  # noqa: BLE001
-                error = f"Camera focus control error: {exc}"
+                error = t("Camera focus control error: {error}", error=exc)
                 return (
                     error,
-                    "Camera: error",
+                    t("Camera: error"),
                     "red",
                     True,
                     {"status": "error", "message": error},
@@ -286,13 +346,18 @@ def register_camera_callbacks(app: Dash) -> None:
 
         if trigger == "auto-init":
             desired_checked = True
+        elif trigger == "camera-enable" and desired_checked:
+            # Explicit user retry path after unavailable/error.
+            SESSION.camera_auto_init_done = True
         if desired_checked:
             try:
                 if stream_running:
                     status = _describe_stream()
+                    SESSION.camera_last_error_message = None
+                    SESSION.camera_last_error_status = None
                     return (
                         status,
-                        "Camera: live",
+                        t("Camera: live"),
                         "brand",
                         True,
                         {"status": "live", "message": status},
@@ -306,9 +371,11 @@ def register_camera_callbacks(app: Dash) -> None:
                     bool(lock_af),
                     enable_depth_override=False,
                 )
+                SESSION.camera_last_error_message = None
+                SESSION.camera_last_error_status = None
                 return (
                     status,
-                    "Camera: live",
+                    t("Camera: live"),
                     "brand",
                     True,
                     {"status": "live", "message": status},
@@ -318,16 +385,20 @@ def register_camera_callbacks(app: Dash) -> None:
             except RuntimeError as exc:
                 # Handle specific case of no devices
                 if "No available devices" in str(exc):
-                    error = "No OAK-D camera detected. Ensure device is connected and powered on."
+                    error = t(
+                        "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry."
+                    )
                 else:
-                    error = f"Camera error: {exc}"
+                    error = t("Camera error: {error}", error=exc)
+                SESSION.camera_last_error_message = error
+                SESSION.camera_last_error_status = "unavailable"
                 set_active_overlay_task(None)
                 stop_camera_stream()
                 return (
                     error,
-                    "Camera: unavailable",
+                    t("Camera: unavailable"),
                     "orange",
-                    True,
+                    False,
                     {"status": "unavailable", "message": error},
                     True,
                     True,
@@ -335,22 +406,26 @@ def register_camera_callbacks(app: Dash) -> None:
             except Exception as exc:
                 set_active_overlay_task(None)
                 stop_camera_stream()
-                error = f"Camera error: {exc}"
+                error = t("Camera error: {error}", error=exc)
+                SESSION.camera_last_error_message = error
+                SESSION.camera_last_error_status = "error"
                 return (
                     error,
-                    "Camera: error",
+                    t("Camera: error"),
                     "yellow",
-                    True,
+                    False,
                     {"status": "error", "message": error},
                     True,
                     True,
                 )
         set_active_overlay_task(None)
         stop_camera_stream()
-        stopped = "Camera stream stopped."
+        SESSION.camera_last_error_message = None
+        SESSION.camera_last_error_status = None
+        stopped = t("Camera stream stopped.")
         return (
             stopped,
-            "Camera: off",
+            t("Camera: off"),
             "gray",
             False,
             {"status": "off", "message": stopped},
@@ -365,6 +440,8 @@ def register_camera_callbacks(app: Dash) -> None:
     def _update_camera_placeholder(camera_state: Optional[dict]) -> html.Div:
         """Show placeholder when camera is not connected, otherwise show video feed."""
         status = (camera_state or {}).get("status", "off")
+        if status == "off" and SESSION.camera_last_error_message:
+            status = SESSION.camera_last_error_status or "unavailable"
 
         if status == "live":
             # Camera is connected - show the video feed
@@ -384,8 +461,11 @@ def register_camera_callbacks(app: Dash) -> None:
             )
         else:
             # Camera not connected - show placeholder
-            message = (camera_state or {}).get(
-                "message", "Camera not connected")
+            message = (camera_state or {}).get("message")
+            if not message and SESSION.camera_last_error_message:
+                message = SESSION.camera_last_error_message
+            if not message:
+                message = t("Camera not connected.")
             icon = "📷" if status == "off" else "⚠️"
             color = "#666" if status == "off" else "#ff8c00"
 
@@ -396,7 +476,7 @@ def register_camera_callbacks(app: Dash) -> None:
                             html.Div(icon, style={
                                      "fontSize": "64px", "marginBottom": "16px"}),
                             html.Div(
-                                "Camera Not Connected" if status == "off" else "Camera Unavailable",
+                                t("Camera Not Connected") if status == "off" else t("Camera Unavailable"),
                                 style={
                                     "fontSize": "20px",
                                     "fontWeight": 600,
@@ -470,7 +550,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 alert = dmc.Alert(
                     result,
                     icon="✓",
-                    title="Using saved calibration",
+                    title=t("Using saved calibration"),
                     color="green",
                 )
                 # Advance to robot calibration step
@@ -481,7 +561,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
-                    title="Load error",
+                    title=t("Load error"),
                     color="red",
                 )
                 return alert, {"progress": 0}, (current_step or 0)
@@ -490,9 +570,9 @@ def register_camera_callbacks(app: Dash) -> None:
             logging.info("[CALIBRATE] Camera calibration requested")
             if not _CALIBRATION_ACTION_LOCK.acquire(blocking=False):
                 alert = dmc.Alert(
-                    "Camera calibration is already running. Wait for the current capture to finish.",
+                    t("Camera calibration is already running. Wait for the current capture to finish."),
                     icon="!",
-                    title="Calibration in progress",
+                    title=t("Calibration in progress"),
                     color="yellow",
                 )
                 return alert, {"progress": CALIBRATION_PROGRESS.get("value", 0)}, (current_step or 0)
@@ -545,7 +625,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 stream = SESSION.camera_stream
                 if stream is None or not stream.is_running():
                     raise RuntimeError(
-                        "Camera stream stopped before depth capture.")
+                        t("Camera stream stopped before depth capture."))
                 if bool(stream.config.enable_depth):
                     depth_path = codroid_picker_module.capture_depth_snapshot(
                         output_path)
@@ -572,9 +652,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 )
                 if usable_frames < SETTINGS.camera_calibration_min_usable_frames:
                     raise RuntimeError(
-                        "No usable ChArUco detections in captured frames. "
-                        f"Corner counts: {detection_counts}. "
-                        "Ensure the board is visible, sharp, and well-lit."
+                        t("No usable ChArUco detections in captured frames. Corner counts: {counts}. Ensure the board is visible, sharp, and well-lit.", counts=detection_counts)
                     )
 
                 # Compute calibration bundle
@@ -584,17 +662,17 @@ def register_camera_callbacks(app: Dash) -> None:
 
                 success_lines = [
                     dmc.Text(
-                        f"✓ Captured {len(captured_frames)} RGB frames", size="sm"
+                        t("✓ Captured {count} RGB frames", count=len(captured_frames)), size="sm"
                     ),
-                    dmc.Text("✓ Captured 1 depth snapshot", size="sm"),
+                    dmc.Text(t("✓ Captured 1 depth snapshot"), size="sm"),
                     dmc.Text(
-                        f"✓ Detected {usable_frames}/{num_frames} usable frames", size="sm"
+                        t("✓ Detected {usable}/{total} usable frames", usable=usable_frames, total=num_frames), size="sm"
                     ),
                 ]
                 if stream_paused_for_depth_capture:
                     success_lines.append(
                         dmc.Text(
-                            "⚠ Camera stream paused after isolated depth capture. Click 'Enable camera' to resume live video.",
+                            t("⚠ Camera stream paused after isolated depth capture. Click 'Enable camera' to resume live video."),
                             size="sm",
                             c="orange",
                         )
@@ -604,7 +682,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 alert = dmc.Alert(
                     children=[dmc.Stack(success_lines, gap="xs")],
                     icon="✓",
-                    title="Calibration complete",
+                    title=t("Calibration complete"),
                     color="green",
                 )
                 # Reset progress tracker
@@ -618,7 +696,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 alert = dmc.Alert(
                     str(exc)[:200],
                     icon="!",
-                    title="Calibration error",
+                    title=t("Calibration error"),
                     color="red",
                 )
                 # Reset progress tracker on error
@@ -629,7 +707,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_calibration_in_progress = False
                 _CALIBRATION_ACTION_LOCK.release()
 
-        return dmc.Alert("", icon="•", title="Ready", color="gray"), {"progress": 0}, (current_step or 0)
+        return dmc.Alert("", icon="•", title=t("Ready"), color="gray"), {"progress": 0}, (current_step or 0)
 
     @app.callback(
         Output("overlay-status", "children", allow_duplicate=True),
@@ -689,7 +767,7 @@ def register_camera_callbacks(app: Dash) -> None:
             "center_px": None,
             "movement_px": None,
             "timestamp": time.time(),
-            "message": "Waiting for plate markers",
+            "message": t("Waiting for plate markers"),
         }
         capture_fps = SESSION.camera_stream.get_fps() if SESSION.camera_stream else 0.0
         stream_fps = MJPEG_STREAM.get_fps()
@@ -717,12 +795,12 @@ def register_camera_callbacks(app: Dash) -> None:
                     logging.warning(
                         "No frame from camera despite stream running: %s", is_running)
             return (
-                "Camera stream is stopped.",
+                t("Camera stream is stopped."),
                 overlay_fps_text,
-                "ChArUco corners: --",
-                "Workspace: --",
-                "Plate error: --",
-                "Detections: --",
+                t("ChArUco corners: --"),
+                t("Workspace: --"),
+                t("Plate error: --"),
+                t("Detections: --"),
                 plate_state,
                 True,
                 "gray",
@@ -776,7 +854,7 @@ def register_camera_callbacks(app: Dash) -> None:
         if task is not None:
             overlay = FRAME_PROCESSOR.get_latest(task.key)
             if overlay is None:
-                status_text = "Overlay processing..."
+                status_text = t("Overlay processing...")
                 metric_text = "--"
             else:
                 status_text = overlay.status
@@ -787,18 +865,18 @@ def register_camera_callbacks(app: Dash) -> None:
             _refresh_plate_status(frame, plate_path)
 
         if task is None:
-            status_text = "No overlay applied."
+            status_text = t("No overlay applied.")
             metric_text = "--"
 
         mode_label = {
-            "auto": "Overlay: Auto",
-            "calibration": "Overlay: Calibration",
-            "workspace": "Overlay: Workspace",
-            "plate": "Overlay: Plate",
-            "detection": "Overlay: Detections",
-            "none": "Overlay: Off",
-        }.get(requested_overlay, "Overlay: Auto")
-        status_text = f"{mode_label} · {status_text}"
+            "auto": t("Overlay: Auto"),
+            "calibration": t("Overlay: Calibration"),
+            "workspace": t("Overlay: Workspace"),
+            "plate": t("Overlay: Plate"),
+            "detection": t("Overlay: Detections"),
+            "none": t("Overlay: Off"),
+        }.get(requested_overlay, t("Overlay: Auto"))
+        status_text = t("{mode} · {status}", mode=mode_label, status=status_text)
 
         # Get plate status from state module
         from app.codroid_picker import state
@@ -816,14 +894,14 @@ def register_camera_callbacks(app: Dash) -> None:
                     status_text,
                     overlay_fps_text,
                     metric_text,
-                    "Workspace: --",
-                    "Plate error: --",
-                    "Detections: --",
+                    t("Workspace: --"),
+                    t("Plate error: --"),
+                    t("Detections: --"),
                     plate_state,
                     calibrate_disabled,
                     marker_color,
                 )
-            metrics_text = "ChArUco corners: --"
+            metrics_text = t("ChArUco corners: --")
             calibrate_disabled, marker_color = _camera_calibration_state(
                 metrics_text, calibration_step
             )
@@ -831,16 +909,16 @@ def register_camera_callbacks(app: Dash) -> None:
                 status_text,
                 overlay_fps_text,
                 metrics_text,
-                "Workspace: --",
+                t("Workspace: --"),
                 metric_text,
-                "Detections: --",
+                t("Detections: --"),
                 plate_state,
                 calibrate_disabled,
                 marker_color,
             )
 
         if tab == "applications":
-            metrics_text = "ChArUco corners: --"
+            metrics_text = t("ChArUco corners: --")
             calibrate_disabled, marker_color = _camera_calibration_state(
                 metrics_text, calibration_step
             )
@@ -848,16 +926,16 @@ def register_camera_callbacks(app: Dash) -> None:
                 status_text,
                 overlay_fps_text,
                 metrics_text,
-                metric_text if application_tab == "workspace" else "Workspace: --",
-                "Plate error: --",
-                _format_detection_metrics() if application_tab == "pick-place" else "Detections: --",
+                metric_text if application_tab == "workspace" else t("Workspace: --"),
+                t("Plate error: --"),
+                _format_detection_metrics() if application_tab == "pick-place" else t("Detections: --"),
                 plate_state,
                 calibrate_disabled,
                 marker_color,
             )
 
         # Monitoring or any other tab: surface metrics.
-        metrics_text = "ChArUco corners: --"
+        metrics_text = t("ChArUco corners: --")
         calibrate_disabled, marker_color = _camera_calibration_state(
             metrics_text, calibration_step
         )
@@ -865,9 +943,9 @@ def register_camera_callbacks(app: Dash) -> None:
             status_text,
             overlay_fps_text,
             metrics_text,
-            "Workspace: --",
-            "Plate error: --",
-            "Detections: --",
+            t("Workspace: --"),
+            t("Plate error: --"),
+            t("Detections: --"),
             plate_state,
             calibrate_disabled,
             marker_color,
@@ -888,7 +966,7 @@ def register_camera_callbacks(app: Dash) -> None:
 
         # Show progress bar and text only if capturing (1-99%)
         if progress > 0 and progress < 100:
-            text = f"Capturing images: {current_frame}/{max_frames}"
+            text = t("Capturing images: {current}/{total}", current=current_frame, total=max_frames)
             return progress, {"display": "block"}, text, {"display": "block", "marginBottom": "8px"}
 
         return 0, {"display": "none"}, "", {"display": "none"}

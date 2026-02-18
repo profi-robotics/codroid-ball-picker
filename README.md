@@ -37,12 +37,48 @@ robot motion commands.
    ```
 Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
+The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
 For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
 python run_codroid_picker.py
 ```
 On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive.
+
+## User Manual (UK)
+
+An operator-focused Ukrainian user manual is available at:
+
+- `docs/manuals/user_manual_uk.md`
+
+Generate a PDF from the Markdown source with:
+
+```bash
+bash scripts/build_user_manual_pdf.sh
+```
+
+Optional: choose a specific PDF engine (`pdflatex`, `xelatex`, `lualatex`, or `weasyprint`):
+
+```bash
+bash scripts/build_user_manual_pdf.sh --engine xelatex
+```
+
+Example with a Python-only engine from the project environment:
+
+```bash
+bash scripts/build_user_manual_pdf.sh --engine weasyprint
+```
+
+### PDF build prerequisites
+
+- `pandoc` available either from system `PATH` or from project dependencies (`pypandoc-binary` after `uv sync`)
+- A PDF engine available for the selected `--engine`:
+  - TeX engine (`pdflatex`, `xelatex`, `lualatex`) for LaTeX-based export, or
+  - `weasyprint` (provided by project dependencies after `uv sync`)
+
+Default output path:
+
+- `docs/manuals/user_manual_uk.pdf`
 
 ## Application Settings
 

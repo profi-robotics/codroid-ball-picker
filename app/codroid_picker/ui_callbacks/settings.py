@@ -7,6 +7,7 @@ This module contains Dash callbacks for:
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, callback_context
+from app.codroid_picker.i18n import t
 
 
 def register_settings_callbacks(app: Dash) -> None:
@@ -179,9 +180,9 @@ def register_settings_callbacks(app: Dash) -> None:
         default_coord5_max_z = app_settings._BASE_COORD5_MAX_Z_MM
         default_robot_coordinate_id = app_settings._BASE_ROBOT_COORDINATE_ID
 
-        status_text = "Settings saved."
+        status_text = t("Settings saved.")
         if trigger == "settings-reset":
-            status_text = "Settings reset to defaults (env + built-ins)."
+            status_text = t("Settings reset to defaults (env + built-ins).")
             host_val = None
             gripper_ip_val = None
             gripper_type_val = default_gripper_type

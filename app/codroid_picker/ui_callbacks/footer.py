@@ -8,6 +8,7 @@ This module contains Dash callbacks for:
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, callback_context
+from app.codroid_picker.i18n import t
 
 
 def register_footer_callbacks(app: Dash) -> None:
@@ -44,14 +45,14 @@ def register_footer_callbacks(app: Dash) -> None:
         if not n_clicks or trigger != "footer-toggle":
             # honor current state without toggling on first render or non-toggle updates
             class_name = "app-footer is-collapsed" if collapsed else "app-footer"
-            label = "Show footer" if collapsed else "Hide footer"
+            label = t("Show footer") if collapsed else t("Hide footer")
             main_class = _main_class(collapsed)
             style = {"display": "none"} if collapsed else {}
             return state or {"collapsed": False}, class_name, label, main_class, style
 
         new_collapsed = not collapsed
         class_name = "app-footer is-collapsed" if new_collapsed else "app-footer"
-        label = "Show footer" if new_collapsed else "Hide footer"
+        label = t("Show footer") if new_collapsed else t("Hide footer")
         main_class = _main_class(new_collapsed)
         style = {"display": "none"} if new_collapsed else {}
         return {"collapsed": new_collapsed}, class_name, label, main_class, style

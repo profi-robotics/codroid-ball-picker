@@ -13,6 +13,7 @@ import dash_mantine_components as dmc
 from dash import html
 
 from app.codroid_picker.components.common import _encode_frame, placeholder_frame
+from app.codroid_picker.i18n import t
 from app.codroid_picker.session import SESSION
 from app.settings import (
     DEFAULT_BUNDLE_PATH,
@@ -40,12 +41,12 @@ def _calibration_stepper_stack() -> dmc.Stepper:
         mt="sm",
         children=[
             dmc.StepperStep(
-                label="Camera calibration",
-                description="Intrinsics + workspace plane",
+                label=t("Camera calibration"),
+                description=t("Intrinsics + workspace plane"),
                 children=dmc.Stack(
                     [
                         dmc.Text(
-                            "Capture the ChArUco board frames to calibrate the camera.",
+                            t("Capture the ChArUco board frames to calibrate the camera."),
                             size="sm",
                             c="dimmed",
                         ),
@@ -61,10 +62,10 @@ def _calibration_stepper_stack() -> dmc.Stepper:
                                     ),
                                     dmc.Stack(
                                         [
-                                            dmc.Text("Markers detected",
+                                            dmc.Text(t("Markers detected"),
                                                      size="sm", fw=600),
                                             dmc.Text(
-                                                "Position the ChArUco board in view",
+                                                t("Position the ChArUco board in view"),
                                                 size="xs",
                                                 c="dimmed",
                                             ),
@@ -78,14 +79,14 @@ def _calibration_stepper_stack() -> dmc.Stepper:
                             withBorder=True,
                         ),
                         dmc.Button(
-                            "Calibrate",
+                            t("Calibrate"),
                             id="calibrate-camera",
                             fullWidth=True,
                             disabled=True,
                             color="teal",
                         ),
                         dmc.Button(
-                            "Use saved calibration",
+                            t("Use saved calibration"),
                             id="use-existing-calibration",
                             fullWidth=True,
                             variant="outline",
@@ -117,31 +118,31 @@ def _calibration_stepper_stack() -> dmc.Stepper:
                 ),
             ),
             dmc.StepperStep(
-                label="Robot calibration",
-                description="Detect plate markers",
+                label=t("Robot calibration"),
+                description=t("Detect plate markers"),
                 children=dmc.Stack(
                     [
                         dmc.Text(
-                            "Detect the calibration plate and attach the homography.",
+                            t("Detect the calibration plate and attach the homography."),
                             size="sm",
                             c="dimmed",
                         ),
                         dmc.Alert(
                             id="plate-detection-summary",
-                            title="Plate visibility",
+                            title=t("Plate visibility"),
                             color="yellow",
-                            children="Waiting for plate markers...",
+                            children=t("Waiting for plate markers..."),
                             variant="light",
                         ),
                         dmc.Button(
-                            "Begin calibrating robot",
+                            t("Begin calibrating robot"),
                             id="start-robot-calibration",
                             variant="filled",
                             color="teal",
                             disabled=True,
                         ),
                         dmc.Button(
-                            "Use saved calibration",
+                            t("Use saved calibration"),
                             id="use-existing-robot-calibration",
                             fullWidth=True,
                             variant="outline",
@@ -149,7 +150,7 @@ def _calibration_stepper_stack() -> dmc.Stepper:
                             disabled=True,
                         ),
                         dmc.Button(
-                            "Run verification move",
+                            t("Run verification move"),
                             id="run-verification-inline",
                             fullWidth=True,
                             variant="outline",
@@ -178,19 +179,19 @@ def _calibration_loaded_body() -> dmc.Stack:
     """Build the 'calibration loaded' view when calibration data exists."""
     return dmc.Stack(
         [
-            dmc.Text("Calibration data loaded", fw=600, size="lg"),
+            dmc.Text(t("Calibration data loaded"), fw=600, size="lg"),
             dmc.Text(
-                "Camera and robot calibration data already exist. Reset calibration to start over.",
+                t("Camera and robot calibration data already exist. Reset calibration to start over."),
                 size="sm",
                 c="dimmed",
             ),
             dmc.Text(
-                "Loading new calibration artifacts will delete the existing bundle and plate data.",
+                t("Loading new calibration artifacts will delete the existing bundle and plate data."),
                 size="xs",
                 c="dimmed",
             ),
             dmc.Button(
-                "Reset calibration",
+                t("Reset calibration"),
                 id="calibration-reset-button",
                 variant="outline",
                 color="red",
@@ -211,12 +212,12 @@ def build_stepper_card() -> dmc.Card:
         [
             dmc.Group(
                 [
-                    dmc.Text("Calibration Steps", fw=600, size="lg"),
+                    dmc.Text(t("Calibration Steps"), fw=600, size="lg"),
                     dmc.Group(
                         [
-                            dmc.Button("Back", id="step-prev",
+                            dmc.Button(t("Back"), id="step-prev",
                                        variant="light", size="sm"),
-                            dmc.Button("Next", id="step-next",
+                            dmc.Button(t("Next"), id="step-next",
                                        size="sm"),
                         ],
                         gap="xs",
@@ -250,20 +251,20 @@ def build_workspace_step_content() -> dmc.Stack:
     return dmc.Stack(
         [
             dmc.Text(
-                "Use the two corner markers to define the workarea size.",
+                t("Use the two corner markers to define the workarea size."),
                 size="sm",
                 c="dimmed",
             ),
             dmc.Button(
-                "Compute workspace", id="compute-workspace", variant="light"),
+                t("Compute workspace"), id="compute-workspace", variant="light"),
             dmc.Button(
-                "Use saved workspace",
+                t("Use saved workspace"),
                 id="use-existing-workspace",
                 variant="outline",
                 style={"display": "none"},
             ),
             dmc.Button(
-                "Clear workspace",
+                t("Clear workspace"),
                 id="clear-workspace",
                 variant="outline",
                 color="red",
@@ -276,26 +277,27 @@ def build_workspace_step_content() -> dmc.Stack:
     )
 
 
-def build_camera_panel(title: str = "Camera View") -> dmc.Card:
+def build_camera_panel(title: str | None = None) -> dmc.Card:
     """Build the camera feed panel with overlay controls."""
     placeholder_src = _encode_frame(
-        placeholder_frame("Camera stream offline"))
+        placeholder_frame(t("Camera stream offline")))
+    panel_title = title or t("Camera View")
     return dmc.Card(
         [
             dmc.Group(
                 [
-                    dmc.Text(title, fw=600, size="lg"),
+                    dmc.Text(panel_title, fw=600, size="lg"),
                     dmc.Group(
                         [
                             dmc.SegmentedControl(
                                 id="overlay-mode-select",
                                 data=[
-                                    {"label": "Auto", "value": "auto"},
-                                    {"label": "Calib", "value": "calibration"},
-                                    {"label": "Workspace", "value": "workspace"},
-                                    {"label": "Plate", "value": "plate"},
-                                    {"label": "Detections", "value": "detection"},
-                                    {"label": "Off", "value": "none"},
+                                    {"label": t("Auto"), "value": "auto"},
+                                    {"label": t("Calib"), "value": "calibration"},
+                                    {"label": t("Workspace"), "value": "workspace"},
+                                    {"label": t("Plate"), "value": "plate"},
+                                    {"label": t("Detections"), "value": "detection"},
+                                    {"label": t("Off"), "value": "none"},
                                 ],
                                 value="auto",
                                 size="xs",
@@ -304,7 +306,7 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                             ),
                             dmc.ActionIcon(
                                 html.Span(
-                                    "⛶", style={"fontSize": "1.2rem"}, title="Fullscreen"),
+                                    "⛶", style={"fontSize": "1.2rem"}, title=t("Fullscreen")),
                                 id="fullscreen-btn",
                                 variant="light",
                             ),
@@ -316,13 +318,13 @@ def build_camera_panel(title: str = "Camera View") -> dmc.Card:
                 align="center",
             ),
             dmc.Text(
-                "Overlay: waiting for camera frames...",
+                t("Overlay: waiting for camera frames..."),
                 id="overlay-status",
                 size="sm",
                 c="dimmed",
             ),
             dmc.Text(
-                "Camera: -- FPS · Stream: -- FPS",
+                t("Camera: -- FPS · Stream: -- FPS"),
                 id="camera-fps",
                 size="sm",
                 c="dark",
@@ -348,7 +350,7 @@ def build_settings_card() -> dmc.Card:
         [
             dmc.Group(
                 [
-                    dmc.Text("Settings", fw=600, size="lg"),
+                    dmc.Text(t("Settings"), fw=600, size="lg"),
                     dmc.Text(id="settings-status", size="sm", c="dimmed"),
                 ],
                 justify="space-between",
@@ -360,8 +362,8 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.TextInput(
                             id="settings-robot-host",
-                            label="Robot host",
-                            placeholder="192.168.101.100",
+                            label=t("Robot host"),
+                            placeholder=t("192.168.101.100"),
                             value=SETTINGS.robot_host,
                             size="sm",
                         ),
@@ -370,7 +372,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-robot-port",
-                            label="Robot port",
+                            label=t("Robot port"),
                             value=SETTINGS.robot_port,
                             size="sm",
                             min=1,
@@ -380,7 +382,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-user-port",
-                            label="User WS port",
+                            label=t("User WS port"),
                             value=SETTINGS.user_port,
                             size="sm",
                             min=1,
@@ -390,8 +392,8 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.TextInput(
                             id="settings-gripper-ip",
-                            label="Gripper IP",
-                            placeholder="192.168.101.95",
+                            label=t("Gripper IP"),
+                            placeholder=t("192.168.101.95"),
                             value=SETTINGS.gripper_ip,
                             size="sm",
                         ),
@@ -400,7 +402,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.Select(
                             id="settings-gripper-type",
-                            label="Gripper type",
+                            label=t("Gripper type"),
                             data=GRIPPER_PROFILE_OPTIONS,
                             value=SETTINGS.gripper_type,
                             size="sm",
@@ -411,7 +413,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-marker-a",
-                            label="Marker ID A",
+                            label=t("Marker ID A"),
                             value=SETTINGS.marker_ids[0],
                             min=0,
                             max=49,
@@ -422,7 +424,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-marker-b",
-                            label="Marker ID B",
+                            label=t("Marker ID B"),
                             value=SETTINGS.marker_ids[1],
                             min=0,
                             max=49,
@@ -433,7 +435,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-marker-size",
-                            label="Marker size (mm)",
+                            label=t("Marker size (mm)"),
                             value=SETTINGS.marker_size_mm,
                             min=1,
                             max=200,
@@ -444,7 +446,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.TextInput(
                             id="settings-calib-path",
-                            label="Calibration bundle path",
+                            label=t("Calibration bundle path"),
                             value=str(DEFAULT_BUNDLE_PATH),
                             size="sm",
                         ),
@@ -453,7 +455,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.TextInput(
                             id="settings-workspace-path",
-                            label="Workspace path",
+                            label=t("Workspace path"),
                             value=str(DEFAULT_WORKSPACE_PATH),
                             size="sm",
                         ),
@@ -462,7 +464,7 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.TextInput(
                             id="settings-robot-calib-path",
-                            label="Robot calibration path",
+                            label=t("Robot calibration path"),
                             value=str(DEFAULT_ROBOT_CALIBRATION_PATH),
                             size="sm",
                         ),
@@ -471,39 +473,39 @@ def build_settings_card() -> dmc.Card:
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-camera-calib-frames",
-                            label="Camera calib frames",
+                            label=t("Camera calib frames"),
                             value=SETTINGS.camera_calibration_frame_count,
                             min=1,
                             max=120,
                             step=1,
                             size="sm",
-                            description="Frames captured for each camera calibration run.",
+                            description=t("Frames captured for each camera calibration run."),
                         ),
                         span=4,
                     ),
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-camera-calib-delay",
-                            label="Frame delay (s)",
+                            label=t("Frame delay (s)"),
                             value=SETTINGS.camera_calibration_frame_delay_s,
                             min=0.0,
                             max=1.0,
                             step=0.05,
                             size="sm",
-                            description="Wait between captures to reduce motion blur.",
+                            description=t("Wait between captures to reduce motion blur."),
                         ),
                         span=4,
                     ),
                     dmc.GridCol(
                         dmc.NumberInput(
                             id="settings-camera-calib-min-usable",
-                            label="Min usable frames",
+                            label=t("Min usable frames"),
                             value=SETTINGS.camera_calibration_min_usable_frames,
                             min=1,
                             max=30,
                             step=1,
                             size="sm",
-                            description="Calibration failures when usable frames below this.",
+                            description=t("Calibration failures when usable frames below this."),
                         ),
                         span=4,
                     ),
@@ -512,9 +514,9 @@ def build_settings_card() -> dmc.Card:
             ),
             dmc.Group(
                 [
-                    dmc.Button("Save settings",
+                    dmc.Button(t("Save settings"),
                                id="settings-save", color="teal"),
-                    dmc.Button("Reset to defaults", id="settings-reset",
+                    dmc.Button(t("Reset to defaults"), id="settings-reset",
                                variant="outline", color="red"),
                 ],
                 justify="flex-end",

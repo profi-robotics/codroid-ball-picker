@@ -3,6 +3,7 @@
 from typing import Optional, Tuple
 
 from dash import Dash, Input, Output, State, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_detection_callbacks(app: Dash) -> None:
@@ -69,7 +70,7 @@ def register_detection_callbacks(app: Dash) -> None:
         frame, _depth = get_latest_frame()
         if frame is None:
             return (
-                "Camera stream is not running.",
+                t("Camera stream is not running."),
                 _format_detection_list([]),
                 [],
                 None,
@@ -82,12 +83,12 @@ def register_detection_callbacks(app: Dash) -> None:
                 frame, conf_value, iou_value, max_value, class_filter)
             SESSION.detections = detections
             SESSION.last_detection_error = None
-            SESSION.last_action = "Detection run completed."
+            SESSION.last_action = t("Detection run completed.")
         except Exception as exc:
             SESSION.detections = []
             SESSION.last_detection_error = str(exc)
             return (
-                f"Detection failed: {exc}",
+                t("Detection failed: {error}", error=exc),
                 _format_detection_list([]),
                 [],
                 None,
@@ -95,11 +96,11 @@ def register_detection_callbacks(app: Dash) -> None:
 
         options = []
         for idx, det in enumerate(detections):
-            label = det.get("label", "object")
+            label = det.get("label", t("object"))
             options.append({"value": str(idx), "label": f"{idx + 1}: {label}"})
         selected = options[0]["value"] if options else None
         return (
-            f"Detection complete: {len(detections)} object(s).",
+            t("Detection complete: {count} object(s).", count=len(detections)),
             _format_detection_list(detections),
             options,
             selected,
@@ -132,7 +133,7 @@ def register_detection_callbacks(app: Dash) -> None:
 
         options = []
         for idx, det in enumerate(detections):
-            label = det.get("label", "object")
+            label = det.get("label", t("object"))
             conf = det.get("confidence", 0.0)
             options.append(
                 {"value": str(idx), "label": f"{idx + 1}: {label} ({conf:.2f})"})

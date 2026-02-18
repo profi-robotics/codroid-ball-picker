@@ -14,6 +14,7 @@ from dash import Dash
 
 from .footer import register_footer_callbacks
 from .model import register_model_callbacks
+from .localization import register_localization_callbacks
 from .monitoring import register_monitoring_callbacks
 from .notifications import register_notification_callbacks
 from .prerequisites import register_prerequisites_callbacks
@@ -31,6 +32,7 @@ def register_ui_callbacks(app: Dash) -> None:
     register_footer_callbacks(app)
     register_stepper_callbacks(app)
     register_model_callbacks(app)
+    register_localization_callbacks(app)
     register_notification_callbacks(app)
     register_settings_callbacks(app)
     register_monitoring_callbacks(app)
@@ -42,6 +44,7 @@ __all__ = [
     "register_footer_callbacks",
     "register_stepper_callbacks",
     "register_model_callbacks",
+    "register_localization_callbacks",
     "register_notification_callbacks",
     "register_settings_callbacks",
     "register_monitoring_callbacks",

@@ -10,6 +10,7 @@ from typing import Any, Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, no_update
+from app.codroid_picker.i18n import t
 
 
 def register_stepper_callbacks(app: Dash) -> None:
@@ -96,5 +97,5 @@ def register_stepper_callbacks(app: Dash) -> None:
             return ""
         entries = codroid_picker_module._calibration_metadata_entries()
         if not entries:
-            return dmc.Text("Calibration metadata unavailable.", size="xs", c="dimmed")
+            return dmc.Text(t("Calibration metadata unavailable."), size="xs", c="dimmed")
         return [dmc.Text(entry, size="xs", c="dimmed") for entry in entries]

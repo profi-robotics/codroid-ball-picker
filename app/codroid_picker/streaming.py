@@ -28,6 +28,7 @@ _RGB_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS", "30"))
 _RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "30"))
 _MJPEG_MAX_FPS = float(os.getenv("CODROID_MJPEG_MAX_FPS", "30"))
 _RETRYABLE_CAMERA_ERROR_SUBSTRINGS = (
+    "no available devices",
     "device already closed or disconnected",
     "input/output error",
     "x_link",

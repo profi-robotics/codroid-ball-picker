@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import dash_mantine_components as dmc
+from app.codroid_picker.i18n import t
 
 LOGGER = logging.getLogger(__name__)
 
@@ -339,12 +340,12 @@ def format_gpu_status() -> list:
     # Per-device info
     for dev in gpu_info["devices"]:
         # For Jetson, show RAM as shared memory
-        memory_label = "RAM (shared)" if gpu_info.get("jetson") else "Memory"
+        memory_label = t("RAM (shared)") if gpu_info.get("jetson") else t("Memory")
         elements.append(
             dmc.Card(
                 [
                     dmc.Text(
-                        f"GPU {dev['index']}: {dev['name']}", fw=600, size="sm"),
+                        t("GPU {index}: {name}", index=dev["index"], name=dev["name"]), fw=600, size="sm"),
                     dmc.Group(
                         [
                             dmc.Stack(
@@ -360,7 +361,7 @@ def format_gpu_status() -> list:
                             dmc.Stack(
                                 [
                                     dmc.Text(
-                                        "GPU Usage", size="xs", c="dimmed"),
+                                        t("GPU Usage"), size="xs", c="dimmed"),
                                     dmc.Text(
                                         f"{dev['gpu_utilization']}%", size="sm"),
                                 ],
@@ -368,7 +369,7 @@ def format_gpu_status() -> list:
                             ),
                             dmc.Stack(
                                 [
-                                    dmc.Text("Clock", size="xs", c="dimmed"),
+                                    dmc.Text(t("Clock"), size="xs", c="dimmed"),
                                     dmc.Text(
                                         f"{dev['clock_graphics_mhz']} MHz", size="sm"),
                                 ],
@@ -376,7 +377,7 @@ def format_gpu_status() -> list:
                             ),
                             dmc.Stack(
                                 [
-                                    dmc.Text("Temp", size="xs", c="dimmed"),
+                                    dmc.Text(t("Temp"), size="xs", c="dimmed"),
                                     dmc.Text(
                                         f"{dev['temperature_c']}°C", size="sm"),
                                 ],
@@ -384,7 +385,7 @@ def format_gpu_status() -> list:
                             ),
                             dmc.Stack(
                                 [
-                                    dmc.Text("Power", size="xs", c="dimmed"),
+                                    dmc.Text(t("Power"), size="xs", c="dimmed"),
                                     dmc.Text(
                                         f"{dev['power_watts']:.1f} W", size="sm"),
                                 ],

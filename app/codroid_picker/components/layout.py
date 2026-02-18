@@ -16,6 +16,7 @@ from app.codroid_picker.components.common import (
     GRIPPER_FORCE_MAX,
     GRIPPER_FORCE_DEFAULT,
 )
+from app.codroid_picker.i18n import current_locale, t
 
 __all__ = [
     "build_header",
@@ -104,22 +105,36 @@ def _create_control_row(
 
 def build_header() -> dmc.AppShellHeader:
     """Build the application header with branding and connection badges."""
-    branding = dmc.Text("Estun Codroid Pick-and-Place", className="app-title")
+    branding = dmc.Text(t("header.title"), className="app-title")
     badges = dmc.Group(
         [
-            dmc.Badge("Camera: off", id="header-camera-badge",
+            dmc.Badge(t("header.badge.camera_off"), id="header-camera-badge",
                       color="gray", variant="light"),
-            dmc.Badge("Robot: idle", id="header-robot-badge",
+            dmc.Badge(t("header.badge.robot_idle"), id="header-robot-badge",
                       color="gray", variant="light"),
-            dmc.Badge("Gripper: off", id="header-gripper-badge",
+            dmc.Badge(t("header.badge.gripper_off"), id="header-gripper-badge",
                       color="gray", variant="light"),
         ],
         className="header-badges",
     )
+    language_select = dmc.Select(
+        id="language-select-header",
+        size="sm",
+        w=170,
+        value=current_locale(),
+        clearable=False,
+        allowDeselect=False,
+        data=[
+            {"value": "en", "label": t("language.english")},
+            {"value": "uk", "label": t("language.ukrainian")},
+        ],
+        placeholder=t("language.label"),
+    )
     actions = dmc.Group(
         [
+            language_select,
             badges,
-            dmc.Button("Setup", id="open-setup", variant="filled",
+            dmc.Button(t("header.setup"), id="open-setup", variant="filled",
                        color="brand", radius="xl", size="md"),
         ],
         className="header-actions",
@@ -179,14 +194,14 @@ def _build_stop_column() -> dmc.Stack:
     )
     power_toggle = dmc.Switch(
         id="robot-power-toggle",
-        label="Robot power",
+        label=t("Robot power"),
         checked=False,
         color="red",
         size="md",
     )
     return dmc.Stack(
         [
-            dmc.Text("Emergency stop", fw=700, size="sm", c="red"),
+            dmc.Text(t("Emergency stop"), fw=700, size="sm", c="red"),
             stop_button,
             power_toggle,
         ],
@@ -201,7 +216,7 @@ def _build_auto_control_column() -> dmc.Stack:
     Note: Pause/Resume functionality is now handled by the program control buttons.
     """
     auto_start_button = dmc.Button(
-        "Start Auto",
+        t("Start Auto"),
         id="auto-start",
         color="brand",
         size="sm",
@@ -220,7 +235,7 @@ def _build_auto_control_column() -> dmc.Stack:
         },
     )
     auto_stop_button = dmc.Button(
-        "Stop Auto",
+        t("Stop Auto"),
         id="auto-stop",
         color="red",
         size="sm",
@@ -246,7 +261,7 @@ def _build_auto_control_column() -> dmc.Stack:
     )
     return dmc.Stack(
         [
-            dmc.Text("Auto pick & place", fw=700, size="sm", c="blue"),
+            dmc.Text(t("Auto pick & place"), fw=700, size="sm", c="blue"),
             dmc.Group(
                 [auto_start_button, auto_stop_button],
                 gap="xs",
@@ -261,7 +276,7 @@ def _build_auto_control_column() -> dmc.Stack:
 def _build_program_control_column() -> dmc.Stack:
     """Build the program control column with pause/stop/reset."""
     program_pause_button = dmc.Button(
-        "Pause",
+        t("Pause"),
         id="program-pause",
         color="yellow",
         size="sm",
@@ -280,7 +295,7 @@ def _build_program_control_column() -> dmc.Stack:
         },
     )
     program_stop_button = dmc.Button(
-        "Stop",
+        t("Stop"),
         id="program-stop",
         color="red",
         size="sm",
@@ -293,7 +308,7 @@ def _build_program_control_column() -> dmc.Stack:
         },
     )
     program_reset_button = dmc.Button(
-        "Reset",
+        t("Reset"),
         id="program-reset",
         color="gray",
         size="sm",
@@ -307,7 +322,7 @@ def _build_program_control_column() -> dmc.Stack:
     )
     return dmc.Stack(
         [
-            dmc.Text("Program control", fw=700, size="sm", c="orange"),
+            dmc.Text(t("Program control"), fw=700, size="sm", c="orange"),
             dmc.Group(
                 [program_pause_button, program_stop_button, program_reset_button],
                 gap="xs",
@@ -363,7 +378,7 @@ def _build_robot_speed_block() -> dmc.Stack:
     )
 
     rescue_button = dmc.Button(
-        "Enable rescue mode",
+        t("Enable rescue mode"),
         id="rescue-mode-enable",
         color="orange",
         variant="outline",
@@ -371,7 +386,7 @@ def _build_robot_speed_block() -> dmc.Stack:
         radius="md",
     )
     rescue_exit_button = dmc.Button(
-        "Exit rescue mode",
+        t("Exit rescue mode"),
         id="rescue-mode-exit",
         color="orange",
         variant="light",
@@ -402,7 +417,7 @@ def _build_robot_speed_block() -> dmc.Stack:
 
     return dmc.Stack(
         [
-            dmc.Text("Robot speed", fw=600, size="sm"),
+            dmc.Text(t("Robot speed"), fw=600, size="sm"),
             controls_row,
             rescue_status,
         ],
@@ -425,7 +440,7 @@ def _build_gripper_width_control() -> dmc.Stack:
     )
     return dmc.Stack(
         [
-            dmc.Text("Gripper width", fw=700, size="sm", c="teal"),
+            dmc.Text(t("Gripper width"), fw=700, size="sm", c="teal"),
             dmc.Text(id="footer-gripper-status", size="xs", c="dimmed"),
             width_controls,
         ],
@@ -458,7 +473,7 @@ def _build_gripper_advanced_block() -> dmc.Stack:
         [
             dmc.Group(
                 [
-                    dmc.Text("Gripper advanced", fw=600, size="sm"),
+                    dmc.Text(t("Gripper advanced"), fw=600, size="sm"),
                     dmc.Text(id="footer-gripper-meta", size="xs", c="dimmed"),
                 ],
                 gap="xs",
@@ -467,11 +482,11 @@ def _build_gripper_advanced_block() -> dmc.Stack:
             dmc.Grid(
                 [
                     dmc.GridCol(
-                        _create_control_row("Force (N)", force_controls),
+                        _create_control_row(t("Force (N)"), force_controls),
                         span=6,
                     ),
                     dmc.GridCol(
-                        _create_control_row("Speed (%)", speed_controls),
+                        _create_control_row(t("Speed (%)"), speed_controls),
                         span=6,
                     ),
                 ],
@@ -513,7 +528,7 @@ def _build_rescue_controls() -> dmc.Stack:
         )
     return dmc.Stack(
         [
-            dmc.Text("Rescue joint control", fw=700, size="sm", c="orange"),
+            dmc.Text(t("Rescue joint control"), fw=700, size="sm", c="orange"),
             dmc.Stack(rescue_joint_rows, gap=4),
             dmc.Text(id="rescue-jog-status", size="xs", c="dimmed"),
         ],
@@ -546,14 +561,14 @@ def _build_status_group() -> dmc.Group:
     )
     flange_block = html.Div(
         [
-            dmc.Text("Flange press", fw=600, size="sm"),
+            dmc.Text(t("Flange press"), fw=600, size="sm"),
             flange_indicators,
         ],
         className="footer-flange-block",
     )
     telemetry_block = dmc.Stack(
         [
-            dmc.Text("Robot telemetry", fw=600, size="xs"),
+            dmc.Text(t("Robot telemetry"), fw=600, size="xs"),
             robot_position_text,
         ],
         gap=2,
@@ -579,7 +594,7 @@ def build_footer() -> dmc.AppShellFooter:
     status_group = _build_status_group()
 
     footer_toggle = dmc.Button(
-        "Hide footer",
+        t("Hide footer"),
         id="footer-toggle",
         variant="light",
         color="gray",
