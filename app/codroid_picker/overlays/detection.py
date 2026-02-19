@@ -25,18 +25,19 @@ def _refresh_detections(frame: np.ndarray) -> None:
     if now - SESSION.auto_detection_updated_at < SETTINGS.auto_detection_stale_s:
         return
 
-    from app.codroid_picker.auto_operation import _run_detection
+    from app.codroid_picker.auto_operation import _run_detection_serialized
 
     try:
-        detections = _run_detection(
+        detections = _run_detection_serialized(
             frame,
             SESSION.detection_confidence,
             SESSION.detection_iou,
             SESSION.detection_max,
             SESSION.detection_classes,
         )
-        SESSION.detections = detections
-        SESSION.last_detection_error = None
+        if detections:
+            SESSION.detections = detections
+            SESSION.last_detection_error = None
     except Exception as exc:  # noqa: BLE001
         SESSION.last_detection_error = str(exc)
         LOGGER.debug("Detection refresh failed: %s", exc)

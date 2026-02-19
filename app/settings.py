@@ -54,6 +54,7 @@ _BASE_AUTO_SETTLE_S = 0.1
 _BASE_AUTO_TOLERANCE_MM = 2.0
 _BASE_AUTO_Z_TOLERANCE_MM = 3.0
 _BASE_AUTO_HOLD_S = 0.5
+_BASE_AUTO_TRANSIT_CLEARANCE_MM = 10.0
 _BASE_AUTO_CLUSTER_NEIGHBOR_MM = 35.0
 _BASE_AUTO_ROTATION_CLEARANCE_MM = 8.0
 _BASE_AUTO_ROTATION_STEP_DEG = 15.0
@@ -73,9 +74,14 @@ _BASE_RESCUE_JOG_HOLD_S = 0.35
 _BASE_COORD5_MAX_Z_MM = 0.0
 _BASE_ROBOT_COORDINATE_ID = 5
 _BASE_CAMERA_SAFETY_ENABLED = True
+_BASE_CAMERA_SAFETY_MODE = "model"
 _BASE_CAMERA_SAFETY_ZONE = "workspace"
 _BASE_CAMERA_SAFETY_LABELS = ["person", "people"]
 _BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS = 250
+_BASE_CAMERA_SAFETY_HEURISTIC_THRESHOLD = 0.045
+_BASE_CAMERA_SAFETY_HEURISTIC_MIN_AREA_RATIO = 0.01
+_BASE_CAMERA_SAFETY_BASELINE_REFRESH_MS = 1200
+_BASE_CAMERA_SAFETY_CLEAR_FRAMES = 3
 
 _BASE_PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
 _BASE_MIN_PLATE_MARKERS = 2
@@ -198,9 +204,14 @@ class AppSettings(BaseSettings):
     rescue_jog_hold_s: float = _BASE_RESCUE_JOG_HOLD_S
     coord5_max_z_mm: float = _BASE_COORD5_MAX_Z_MM
     camera_safety_enabled: bool = _BASE_CAMERA_SAFETY_ENABLED
+    camera_safety_mode: str = _BASE_CAMERA_SAFETY_MODE
     camera_safety_zone: str = _BASE_CAMERA_SAFETY_ZONE
     camera_safety_labels: list[str] = _BASE_CAMERA_SAFETY_LABELS
     camera_safety_check_interval_ms: int = _BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS
+    camera_safety_heuristic_threshold: float = _BASE_CAMERA_SAFETY_HEURISTIC_THRESHOLD
+    camera_safety_heuristic_min_area_ratio: float = _BASE_CAMERA_SAFETY_HEURISTIC_MIN_AREA_RATIO
+    camera_safety_baseline_refresh_ms: int = _BASE_CAMERA_SAFETY_BASELINE_REFRESH_MS
+    camera_safety_clear_frames: int = _BASE_CAMERA_SAFETY_CLEAR_FRAMES
 
     # Robot coordinate selection
     robot_coordinate_id: int = _BASE_ROBOT_COORDINATE_ID
@@ -221,6 +232,7 @@ class AppSettings(BaseSettings):
     auto_tolerance_mm: float = _BASE_AUTO_TOLERANCE_MM
     auto_z_tolerance_mm: float = _BASE_AUTO_Z_TOLERANCE_MM
     auto_hold_s: float = _BASE_AUTO_HOLD_S
+    auto_transit_clearance_mm: float = _BASE_AUTO_TRANSIT_CLEARANCE_MM
     auto_cluster_neighbor_mm: float = _BASE_AUTO_CLUSTER_NEIGHBOR_MM
     auto_rotation_clearance_mm: float = _BASE_AUTO_ROTATION_CLEARANCE_MM
     auto_rotation_step_deg: float = _BASE_AUTO_ROTATION_STEP_DEG
@@ -265,7 +277,11 @@ class AppSettings(BaseSettings):
             # Backward-compatibility for older settings files that persisted
             # required fields (for example Path fields) as null.
             # Dropping nulls lets Pydantic apply model defaults.
-            return {key: value for key, value in raw.items() if value is not None}
+            sanitized = {key: value for key, value in raw.items() if value is not None}
+            if "camera_safety_mode" not in sanitized:
+                enabled = sanitized.get("camera_safety_enabled")
+                sanitized["camera_safety_mode"] = "off" if enabled is False else "model"
+            return sanitized
         except Exception as exc:
             LOGGER.warning(
                 "Failed to read persisted settings from %s: %s", SETTINGS_PATH, exc)

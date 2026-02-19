@@ -46,7 +46,7 @@ class DepthAIFrameStream:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._last_frame: Optional[np.ndarray] = None
         self._last_depth: Optional[np.ndarray] = None
         self._last_lens_pos: Optional[int] = None
@@ -57,8 +57,13 @@ class DepthAIFrameStream:
         self._last_error_ts = 0.0
 
     def start(self) -> None:
-        if self._running:
-            return
+        with self._state_lock:
+            if self._running:
+                return
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError(
+                    "Cannot start stream while previous reader thread is still shutting down."
+                )
         try:
             self._running = True
             self._open_pipeline()
@@ -74,11 +79,21 @@ class DepthAIFrameStream:
             raise
 
     def stop(self) -> None:
-        if not self._running:
-            return
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
+        with self._state_lock:
+            if not self._running:
+                return
+            self._running = False
+            thread = self._thread
+
+        if thread is not None:
+            # DepthAI queue objects are native-backed; only close them after the
+            # reader thread fully exits to avoid use-after-close crashes.
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                raise RuntimeError(
+                    "Timed out waiting for camera reader thread shutdown; refusing to close pipeline unsafely."
+                )
+
         with self._state_lock:
             self._close_pipeline()
         self._thread = None

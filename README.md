@@ -35,7 +35,7 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the required depth snapshot and intentionally leaves the live stream paused afterward; click **Enable camera** to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
@@ -234,8 +234,12 @@ Auto mode uses YOLO detections to continuously pick the nearest target:
 
 - Start/stop from the **Auto pick & place** controls in the footer.
 - Set the **Target class** (default `orange`) and **Drop ignore radius** in the Pick & Place tab.
-- Teach a drop position first; auto waits at the drop when no targets are visible.
-- The robot pauses if any other detection enters the workspace and resumes once clear.
+- Teach a drop position first; auto waits at the drop approach when no targets are visible.
+- Camera safety is selectable in **Setup → Safety guards**:
+  - `Off`: disable camera-driven pauses.
+  - `Model safety`: pause on configured YOLO labels in workspace/full-frame zone.
+  - `Heuristic safety`: pause on large frame-difference intrusions against a baseline image.
+- Auto transit uses a configurable **Transit clearance (mm)** so XY travel stays above drop/approach heights.
 - Auto uses the shared **Tracking mode** controls; segmented tracking keeps the last known target when it is obscured.
 - Coordinate mapping uses the saved plate homography from robot calibration; re-run plate calibration if coord5 overlays drift.
 - Overlay selector includes **Auto Plan** mode. When overlay is set to **Auto**

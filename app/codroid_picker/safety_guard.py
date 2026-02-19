@@ -1,12 +1,15 @@
 """Camera safety guard helpers.
 
-Pure helper functions for evaluating whether person detections should
+Pure helper functions for evaluating whether camera inputs should
 pause robot motion.
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Optional
+
+import cv2
+import numpy as np
 
 from vision import workspace
 
@@ -24,6 +27,16 @@ def normalize_safety_labels(labels: Optional[Iterable[str]]) -> list[str]:
         seen.add(token)
         normalized.append(token)
     return normalized
+
+
+def normalize_safety_mode(mode: Optional[str], enabled: Optional[bool] = None) -> str:
+    """Resolve safety mode with backward-compatible enable-flag fallback."""
+    token = str(mode or "").strip().lower()
+    if token in {"off", "model", "heuristic"}:
+        return token
+    if enabled is False:
+        return "off"
+    return "model"
 
 
 def is_human_detection(detection: dict, labels: list[str]) -> bool:
@@ -75,7 +88,7 @@ def evaluate_safety_state(
     zone: str,
     workspace_def: Optional[workspace.WorkspaceDefinition],
 ) -> tuple[bool, list[dict]]:
-    """Return (blocked, matched_detections)."""
+    """Return (blocked, matched_detections) for model-driven safety."""
     if not enabled:
         return False, []
 
@@ -92,6 +105,75 @@ def evaluate_safety_state(
         matched.append(detection)
 
     return bool(matched), matched
+
+
+def preprocess_gray(frame: np.ndarray) -> np.ndarray:
+    """Convert frame to a smoothed grayscale image."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.GaussianBlur(gray, (5, 5), 0)
+
+
+def evaluate_heuristic_intrusion(
+    frame: np.ndarray,
+    baseline_gray: np.ndarray,
+    *,
+    roi_mask: Optional[np.ndarray],
+    ignore_mask: Optional[np.ndarray],
+    threshold: float,
+    min_area_ratio: float,
+) -> tuple[bool, dict]:
+    """Return (blocked, metrics) using frame-difference heuristic."""
+    current_gray = preprocess_gray(frame)
+    if baseline_gray.shape != current_gray.shape:
+        return False, {
+            "changed_ratio": 0.0,
+            "largest_blob_ratio": 0.0,
+            "roi_px": 0,
+            "changed_px": 0,
+        }
+
+    diff = cv2.absdiff(current_gray, baseline_gray)
+    _, binary = cv2.threshold(diff, 22, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    if roi_mask is not None:
+        binary = cv2.bitwise_and(binary, roi_mask)
+        roi_px = int(cv2.countNonZero(roi_mask))
+    else:
+        roi_px = int(binary.shape[0] * binary.shape[1])
+
+    if ignore_mask is not None:
+        binary = cv2.bitwise_and(binary, cv2.bitwise_not(ignore_mask))
+
+    if roi_px <= 0:
+        return False, {
+            "changed_ratio": 0.0,
+            "largest_blob_ratio": 0.0,
+            "roi_px": 0,
+            "changed_px": 0,
+        }
+
+    changed_px = int(cv2.countNonZero(binary))
+    changed_ratio = float(changed_px) / float(roi_px)
+
+    largest_blob_px = 0
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_blob_px = max(int(cv2.contourArea(cnt)) for cnt in contours)
+    largest_blob_ratio = float(largest_blob_px) / float(roi_px)
+
+    threshold_val = max(float(threshold), 0.0)
+    min_area_val = max(float(min_area_ratio), 0.0)
+    blocked = changed_ratio >= threshold_val and largest_blob_ratio >= min_area_val
+
+    return blocked, {
+        "changed_ratio": changed_ratio,
+        "largest_blob_ratio": largest_blob_ratio,
+        "roi_px": roi_px,
+        "changed_px": changed_px,
+    }
 
 
 def desired_operation_action(

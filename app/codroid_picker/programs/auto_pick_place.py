@@ -34,7 +34,11 @@ from app.codroid_picker.robot_motion import (
     log_move_target,
     resolve_gripper_limits,
 )
-from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
+from app.codroid_picker.pick_place_helpers import (
+    build_drop_poses,
+    compute_safe_transit_z,
+    select_closest_detection,
+)
 from app.codroid_picker.gripper_utils import await_grip_status
 from app.codroid_picker.persistence import _record_pick_cycle
 from app.codroid_picker.target_planner import (
@@ -349,7 +353,7 @@ class AutoPickPlaceProgram(RobotProgram):
                             robot_api,
                             approach_mm=approach_mm,
                             drop_mm=drop_mm,
-                            open_gripper=not SESSION.robot_has_object,
+                            open_gripper=SESSION.robot_has_object,
                             orientation=run_orientation,
                         )
                         SESSION.auto_waiting_at_drop = True
@@ -507,6 +511,7 @@ class AutoPickPlaceProgram(RobotProgram):
                             robot_api,
                             target_coord5=target_coord5,
                             approach_mm=approach_mm,
+                            drop_mm=drop_mm,
                             pick_mm=pick_mm,
                             estimate_width=estimate_width,
                             target=target,
@@ -597,6 +602,7 @@ class AutoPickPlaceProgram(RobotProgram):
         *,
         target_coord5: Tuple[float, float],
         approach_mm: float,
+        drop_mm: float,
         pick_mm: float,
         estimate_width: bool,
         target: dict,
@@ -635,8 +641,12 @@ class AutoPickPlaceProgram(RobotProgram):
             gripper_open_mm=settings.gripper_profile.open_width_default,
         )
 
-        posture = registry().get_or_create_robot_session().position_snapshot()
-        transit_z = float(posture.z)
+        transit_z = compute_safe_transit_z(
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+            drop_robot_xyz=SESSION.drop_target_robot,
+            clearance_mm=float(settings.auto_transit_clearance_mm),
+        )
         base_orientation = (
             float(orientation[0]),
             float(orientation[1]),
@@ -709,15 +719,6 @@ class AutoPickPlaceProgram(RobotProgram):
                 coord5_xy = static_coord5_xy
             return _pose_from_coord5(coord5_xy, transit_z, base_orientation)
 
-        def _pick_approach_pose_fn() -> Optional[dict]:
-            if use_segment_tracking:
-                coord5_xy = _select_tracking_coord5()
-                if coord5_xy is None:
-                    coord5_xy = tracking_state["xy"]
-            else:
-                coord5_xy = static_coord5_xy
-            return _pose_from_coord5(coord5_xy, approach_mm, base_orientation)
-
         def _pick_pose_fn() -> Optional[dict]:
             if use_segment_tracking:
                 coord5_xy = tracking_state["xy"]
@@ -738,61 +739,30 @@ class AutoPickPlaceProgram(RobotProgram):
             hold_s=settings.auto_hold_s,
         )
 
-        # Move to approach height.
+        # Align orientation at transit height only when needed.
         await wait_for_operation_resume(self._run_id)
-        approach_pose = _pick_approach_pose_fn()
-        if approach_pose is None:
-            raise RuntimeError("Pick approach pose unavailable.")
-
-        log_move_target("pick_approach", approach_pose,
-                        coordinate_id=coordinate_id)
-
-        if use_segment_tracking:
-            try:
-                LOGGER.debug("Auto: Starting segment tracking approach move")
-                await asyncio.wait_for(
-                    move_linear_follow_target(
-                        robot_api,
-                        _pick_approach_pose_fn,
-                        label="auto_pick_approach",
-                        coordinate_id=coordinate_id,
-                        settle_on_stall=True,
-                        run_id=self._run_id,
-                    ),
-                    timeout=30.0,
-                )
-                LOGGER.debug("Auto: Segment tracking approach move complete")
-            except asyncio.TimeoutError:
-                LOGGER.error("Auto: Pick approach move timed out after 30s")
-                raise RuntimeError("Pick approach move timed out")
-        else:
-            LOGGER.debug(
-                "Auto: Starting _move_linear_with_hold approach move (hold=2.0s)")
-            await self._move_linear_with_hold(
-                robot_api,
-                approach_pose,
-                coordinate_id,
-                label="auto_pick_approach",
-                hold_s=settings.auto_hold_s,
-            )
-            LOGGER.debug("Auto: _move_linear_with_hold approach move complete")
-
-        # Align orientation only above the target, then descend.
-        await wait_for_operation_resume(self._run_id)
-        orientation_pose = dict(approach_pose)
+        orientation_pose = dict(transit_pose)
         orientation_pose["a"] = float(final_orientation[0])
         orientation_pose["b"] = float(final_orientation[1])
         orientation_pose["c"] = float(final_orientation[2])
-        await self._move_linear_with_hold(
-            robot_api,
-            orientation_pose,
-            coordinate_id,
-            label="auto_pick_align_orientation",
-            hold_s=settings.auto_hold_s,
+        angle_delta = max(
+            abs(float(orientation_pose["a"]) - float(transit_pose["a"])),
+            abs(float(orientation_pose["b"]) - float(transit_pose["b"])),
+            abs(float(orientation_pose["c"]) - float(transit_pose["c"])),
         )
+        if angle_delta > 0.05:
+            await self._move_linear_with_hold(
+                robot_api,
+                orientation_pose,
+                coordinate_id,
+                label="auto_pick_align_orientation",
+                hold_s=settings.auto_hold_s,
+            )
+        else:
+            orientation_pose = transit_pose
 
-        # Move to pick
-        LOGGER.debug("Auto: Approach done, preparing pick move")
+        # Move to pick in one descent step.
+        LOGGER.debug("Auto: Transit done, preparing pick move")
         await wait_for_operation_resume(self._run_id)
         pick_pose = _pick_pose_fn()
         if pick_pose is None:
@@ -830,11 +800,10 @@ class AutoPickPlaceProgram(RobotProgram):
         gripped = await await_grip_status(grip_timeout_s)
         LOGGER.info("Auto: grip verification result=%s timeout=%.2fs", gripped, grip_timeout_s)
 
-        # Retreat
+        # Retreat directly to transit height to avoid a redundant lift step before drop.
         await wait_for_operation_resume(self._run_id)
         retreat_pose = dict(orientation_pose)
-        if retreat_pose is None:
-            retreat_pose = approach_pose
+        retreat_pose["z"] = float(transit_z)
         await self._move_linear_with_hold(
             robot_api,
             retreat_pose,
@@ -956,6 +925,14 @@ class AutoPickPlaceProgram(RobotProgram):
             approach_mm=approach_mm,
             drop_mm=drop_mm,
         )
+        transit_z = compute_safe_transit_z(
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+            drop_robot_xyz=drop_target,
+            clearance_mm=float(settings.auto_transit_clearance_mm),
+        )
+        transit_pose = dict(approach_pose)
+        transit_pose["z"] = float(transit_z)
         update_auto_plan_snapshot(
             stage="executing_drop",
             message="Executing drop sequence.",
@@ -970,13 +947,13 @@ class AutoPickPlaceProgram(RobotProgram):
             },
         )
 
-        # Move to approach
+        # Traverse to drop at safe transit height.
         await wait_for_operation_resume(self._run_id)
         await self._move_linear_with_hold(
             robot_api,
-            approach_pose,
+            transit_pose,
             coordinate_id,
-            label="drop_approach",
+            label="drop_transit",
             hold_s=settings.auto_hold_s,
         )
 
@@ -1043,7 +1020,11 @@ class AutoPickPlaceProgram(RobotProgram):
         open_gripper: bool,
         orientation: Tuple[float, float, float],
     ) -> None:
-        """Move to drop position and optionally open gripper."""
+        """Move to drop waiting position and optionally release an object.
+
+        Idle waiting should stay at drop approach height to reduce unnecessary
+        vertical motion and gripper actions while scanning for targets.
+        """
         from app.codroid_picker.session import SESSION
 
         settings = registry().settings
@@ -1060,32 +1041,115 @@ class AutoPickPlaceProgram(RobotProgram):
             approach_mm=approach_mm,
             drop_mm=drop_mm,
         )
-
-        await wait_for_operation_resume(self._run_id)
-        await self._move_linear_with_hold(
-            robot_api,
-            approach_pose,
-            coordinate_id,
-            label="move_to_drop_approach",
-            hold_s=settings.auto_hold_s,
+        transit_z = compute_safe_transit_z(
+            approach_mm=approach_mm,
+            drop_mm=drop_mm,
+            drop_robot_xyz=drop_target,
+            clearance_mm=float(settings.auto_transit_clearance_mm),
         )
+        transit_pose = dict(approach_pose)
+        transit_pose["z"] = float(transit_z)
+        should_release = bool(open_gripper and SESSION.robot_has_object)
+        xy_tolerance_mm = float(getattr(settings, "auto_tolerance_mm", 2.0))
+        z_tolerance_mm = float(getattr(settings, "auto_z_tolerance_mm", 3.0))
+        at_drop_xy = False
+        at_drop_approach = False
+        at_drop_pose = False
+        try:
+            robot_session = registry().get_or_create_robot_session()
+            if robot_session.posture_seen():
+                posture = robot_session.position_snapshot()
+                at_drop_xy = (
+                    abs(float(posture.x) - float(approach_pose["x"])) <= xy_tolerance_mm
+                    and abs(float(posture.y) - float(approach_pose["y"])) <= xy_tolerance_mm
+                )
+                at_drop_approach = (
+                    at_drop_xy
+                    and abs(float(posture.z) - float(approach_pose["z"])) <= z_tolerance_mm
+                )
+                at_drop_pose = (
+                    at_drop_xy
+                    and abs(float(posture.z) - float(drop_pose["z"])) <= z_tolerance_mm
+                )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Auto: failed to read posture for move-to-drop optimization: %s", exc)
 
-        await wait_for_operation_resume(self._run_id)
-        await self._move_linear_with_hold(
-            robot_api,
-            drop_pose,
-            coordinate_id,
-            label="move_to_drop_pose",
-            hold_s=settings.auto_hold_s,
-        )
+        if not should_release and at_drop_approach:
+            update_auto_plan_snapshot(
+                stage="waiting_at_drop",
+                message="Robot is waiting at drop approach.",
+                approach_mm=approach_mm,
+                drop_mm=drop_mm,
+                orientation=orientation,
+            )
+            return
 
-        if open_gripper:
+        lift_pose = dict(transit_pose)
+        try:
+            robot_session = registry().get_or_create_robot_session()
+            if robot_session.posture_seen():
+                posture = robot_session.position_snapshot()
+                lift_pose["x"] = float(posture.x)
+                lift_pose["y"] = float(posture.y)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Auto: failed to read posture for move-to-drop lift pose: %s", exc)
+
+        if not at_drop_xy:
+            await wait_for_operation_resume(self._run_id)
+            await self._move_linear_with_hold(
+                robot_api,
+                lift_pose,
+                coordinate_id,
+                label="move_to_drop_lift",
+                hold_s=settings.auto_hold_s,
+            )
+
+            await wait_for_operation_resume(self._run_id)
+            await self._move_linear_with_hold(
+                robot_api,
+                transit_pose,
+                coordinate_id,
+                label="move_to_drop_transit",
+                hold_s=settings.auto_hold_s,
+            )
+
+        if not should_release:
+            if not at_drop_approach:
+                await wait_for_operation_resume(self._run_id)
+                await self._move_linear_with_hold(
+                    robot_api,
+                    approach_pose,
+                    coordinate_id,
+                    label="move_to_drop_approach",
+                    hold_s=settings.auto_hold_s,
+                )
+
+        if should_release:
+            if not at_drop_pose:
+                await wait_for_operation_resume(self._run_id)
+                await self._move_linear_with_hold(
+                    robot_api,
+                    drop_pose,
+                    coordinate_id,
+                    label="move_to_drop_pose",
+                    hold_s=settings.auto_hold_s,
+                )
+
             gripper_open = settings.gripper_profile.open_width_default
             command_gripper(gripper_open, "opened")
             SESSION.robot_has_object = False
+
+            await wait_for_operation_resume(self._run_id)
+            await self._move_linear_with_hold(
+                robot_api,
+                approach_pose,
+                coordinate_id,
+                label="move_to_drop_retreat",
+                hold_s=settings.auto_hold_s,
+            )
         update_auto_plan_snapshot(
             stage="waiting_at_drop",
-            message="Robot is waiting at drop pose.",
+            message="Robot is waiting at drop approach.",
             approach_mm=approach_mm,
             drop_mm=drop_mm,
             orientation=orientation,

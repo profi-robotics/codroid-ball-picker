@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -53,6 +54,24 @@ class AutoPlanOverlayTests(unittest.TestCase):
         self.assertEqual(vis.shape, frame.shape)
         self.assertIn("candidate_selected", status)
         self.assertIn("Auto plan", metric)
+
+    def test_overlay_prefers_live_robot_origin_for_approach_line(self) -> None:
+        publish_auto_plan_snapshot(
+            stage="executing_pick",
+            selected_candidate={
+                "label": "orange",
+                "confidence": 0.9,
+                "center": (80.0, 60.0),
+                "bbox": (60.0, 40.0, 100.0, 80.0),
+            },
+        )
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        with patch(
+            "app.codroid_picker.overlays.auto_plan._robot_posture_pixel",
+            return_value=(10, 10),
+        ):
+            vis, _status, _metric = draw_auto_plan_overlay(frame)
+        self.assertGreater(int(vis[10, 10].sum()), 0)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Callable, Optional, Tuple
 
@@ -26,6 +27,7 @@ from app.codroid_picker.state import resume_operation as _resume_operation
 from app.codroid_picker.exceptions import OperationAbort, OperationPaused
 
 LOGGER = logging.getLogger(__name__)
+_DETECTION_LOCK = threading.Lock()
 
 SETTINGS = app_settings.SETTINGS
 ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
@@ -214,6 +216,45 @@ def _run_detection(
     return detections
 
 
+def _run_detection_serialized(
+    frame: np.ndarray,
+    confidence: float,
+    iou: float,
+    max_detections: int,
+    class_filter: Optional[str],
+    *,
+    crop_to_workspace: bool = True,
+) -> list[dict]:
+    """Run detection with a non-blocking process-wide lock.
+
+    If another consumer is currently running inference, reuse the latest
+    cached detections to avoid concurrent YOLO calls that hurt FPS.
+    """
+    if not _DETECTION_LOCK.acquire(blocking=False):
+        return SESSION.detections or []
+    try:
+        detections = _run_detection(
+            frame,
+            confidence,
+            iou,
+            max_detections,
+            class_filter,
+            crop_to_workspace=crop_to_workspace,
+        )
+        SESSION.detection_inference_total += 1
+        now = time.monotonic()
+        if now - float(SESSION.detection_inference_last_log_ts) >= 5.0:
+            LOGGER.debug(
+                "Detection throughput: total_inference=%d stale_age=%.3fs",
+                SESSION.detection_inference_total,
+                max(0.0, now - float(SESSION.auto_detection_updated_at or 0.0)),
+            )
+            SESSION.detection_inference_last_log_ts = now
+        return detections
+    finally:
+        _DETECTION_LOCK.release()
+
+
 def _format_detection_list(detections: list[dict]) -> list:
     """Format detections for display in the UI."""
     if not detections:
@@ -239,7 +280,7 @@ def _refresh_follow_detections() -> list[dict]:
     if SESSION.yolo_model is None:
         return SESSION.detections or []
     try:
-        detections = _run_detection(
+        detections = _run_detection_serialized(
             frame,
             SESSION.detection_confidence,
             SESSION.detection_iou,
@@ -278,7 +319,7 @@ def _workspace_contains(
 
 def _auto_refresh_detections(frame: np.ndarray) -> list[dict]:
     """Refresh detections for auto mode."""
-    detections = _run_detection(
+    detections = _run_detection_serialized(
         frame,
         SESSION.detection_confidence,
         SESSION.detection_iou,

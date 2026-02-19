@@ -25,6 +25,7 @@ from app.codroid_picker.streaming import (
     OverlayTask,
     FRAME_PROCESSOR,
     MJPEG_STREAM,
+    RAW_STREAM,
     set_active_overlay_task,
     start_camera_stream,
     stop_camera_stream,
@@ -271,6 +272,30 @@ def _resolve_overlay_task(
     return task, effective_mode
 
 
+def _capture_depth_snapshot_for_calibration(
+    codroid_picker_module: Any,
+    output_path: Path,
+) -> tuple[Path, bool]:
+    """Capture calibration depth and return whether stream pause was required."""
+    stream = SESSION.camera_stream
+    if stream is None or not stream.is_running():
+        raise RuntimeError(t("Camera stream stopped before depth capture."))
+
+    if bool(stream.config.enable_depth):
+        depth_path = codroid_picker_module.capture_depth_snapshot(output_path)
+        return depth_path, False
+
+    logging.info("[CALIBRATE] Capturing depth snapshot via isolated helper process")
+    stop_camera_stream(wait_for_release=True)
+    depth_path = codroid_picker_module.capture_depth_snapshot_isolated(
+        output_path,
+        stream.config.resolution,
+        stream.config.fps,
+        bool(stream.config.lock_af),
+    )
+    return depth_path, True
+
+
 def register_camera_callbacks(app: Dash) -> None:
     """Register all camera-related callbacks.
 
@@ -321,6 +346,17 @@ def register_camera_callbacks(app: Dash) -> None:
         height: Optional[float],
         fps: Optional[float],
     ) -> Tuple[str, str, str, bool, dict, bool, bool]:
+        def _describe_stream() -> str:
+            stream = SESSION.camera_stream
+            if stream is None:
+                return t("Camera stream stopped.")
+            res_w, res_h = stream.config.resolution
+            fps_val = stream.config.fps
+            device_id = stream.device_id() or t("unknown")
+            return (
+                t("Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, MXID {device_id}).", res_w=res_w, res_h=res_h, fps_val=fps_val, device_id=device_id)
+            )
+
         trigger = callback_context.triggered_id
         if trigger is None:
             return (
@@ -359,14 +395,48 @@ def register_camera_callbacks(app: Dash) -> None:
             # Auto-init should run once per worker process. Dash can remount
             # intervals on client reconnects; avoid restarting camera retries.
             if SESSION.camera_auto_init_done:
+                stream_running = (
+                    SESSION.camera_stream is not None
+                    and SESSION.camera_stream.is_running()
+                )
+                if stream_running:
+                    status = _describe_stream()
+                    return (
+                        status,
+                        t("Camera: live"),
+                        "brand",
+                        True,
+                        {"status": "live", "message": status},
+                        False,
+                        False,
+                    )
+                if SESSION.camera_last_error_key or SESSION.camera_last_error_message:
+                    last_status = SESSION.camera_last_error_status or "unavailable"
+                    badge_text = (
+                        t("Camera: unavailable")
+                        if last_status == "unavailable"
+                        else t("Camera: error")
+                    )
+                    badge_color = "orange" if last_status == "unavailable" else "yellow"
+                    message = _resolve_camera_message(camera_state)
+                    return (
+                        message,
+                        badge_text,
+                        badge_color,
+                        False,
+                        {"status": last_status, "message": message},
+                        True,
+                        True,
+                    )
+                stopped = t("Camera stream stopped.")
                 return (
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
+                    stopped,
+                    t("Camera: off"),
+                    "gray",
+                    False,
+                    {"status": "off", "message": stopped},
+                    True,
+                    True,
                 )
             SESSION.camera_auto_init_done = True
         stream_running = (
@@ -407,17 +477,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     True,
                 )
         desired_checked = checked_value
-
-        def _describe_stream() -> str:
-            stream = SESSION.camera_stream
-            if stream is None:
-                return t("Camera stream stopped.")
-            res_w, res_h = stream.config.resolution
-            fps_val = stream.config.fps
-            device_id = stream.device_id() or t("unknown")
-            return (
-                t("Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, MXID {device_id}).", res_w=res_w, res_h=res_h, fps_val=fps_val, device_id=device_id)
-            )
 
         if trigger == "camera-lock-af" and stream_running:
             try:
@@ -761,29 +820,13 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Capture depth snapshot. If runtime stream is RGB-only, stop the
                 # stream, capture depth in an isolated helper process, and keep the
                 # stream paused to avoid in-process DepthAI restarts.
-                depth_path = None
-                stream_paused_for_depth_capture = False
-                stream = SESSION.camera_stream
-                if stream is None or not stream.is_running():
-                    raise RuntimeError(
-                        t("Camera stream stopped before depth capture."))
-                if bool(stream.config.enable_depth):
-                    depth_path = codroid_picker_module.capture_depth_snapshot(
-                        output_path)
-                else:
-                    restore_resolution = stream.config.resolution
-                    restore_fps = stream.config.fps
-                    restore_lock_af = stream.config.lock_af
-                    logging.info(
-                        "[CALIBRATE] Capturing depth snapshot via isolated helper process")
-                    stop_camera_stream(wait_for_release=True)
-                    stream_paused_for_depth_capture = True
-                    depth_path = codroid_picker_module.capture_depth_snapshot_isolated(
-                        output_path,
-                        restore_resolution,
-                        restore_fps,
-                        bool(restore_lock_af),
-                    )
+                (
+                    depth_path,
+                    stream_paused_for_depth_capture,
+                ) = _capture_depth_snapshot_for_calibration(
+                    codroid_picker_module,
+                    output_path,
+                )
                 logging.info("[CALIBRATE] Captured depth snapshot at %s", depth_path)
 
                 # Pre-flight check: ensure the saved frames actually contain ChArUco corners
@@ -883,7 +926,7 @@ def register_camera_callbacks(app: Dash) -> None:
         # Import parent module to access helper functions and globals
         import app.codroid_picker as codroid_picker_module
 
-        frame, _depth = codroid_picker_module.get_latest_frame()
+        frame = RAW_STREAM.get_latest_frame()
 
         def _camera_calibration_state(
             metrics_text: str, step: int

@@ -228,6 +228,30 @@ def build_drop_poses(
     return approach_pose, drop_pose
 
 
+def compute_safe_transit_z(
+    *,
+    approach_mm: float,
+    drop_mm: float,
+    drop_robot_xyz: Optional[Tuple[float, float, float]],
+    clearance_mm: float,
+) -> float:
+    """Compute a conservative transit Z that stays above approach/drop heights.
+
+    Coord5 uses inverted Z (more negative is higher), so we use min() and
+    subtract clearance to move further upward.
+    """
+    transit_z = float(approach_mm)
+    clearance = max(float(clearance_mm), 0.0)
+    if drop_robot_xyz is not None:
+        base_z = float(drop_robot_xyz[2])
+        transit_z = min(
+            transit_z,
+            base_z + float(drop_mm),
+            base_z + float(approach_mm),
+        )
+    return transit_z - clearance
+
+
 class PickPlaceContext:
     """Context for a pick/place operation with all resolved parameters.
 

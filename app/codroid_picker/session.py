@@ -54,6 +54,7 @@ class UISession:
             "approach_mm": SETTINGS.auto_approach_mm,
             "pick_mm": SETTINGS.auto_pick_mm,
             "drop_mm": SETTINGS.auto_drop_mm,
+            "transit_clearance_mm": SETTINGS.auto_transit_clearance_mm,
             "estimate_width": SETTINGS.auto_estimate_width,
             "tracking_mode": SETTINGS.tracking_mode,
             "segment_min_mm": SETTINGS.segment_min,
@@ -75,9 +76,23 @@ class UISession:
     safety_config: dict = field(
         default_factory=lambda: {
             "enabled": SETTINGS.camera_safety_enabled,
+            "mode": getattr(SETTINGS, "camera_safety_mode", "model"),
             "zone": SETTINGS.camera_safety_zone,
             "labels": list(SETTINGS.camera_safety_labels),
             "check_interval_ms": SETTINGS.camera_safety_check_interval_ms,
+            "heuristic_threshold": SETTINGS.camera_safety_heuristic_threshold,
+            "heuristic_min_area_ratio": SETTINGS.camera_safety_heuristic_min_area_ratio,
+            "baseline_refresh_ms": SETTINGS.camera_safety_baseline_refresh_ms,
+            "clear_frames": SETTINGS.camera_safety_clear_frames,
+        }
+    )
+    safety_runtime: dict = field(
+        default_factory=lambda: {
+            "baseline_gray": None,
+            "baseline_ts": 0.0,
+            "clear_streak": 0,
+            "last_frame_shape": None,
+            "last_motion_active": False,
         }
     )
     drop_marker_id: int = app_settings.DEFAULT_DROP_MARKER_ID
@@ -104,6 +119,8 @@ class UISession:
     detection_max: int = 10
     detection_classes: Optional[str] = None
     monitor_detection_history: Deque[dict] = field(default_factory=lambda: deque(maxlen=90))
+    detection_inference_total: int = 0
+    detection_inference_last_log_ts: float = 0.0
     gripper_sync: dict = field(default_factory=dict)
     gripper_orientation: Optional[str] = None
     gripper_min_width: Optional[float] = None
@@ -156,6 +173,7 @@ def _refresh_session_auto_config_defaults() -> None:
             "approach_mm": SETTINGS.auto_approach_mm,
             "pick_mm": SETTINGS.auto_pick_mm,
             "drop_mm": SETTINGS.auto_drop_mm,
+            "transit_clearance_mm": SETTINGS.auto_transit_clearance_mm,
             "estimate_width": bool(
                 SESSION.auto_config.get("estimate_width", SETTINGS.auto_estimate_width)
             ),
@@ -210,9 +228,14 @@ def _refresh_session_safety_config_defaults() -> None:
     SESSION.safety_config.update(
         {
             "enabled": SETTINGS.camera_safety_enabled,
+            "mode": getattr(SETTINGS, "camera_safety_mode", "model"),
             "zone": SETTINGS.camera_safety_zone,
             "labels": list(SETTINGS.camera_safety_labels),
             "check_interval_ms": SETTINGS.camera_safety_check_interval_ms,
+            "heuristic_threshold": SETTINGS.camera_safety_heuristic_threshold,
+            "heuristic_min_area_ratio": SETTINGS.camera_safety_heuristic_min_area_ratio,
+            "baseline_refresh_ms": SETTINGS.camera_safety_baseline_refresh_ms,
+            "clear_frames": SETTINGS.camera_safety_clear_frames,
         }
     )
 
