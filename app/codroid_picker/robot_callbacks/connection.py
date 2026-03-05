@@ -1,6 +1,5 @@
 """Robot connection, gripper, and power management callbacks."""
 
-import contextlib
 import time
 from typing import Optional, Tuple
 
@@ -27,24 +26,15 @@ def _control_state_payload(
 async def _release_robot_ownership(
     codroid_picker_module,
     resolved_uri: str,
-) -> None:
+) -> dict:
     """Stop active operations, power off, and close the robot session."""
     from app.codroid_picker.programs import get_registry
 
     registry = get_registry()
     if registry.active_program is not None:
         registry.stop()
-
-    async def _stop_and_power_off(api) -> None:
-        with contextlib.suppress(Exception):
-            await api.stop_command()
-        with contextlib.suppress(Exception):
-            await api.power_off()
-
-    with contextlib.suppress(Exception):
-        await codroid_picker_module._with_robot_api(resolved_uri, _stop_and_power_off)
-
-    await codroid_picker_module._get_robot_session().close()
+    session = codroid_picker_module._get_robot_session()
+    return await session.release_control(resolved_uri, power_off=True, wait_closed_s=2.0)
 
 
 def register_connection_callbacks(app: Dash) -> None:
@@ -80,7 +70,6 @@ def register_connection_callbacks(app: Dash) -> None:
         session = codroid_picker_module._get_robot_session()
         ui_session = codroid_picker_module.SESSION
         resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
-        probe_retry_interval_s = 5.0
         control_released = codroid_picker_module._robot_control_released(control_state)
 
         if trigger == "auto-init":
@@ -90,12 +79,30 @@ def register_connection_callbacks(app: Dash) -> None:
 
         if trigger == "robot-release-control":
             try:
-                await _release_robot_ownership(codroid_picker_module, resolved_uri)
+                release_state = await _release_robot_ownership(
+                    codroid_picker_module, resolved_uri
+                )
             except Exception as exc:  # noqa: BLE001
+                state = session.control_state() if hasattr(session, "control_state") else {}
+                error_text = state.get("last_error") or str(exc)
+                error = t("Robot control release failed: {error}", error=error_text)
                 codroid_picker_module.LOGGER.warning(
                     "Robot release sequence encountered errors: %s", exc
                 )
-            now = time.time()
+                ui_session.robot_control_mode = "acquired"
+                ui_session.robot_control_released_at = 0.0
+                ui_session.robot_connection_attempted = True
+                ui_session.robot_last_connection_error = error
+                ui_session.robot_probe_inflight = False
+                ui_session.robot_last_probe_started_at = 0.0
+                return (
+                    error,
+                    t("Robot: error"),
+                    "yellow",
+                    {"status": "error", "message": error},
+                    _control_state_payload(mode="acquired", message=error),
+                )
+            now = float(release_state.get("released_at") or time.time())
             ui_session.robot_control_mode = "released"
             ui_session.robot_control_released_at = now
             ui_session.robot_connection_attempted = False
@@ -117,10 +124,6 @@ def register_connection_callbacks(app: Dash) -> None:
                 {"status": "offline", "message": status},
                 _control_state_payload(mode="released", message=status, released_at=now),
             )
-        if trigger in {"robot-acquire-control", "robot-test"}:
-            control_released = False
-            ui_session.robot_control_mode = "acquired"
-            ui_session.robot_control_released_at = 0.0
         if trigger == "monitor-interval" and control_released:
             return no_update, no_update, no_update, no_update, no_update
         if trigger == "monitor-interval":
@@ -136,17 +139,21 @@ def register_connection_callbacks(app: Dash) -> None:
                     {"status": "online", "message": status},
                     _control_state_payload(mode="acquired"),
                 )
-            # Skip background probes until the user explicitly requests
-            # a connection test at least once.
             if not ui_session.robot_connection_attempted:
                 return no_update, no_update, no_update, no_update, no_update
-            if ui_session.robot_probe_inflight:
-                return no_update, no_update, no_update, no_update, no_update
-            now = time.time()
-            if now - ui_session.robot_last_probe_started_at < probe_retry_interval_s:
-                if ui_session.robot_connection_attempted and ui_session.robot_last_connection_error:
-                    return no_update, no_update, no_update, no_update, no_update
-                return no_update, no_update, no_update, no_update, no_update
+            status = (
+                ui_session.robot_last_connection_error
+                or t("Robot disconnected. Acquire control to reconnect.")
+            )
+            return (
+                status,
+                t("Robot: error"),
+                "yellow",
+                {"status": "error", "message": status},
+                _control_state_payload(mode="acquired"),
+            )
+        if trigger not in {"robot-acquire-control", "robot-test"}:
+            return no_update, no_update, no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
             status = t("Robot connection check already in progress.")
             return (
@@ -159,12 +166,13 @@ def register_connection_callbacks(app: Dash) -> None:
         ui_session.robot_probe_inflight = True
         ui_session.robot_last_probe_started_at = time.time()
         try:
-            response = await codroid_picker_module._probe_robot(resolved_uri)
-            if not response:
-                raise RuntimeError(t("Robot probe returned no response."))
-            host = response.get("host", t("unknown"))
-            port = response.get("port", t("unknown"))
+            await session.acquire_control(resolved_uri)
+            target = session.resolve_robot_target(resolved_uri)
+            host = target.get("host", t("unknown"))
+            port = target.get("port", t("unknown"))
             status = t("Robot connected to {host}:{port}.", host=host, port=port)
+            ui_session.robot_control_mode = "acquired"
+            ui_session.robot_control_released_at = 0.0
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = None
             return (

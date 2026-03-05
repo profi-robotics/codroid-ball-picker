@@ -36,21 +36,30 @@ def _robot_control_released(control_state: dict | None = None) -> bool:
     """Return True when robot control has been explicitly released."""
     return _robot_control_mode(control_state) == "released"
 
-async def _probe_robot(uri: str) -> dict:
+async def _probe_robot(uri: str, *, require_acquired: bool = True) -> dict:
     """Probe a robot at the given URI and return status info."""
     robot_session = registry().get_or_create_robot_session()
     default_uri = registry().default_robot_uri
-    return await robot_session.probe(uri or default_uri)
+    return await robot_session.probe(
+        uri or default_uri,
+        require_acquired=require_acquired,
+    )
 
 
 async def _with_robot_api(
     uri: str,
     action: Callable[["CodroidAPI"], Awaitable[None]],
+    *,
+    require_acquired: bool = True,
 ) -> None:
     """Run an async action with a robot API connection."""
     robot_session = registry().get_or_create_robot_session()
     default_uri = registry().default_robot_uri
-    await robot_session.run_with_robot(uri or default_uri, action)
+    await robot_session.run_with_robot(
+        uri or default_uri,
+        action,
+        require_acquired=require_acquired,
+    )
 
 
 async def _get_robot_api(uri: str | None = None) -> "CodroidAPI":
@@ -74,7 +83,11 @@ async def _get_robot_api(uri: str | None = None) -> "CodroidAPI":
         nonlocal api_instance
         api_instance = api
 
-    await robot_session.run_with_robot(uri or default_uri, _capture_api)
+    await robot_session.run_with_robot(
+        uri or default_uri,
+        _capture_api,
+        require_acquired=True,
+    )
 
     if api_instance is None:
         raise RuntimeError("Failed to get robot API instance")
