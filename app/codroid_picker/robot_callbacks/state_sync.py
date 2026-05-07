@@ -31,18 +31,19 @@ def register_state_sync_callbacks(app: Dash) -> None:
 
         """Display current robot position with real-time updates."""
         session = codroid_picker_module._get_robot_session()
-        pos = session.position_snapshot()
-        age_s = pos.age_seconds()
+        snapshot = session.snapshot()
+        pos = snapshot.posture
+        age_s = snapshot.posture_age_seconds()
 
         # Show position if we have recent data (from any source)
-        if session.posture_seen() and age_s < 2.0:
+        if snapshot.posture_seen and age_s < 2.0:
             return (
                 t("🤖 Robot position: X={x:.1f}, Y={y:.1f}, Z={z:.1f}", x=pos.x, y=pos.y, z=pos.z)
             )
 
         # Check if robot is connected via test connection
         if (robot_conn_state or {}).get("status") == "online":
-            if not session.posture_seen():
+            if not snapshot.posture_seen:
                 return t("Robot: Awaiting posture stream...")
             return t("Robot: Position stale (last seen {age:.1f}s ago)", age=age_s)
 
@@ -61,15 +62,22 @@ def register_state_sync_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         session = codroid_picker_module._get_robot_session()
-        status = session.robot_status_snapshot()
-        status_age = session.robot_status_age_seconds()
+        snapshot = session.snapshot()
+        status = snapshot.robot_status
+        status_age = snapshot.robot_status_age_seconds()
         if not status or status_age is None or status_age > 2.0:
             return no_update
 
-        warning = session.robot_warning_snapshot()
-        warning_age = session.robot_warning_age_seconds()
-        error_msg = session.robot_error_snapshot()
-        error_age = session.robot_error_age_seconds()
+        warning = snapshot.robot_warning
+        warning_age = (
+            None if snapshot.robot_warning_timestamp is None
+            else snapshot.timestamp - snapshot.robot_warning_timestamp
+        )
+        error_msg = snapshot.robot_error
+        error_age = (
+            None if snapshot.robot_error_timestamp is None
+            else snapshot.timestamp - snapshot.robot_error_timestamp
+        )
 
         emergency_active = codroid_picker_module._detect_emergency_stop_status(
             status)
@@ -101,7 +109,7 @@ def register_state_sync_callbacks(app: Dash) -> None:
                 error_msg
             )
 
-        physical_pressed = session.emergency_button_active()
+        physical_pressed = snapshot.emergency_button_active
         if not emergency_active:
             physical_pressed = False
 
@@ -160,8 +168,9 @@ def register_state_sync_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         session = codroid_picker_module._get_robot_session()
-        status = session.robot_status_snapshot()
-        status_age = session.robot_status_age_seconds()
+        snapshot = session.snapshot()
+        status = snapshot.robot_status
+        status_age = snapshot.robot_status_age_seconds()
         if not status or status_age is None or status_age > 2.0:
             return no_update
         active = codroid_picker_module._detect_rescue_mode_status(status)
@@ -214,17 +223,18 @@ def register_state_sync_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         session = codroid_picker_module._get_robot_session()
-        if not session.posture_seen():
+        snapshot = session.snapshot()
+        if not snapshot.posture_seen:
             if (robot_conn_state or {}).get("status") == "online":
                 return t("X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---")
             return t("X=--.--- Y=--.--- Z=--.---  A=--.--- B=--.--- C=--.---")
 
-        pos = session.position_snapshot()
+        pos = snapshot.posture
         text = (
             f"X={pos.x:.3f} Y={pos.y:.3f} Z={pos.z:.3f}  "
             f"A={pos.a:.3f} B={pos.b:.3f} C={pos.c:.3f}"
         )
-        age_s = pos.age_seconds()
+        age_s = snapshot.posture_age_seconds()
         if age_s > 2.0:
             text = f"{text} · stale {age_s:.1f}s"
         return text
@@ -241,7 +251,11 @@ def register_state_sync_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         session = codroid_picker_module._get_robot_session()
-        states = session.flange_button_states()
+        snapshot = session.snapshot()
+        states = {
+            port: int(snapshot.di_state.get(port, 0))
+            for port in codroid_picker_module.DEFAULT_FLANGE_BUTTON_PORTS
+        }
         classes = []
         for port in codroid_picker_module.DEFAULT_FLANGE_BUTTON_PORTS:
             active = states.get(port, 0) == 1

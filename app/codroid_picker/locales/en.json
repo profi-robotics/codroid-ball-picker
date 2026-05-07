@@ -48,8 +48,14 @@
   "Load or run camera calibration before computing workspace.": "Load or run camera calibration before computing workspace.",
   "Camera live": "Camera live",
   "Camera calib": "Camera calib",
+  "Camera source": "Camera source",
   "No OAK-D camera detected after retries. Connect/power the camera, then enable the camera stream to retry.": "No OAK-D camera detected after retries. Connect/power the camera, then enable the camera stream to retry.",
+  "No host cameras detected.": "No host cameras detected.",
+  "OAK-D / DepthAI": "OAK-D / DepthAI",
+  "Host camera": "Host camera",
+  "Host camera index": "Host camera index",
   "Camera not connected.": "Camera not connected.",
+  "Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, {device_label} {device_id}).": "Camera stream running ({res_w}x{res_h} @ {fps_val:.1f} FPS, {device_label} {device_id}).",
   "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry.": "No OAK-D camera detected (retried 8 times). Connect/power the camera, then enable the camera stream to retry."
   ,"Target is too clustered for manual pick.": "Target is too clustered for manual pick."
   ,"Separating cluster attempt {attempt}/{max_attempts}...": "Separating cluster attempt {attempt}/{max_attempts}..."

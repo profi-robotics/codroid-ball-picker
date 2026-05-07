@@ -8,14 +8,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from codroid_api import CodroidSettings
 from onrobot.gripper_profiles import (
-    DEFAULT_GRIPPER_TYPE,
     GripperProfile,
     get_gripper_profile,
-    gripper_profile_options,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,6 +30,8 @@ _BASE_PLATE_LAYOUT_PATH = Path(
 _BASE_CAPTURE_DIR = Path("data/calibration")
 _BASE_CAMERA_RESOLUTION: Tuple[int, int] = (1920, 1080)
 _BASE_CAMERA_FPS = 30.0
+_BASE_CAMERA_SOURCE = "oak"
+_BASE_HOST_CAMERA_INDEX = 0
 _BASE_CAMERA_ENABLE_DEPTH = False
 _BASE_CAMERA_FAST_DEPTH = True
 _BASE_MODEL_DIR = Path("data/models")
@@ -41,6 +41,7 @@ _BASE_CAMERA_CALIBRATION_DELAY_S = 0.1
 _BASE_CAMERA_CALIBRATION_MIN_USABLE_FRAMES = 1
 _BASE_AUTO_TARGET_LABEL = "orange"
 _BASE_AUTO_TARGET_LABELS = ["orange", "sports ball"]
+_BASE_AUTO_LABEL_PROFILES: dict[str, dict[str, float]] = {}
 _BASE_AUTO_DROP_IGNORE_RADIUS_MM = 60.0
 _BASE_AUTO_INTRUSION_MATCH_MM = 40.0
 _BASE_AUTO_DETECTION_STALE_S = 0.3
@@ -76,6 +77,9 @@ _BASE_CAMERA_SAFETY_ENABLED = True
 _BASE_CAMERA_SAFETY_ZONE = "workspace"
 _BASE_CAMERA_SAFETY_LABELS = ["person", "people"]
 _BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS = 250
+_BASE_DETECTION_FRAME_SKIP = 3
+_BASE_UI_STATUS_INTERVAL_MS = 1000
+_BASE_UI_MONITOR_INTERVAL_MS = 2000
 
 _BASE_PLATE_TEST_CAPTURE_DIR = Path("data/plate_test_runs")
 _BASE_MIN_PLATE_MARKERS = 2
@@ -110,7 +114,15 @@ DEFAULT_DROP_MARKER_ID = _BASE_DROP_MARKER_ID
 
 DROP_TARGET_PATH = Path("data/drop_target.json")
 SETTINGS_PATH = Path("data/app_settings.json")
-GRIPPER_PROFILE_OPTIONS = gripper_profile_options()
+AUTO_GRIPPER_TYPE = "auto"
+SUPPORTED_APP_GRIPPER_TYPES = ("twofg7", "sg", "vgc10")
+GRIPPER_PROFILE_OPTIONS = [
+    {"value": AUTO_GRIPPER_TYPE, "label": "Auto detect"},
+    *[
+        {"value": key, "label": get_gripper_profile(key).display_name}
+        for key in SUPPORTED_APP_GRIPPER_TYPES
+    ],
+]
 
 
 class AppSettings(BaseSettings):
@@ -137,7 +149,7 @@ class AppSettings(BaseSettings):
     last_model: Optional[str] = None
     active_model: Optional[str] = None
     drop_target: Optional[Tuple[float, float]] = None
-    gripper_type: str = DEFAULT_GRIPPER_TYPE
+    gripper_type: str = AUTO_GRIPPER_TYPE
 
     # Asset paths that can be redirected via settings
     calibration_bundle_path: Path = DEFAULT_BUNDLE_PATH
@@ -148,6 +160,8 @@ class AppSettings(BaseSettings):
     capture_dir: Path = _BASE_CAPTURE_DIR
     camera_resolution: Tuple[int, int] = _BASE_CAMERA_RESOLUTION
     camera_fps: float = _BASE_CAMERA_FPS
+    camera_source: str = _BASE_CAMERA_SOURCE
+    host_camera_index: int = _BASE_HOST_CAMERA_INDEX
     camera_enable_depth: bool = _BASE_CAMERA_ENABLE_DEPTH
     camera_fast_depth: bool = _BASE_CAMERA_FAST_DEPTH
     model_dir: Path = _BASE_MODEL_DIR
@@ -201,6 +215,9 @@ class AppSettings(BaseSettings):
     camera_safety_zone: str = _BASE_CAMERA_SAFETY_ZONE
     camera_safety_labels: list[str] = _BASE_CAMERA_SAFETY_LABELS
     camera_safety_check_interval_ms: int = _BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS
+    detection_frame_skip: int = _BASE_DETECTION_FRAME_SKIP
+    ui_status_interval_ms: int = _BASE_UI_STATUS_INTERVAL_MS
+    ui_monitor_interval_ms: int = _BASE_UI_MONITOR_INTERVAL_MS
 
     # Robot coordinate selection
     robot_coordinate_id: int = _BASE_ROBOT_COORDINATE_ID
@@ -208,6 +225,7 @@ class AppSettings(BaseSettings):
     # Auto pick & place defaults
     auto_target_label: str = _BASE_AUTO_TARGET_LABEL
     auto_target_labels: list[str] = _BASE_AUTO_TARGET_LABELS
+    auto_label_profiles: dict[str, dict[str, Any]] = _BASE_AUTO_LABEL_PROFILES
     auto_drop_ignore_radius_mm: float = _BASE_AUTO_DROP_IGNORE_RADIUS_MM
     auto_intrusion_match_mm: float = _BASE_AUTO_INTRUSION_MATCH_MM
     auto_detection_stale_s: float = _BASE_AUTO_DETECTION_STALE_S

@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2.12.5",
     "pypandoc-binary>=1.16.2",
     "weasyprint>=68.1",
+    "aiortc>=1.14.0",
 ]
 
 # PyTorch is listed separately because Jetson requires special wheels
@@ -34,6 +35,15 @@ dependencies = [
 torch = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "coverage[toml]>=7.6.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 
 [tool.uv.sources]
@@ -49,4 +59,17 @@ onrobot-api = { path = "../onrobot-api", editable = true }
 #      .venv/bin/pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
 
 [tool.hatch.build.targets.wheel]
-packages = ["app", "robot", "vision"]
+packages = ["app", "vision"]
+
+[tool.ruff]
+extend-exclude = ["scripts"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7"]
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: fast deterministic tests that do not require hardware",
+    "integration: tests that exercise subsystem integration with mocks/fakes",
+    "hardware: tests that require real robot/camera/gripper hardware",
+]

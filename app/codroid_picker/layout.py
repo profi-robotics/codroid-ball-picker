@@ -67,6 +67,19 @@ def build_setup_drawer() -> dmc.Drawer:
                     size="sm",
                 ),
                 dmc.Text(t("Camera connection"), fw=600),
+                dmc.Select(
+                    id="camera-source",
+                    label=t("Camera source"),
+                    data=[
+                        {"value": "oak", "label": t("OAK-D / DepthAI")},
+                        {"value": "host", "label": t("Host camera")},
+                    ],
+                    value=getattr(SETTINGS, "camera_source", "oak"),
+                    clearable=False,
+                    allowDeselect=False,
+                    comboboxProps={"withinPortal": False},
+                    size="sm",
+                ),
                 dmc.Group(
                     [
                         dmc.Button(t("Scan for camera"),
@@ -82,6 +95,14 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Group(
                     [
+                        dmc.NumberInput(
+                            id="host-camera-index",
+                            label=t("Host camera index"),
+                            value=getattr(SETTINGS, "host_camera_index", 0),
+                            min=0,
+                            max=16,
+                            step=1,
+                        ),
                         dmc.NumberInput(
                             id="camera-width",
                             label=t("Width"),
@@ -153,7 +174,15 @@ def build_setup_drawer() -> dmc.Drawer:
                 ),
                 dmc.Text(id="robot-status-text", size="sm", c="dimmed"),
                 dmc.Divider(),
-                dmc.Text(t("OnRobot 2FG7 Gripper"), fw=600),
+                dmc.Text(t("OnRobot Gripper"), fw=600),
+                dmc.Select(
+                    id="gripper-type",
+                    label=t("Gripper type"),
+                    data=app_settings.GRIPPER_PROFILE_OPTIONS,
+                    value=app_settings.SETTINGS.gripper_type,
+                    clearable=False,
+                    size="sm",
+                ),
                 dmc.TextInput(
                     id="gripper-cb-ip",
                     label=t("Compute Box IP Address"),
@@ -274,7 +303,23 @@ def build_setup_drawer() -> dmc.Drawer:
                                 label=t("Target label"),
                                 value=SETTINGS.auto_target_label,
                                 size="sm",
-                                description=t("YOLO label the auto routine should pick."),
+                                style={"display": "none"},
+                            ),
+                            span=12,
+                        ),
+                        dmc.GridCol(
+                            dmc.MultiSelect(
+                                id="settings-auto-target-labels",
+                                label=t("Pick labels"),
+                                data=[
+                                    {"value": label, "label": label}
+                                    for label in SESSION.model_labels
+                                ],
+                                value=SETTINGS.auto_target_labels,
+                                searchable=True,
+                                clearable=True,
+                                size="sm",
+                                description=t("YOLO labels the auto routine should pick."),
                             ),
                             span=12,
                         ),
@@ -617,6 +662,8 @@ def build_layout() -> dmc.MantineProvider:
                     id="auto-config-state",
                     data={
                         "target_label": SETTINGS.auto_target_label,
+                        "target_labels": SETTINGS.auto_target_labels,
+                        "label_profiles": SETTINGS.auto_label_profiles,
                         "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
                         "approach_mm": SETTINGS.auto_approach_mm,
                         "pick_mm": SETTINGS.auto_pick_mm,
@@ -626,6 +673,7 @@ def build_layout() -> dmc.MantineProvider:
                         "segment_min_mm": SETTINGS.segment_min,
                         "segment_max_mm": SETTINGS.segment_max,
                         "segment_fraction": SETTINGS.segment_fraction,
+                        "detection_frame_skip": SETTINGS.detection_frame_skip,
                     },
                 ),
                 dcc.Store(
@@ -669,18 +717,31 @@ def build_layout() -> dmc.MantineProvider:
                     id="camera-safety-state",
                     data={"blocked": False, "matches": 0, "action": "none", "active": False},
                 ),
+                dcc.Store(
+                    id="ui-snapshot-state",
+                    data={"seq": 0, "ts": 0.0},
+                ),
+                dcc.Store(
+                    id="ui-sse-state",
+                    data={
+                        "status": "connecting",
+                        "connected": False,
+                        "seq": 0,
+                        "degraded": ["sse_disconnected"],
+                    },
+                ),
                 dcc.Interval(id="auto-init", interval=400,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
-                             interval=1000, n_intervals=0),
+                             interval=SETTINGS.ui_status_interval_ms, n_intervals=0),
                 dcc.Interval(
                     id="monitor-interval",
-                    interval=2000,
+                    interval=SETTINGS.ui_monitor_interval_ms,
                     n_intervals=0,
                 ),
                 dcc.Interval(
                     id="camera-interval",
-                    interval=33,  # ~30 FPS UI poll; stream push happens each tick
+                    interval=SETTINGS.ui_status_interval_ms,
                     n_intervals=0,
                     disabled=True,
                 ),

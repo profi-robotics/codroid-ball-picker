@@ -177,6 +177,12 @@ _LAZY_EXPORTS = {
     ),
     # Models + GPU helpers
     "_model_options": ("app.codroid_picker.models", "_model_options"),
+    "model_label_options": ("app.codroid_picker.models", "model_label_options"),
+    "run_model_benchmark": ("app.codroid_picker.models", "run_model_benchmark"),
+    "format_model_benchmark": (
+        "app.codroid_picker.models",
+        "format_model_benchmark",
+    ),
     "activate_model": ("app.codroid_picker.models", "activate_model"),
     "save_uploaded_model": ("app.codroid_picker.models", "save_uploaded_model"),
     "_list_capture_frames": ("app.codroid_picker.models", "_list_capture_frames"),

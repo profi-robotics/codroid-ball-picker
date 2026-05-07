@@ -1,14 +1,14 @@
-# OnRobot 2FG7 Gripper Integration
+# OnRobot Gripper Integration
 
-This document describes the OnRobot 2FG7 gripper integration for the Codroid ball-picker system using the [onrobot-api](https://github.com/profi-robotics/onrobot-api) Python package.
+This document describes the OnRobot gripper integration for the Codroid ball-picker system using the [onrobot-api](https://github.com/profi-robotics/onrobot-api) Python package. The app supports auto detection and operation for OnRobot 2FG7, OnRobot Soft Gripper, and OnRobot VGC10.
 
 ## Hardware Setup
 
 ### OnRobot Compute Box
 
-The 2FG7 gripper communicates via an **OnRobot Compute Box** using XML-RPC protocol over TCP/IP port 41414.
+Supported grippers communicate via an **OnRobot Compute Box** using XML-RPC protocol over TCP/IP port 41414.
 
-1. Connect the 2FG7 gripper to the Compute Box
+1. Connect the gripper to the Compute Box
 2. Power on the Compute Box
 3. Note the Compute Box IP address (default: `192.168.101.95`)
 4. Ensure the Compute Box is accessible from your network
@@ -24,7 +24,11 @@ The Compute Box must be on the same network as the computer running the calibrat
 
 ### Gripper profiles
 
-The calibration UI relies on profile definitions shipped with `onrobot-api` to drive the default grip width, force, and speed for each supported gripper. A `Gripper type` select is available in the **Settings** card so you can switch between configured models; the choice is persisted to `data/app_settings.json`, and the UI automatically updates its force/speed bounds from the matching profile that lives inside `onrobot.gripper_profiles`.
+The calibration UI relies on profile definitions shipped with `onrobot-api` to drive each supported gripper's defaults and UI capabilities. Use **Auto detect** unless troubleshooting requires a manual override. The choice is persisted to `data/app_settings.json`.
+
+- **2FG7**: width, force, speed, finger orientation, and grip detection.
+- **Soft Gripper**: width, gentle grip, initialization state, and grip detection. The app initializes the Soft Gripper on connect if needed; calibration remains an explicit setup action.
+- **VGC10**: vacuum grip/release on both channels. The app exposes one vacuum setpoint and one hold threshold, then applies the setpoint to A and B channels together.
 
 ## Software Configuration
 
@@ -49,10 +53,19 @@ uv install
 
 1. Launch the calibration UI: `python run_codroid_picker.py`
 2. Click **Setup** in the header
-3. Scroll to the **OnRobot 2FG7 Gripper** section
-4. Enter the Compute Box IP address
-5. Toggle **Enable gripper connection**
-6. Click **Test gripper** to verify connection
+3. Scroll to the **OnRobot Gripper** section
+4. Select **Auto detect** or a specific gripper type
+5. Enter the Compute Box IP address
+6. Toggle **Enable gripper connection**
+7. Click **Test gripper** to verify connection
+
+## Auto Pick Profiles
+
+Auto pick label profiles include motion settings plus gripper-specific grip settings:
+
+- 2FG7 labels use close width, grip force, grip speed, and grip timeout.
+- Soft Gripper labels use close width, gentle grip, and grip timeout.
+- VGC10 labels use vacuum setpoint, vacuum hold threshold, and grip timeout. The default setpoint is `40 kPa`; the default threshold is `32 kPa` (`80%` of the setpoint).
 
 ## API Reference
 

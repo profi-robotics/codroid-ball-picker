@@ -82,11 +82,21 @@ def resolve_gripper_limits(
         gripper = session.gripper
 
     t_index = gripper_defaults["t_index"]
+    adapter = getattr(session, "gripper_adapter", None)
 
     min_width = session.gripper_min_width
     max_width = session.gripper_max_width
     profile_min = gripper_profile.close_width_default
     profile_max = gripper_profile.open_width_default
+
+    if adapter is not None:
+        try:
+            min_width, max_width = adapter.width_limits(t_index=t_index)
+            session.gripper_min_width = float(min_width)
+            session.gripper_max_width = float(max_width)
+            return float(min_width), float(max_width)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to read adapter gripper limits: %s", exc)
 
     if gripper is not None:
         # Try to get from gripper status snapshot (cached)
@@ -158,6 +168,13 @@ def is_gripper_connected(gripper: Optional["TWOFG"] = None) -> bool:
 
     if gripper is None:
         gripper = session.gripper
+
+    adapter = getattr(session, "gripper_adapter", None)
+    if adapter is not None:
+        try:
+            return adapter.is_connected(t_index=gripper_defaults["t_index"])
+        except Exception:
+            return False
 
     if gripper is None:
         return False

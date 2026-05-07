@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout codroid-ball-picker
+        uses: actions/checkout@v4
+        with:
+          path: codroid-ball-picker
+
+      - name: Checkout codroid-api
+        uses: actions/checkout@v4
+        with:
+          repository: profi-robotics/codroid-api
+          path: codroid-api
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout onrobot-api
+        uses: actions/checkout@v4
+        with:
+          repository: profi-robotics/onrobot-api
+          path: onrobot-api
+          token: ${{ secrets.CI_REPO_READ_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: codroid-ball-picker
+        run: uv sync --dev
+
+      - name: Compile Python sources
+        working-directory: codroid-ball-picker
+        run: uv run python -m compileall .
+
+      - name: Ruff
+        working-directory: codroid-ball-picker
+        run: uv run ruff check .
+
+      - name: Pytest
+        working-directory: codroid-ball-picker
+        run: uv run pytest -q
+
+      - name: Build package
+        working-directory: codroid-ball-picker
+        run: uv build

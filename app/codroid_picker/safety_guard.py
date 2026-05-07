@@ -62,7 +62,7 @@ def is_detection_in_zone(
         return False
     try:
         xy = (float(workspace_xy[0]), float(workspace_xy[1]))
-    except Exception:  # noqa: BLE001
+    except (TypeError, ValueError):
         return False
     return _workspace_contains(workspace_def, xy)
 

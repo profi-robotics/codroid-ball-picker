@@ -29,6 +29,7 @@ from app.codroid_picker.robot_motion import (
     ensure_coordinate_active,
     log_move_target,
 )
+from app.codroid_picker.robot_helpers import is_gripper_connected
 from app.codroid_picker.gripper_utils import await_grip_status
 
 LOGGER = logging.getLogger(__name__)
@@ -115,9 +116,7 @@ class ManualPickPlaceProgram(RobotProgram):
             return False, "Robot posture stream not available."
 
         # Check gripper
-        gripper = registry().gripper or SESSION.gripper
-        gripper_defaults = registry().gripper_defaults
-        if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
+        if not is_gripper_connected():
             return False, "Gripper not connected."
 
         # Check workspace
@@ -452,13 +451,13 @@ class ManualPickPlaceProgram(RobotProgram):
         LOGGER.info(f"Gripper open result: {result}")
 
         # Wait for gripper to finish
-        gripper = registry().gripper
+        adapter = SESSION.gripper_adapter
         gripper_defaults = registry().gripper_defaults
-        if gripper is not None and gripper.isConnected(t_index=gripper_defaults["t_index"]):
+        if adapter is not None and adapter.is_connected(t_index=gripper_defaults["t_index"]):
             max_polls = 20  # 2 seconds max
             for _ in range(max_polls):
                 try:
-                    if not gripper.isBusy(t_index=gripper_defaults["t_index"]):
+                    if not adapter.is_busy(t_index=gripper_defaults["t_index"]):
                         break
                 except Exception:
                     pass

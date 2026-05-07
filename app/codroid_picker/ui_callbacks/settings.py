@@ -14,7 +14,7 @@ def register_settings_callbacks(app: Dash) -> None:
     """Register settings callbacks with the Dash app."""
 
     @app.callback(
-        Output("settings-status", "children"),
+        Output("settings-status", "children", allow_duplicate=True),
         Output("settings-robot-host", "value"),
         Output("settings-robot-coordinate-id", "value"),
         Output("settings-gripper-ip", "value"),
@@ -26,6 +26,7 @@ def register_settings_callbacks(app: Dash) -> None:
         Output("settings-workspace-path", "value"),
         Output("settings-robot-calib-path", "value"),
         Output("settings-auto-target-label", "value"),
+        Output("settings-auto-target-labels", "value", allow_duplicate=True),
         Output("settings-auto-drop-ignore-radius", "value"),
         Output("settings-auto-intrusion-match", "value"),
         Output("settings-auto-detection-stale", "value"),
@@ -47,6 +48,7 @@ def register_settings_callbacks(app: Dash) -> None:
         Output("settings-camera-safety-enabled", "checked"),
         Output("settings-camera-safety-zone", "value"),
         Output("settings-camera-safety-labels", "value"),
+        Output("detection-frame-skip", "value"),
         Output("camera-safety-interval", "interval"),
         Output("camera-safety-interval", "disabled"),
         Input("settings-save", "n_clicks"),
@@ -62,6 +64,7 @@ def register_settings_callbacks(app: Dash) -> None:
         State("settings-workspace-path", "value"),
         State("settings-robot-calib-path", "value"),
         State("settings-auto-target-label", "value"),
+        State("settings-auto-target-labels", "value"),
         State("settings-auto-drop-ignore-radius", "value"),
         State("settings-auto-intrusion-match", "value"),
         State("settings-auto-detection-stale", "value"),
@@ -83,6 +86,7 @@ def register_settings_callbacks(app: Dash) -> None:
         State("settings-camera-safety-enabled", "checked"),
         State("settings-camera-safety-zone", "value"),
         State("settings-camera-safety-labels", "value"),
+        State("detection-frame-skip", "value"),
         prevent_initial_call=True,
     )
     def _handle_settings(
@@ -99,6 +103,7 @@ def register_settings_callbacks(app: Dash) -> None:
         workspace_path: Optional[str],
         robot_calib_path: Optional[str],
         auto_target_label: Optional[str],
+        auto_target_labels: Optional[list[str]],
         auto_drop_ignore_radius: Optional[float],
         auto_intrusion_match: Optional[float],
         auto_detection_stale: Optional[float],
@@ -120,6 +125,7 @@ def register_settings_callbacks(app: Dash) -> None:
         camera_safety_enabled: Optional[bool],
         camera_safety_zone: Optional[str],
         camera_safety_labels: Optional[list[str]],
+        detection_frame_skip: Optional[float],
     ):
         """Handle settings save and reset operations."""
         import app.codroid_picker as codroid_picker_module
@@ -130,7 +136,6 @@ def register_settings_callbacks(app: Dash) -> None:
             _refresh_session_safety_config_defaults,
         )
         from app.codroid_picker.safety_guard import normalize_safety_labels
-        from onrobot.gripper_profiles import DEFAULT_GRIPPER_TYPE
 
         trigger = callback_context.triggered_id
 
@@ -142,8 +147,9 @@ def register_settings_callbacks(app: Dash) -> None:
         default_robot_calib = str(
             codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH)
         default_gripper_ip = app_settings.DEFAULT_GRIPPER_IP
-        default_gripper_type = DEFAULT_GRIPPER_TYPE
+        default_gripper_type = app_settings.AUTO_GRIPPER_TYPE
         default_auto_target_label = app_settings._BASE_AUTO_TARGET_LABEL
+        default_auto_target_labels = list(app_settings._BASE_AUTO_TARGET_LABELS)
         default_auto_drop_ignore_radius = app_settings._BASE_AUTO_DROP_IGNORE_RADIUS_MM
         default_auto_intrusion_match = app_settings._BASE_AUTO_INTRUSION_MATCH_MM
         default_auto_detection_stale = app_settings._BASE_AUTO_DETECTION_STALE_S
@@ -168,6 +174,7 @@ def register_settings_callbacks(app: Dash) -> None:
         default_camera_safety_zone = app_settings._BASE_CAMERA_SAFETY_ZONE
         default_camera_safety_labels = list(app_settings._BASE_CAMERA_SAFETY_LABELS)
         default_camera_safety_check_interval_ms = app_settings._BASE_CAMERA_SAFETY_CHECK_INTERVAL_MS
+        default_detection_frame_skip = app_settings._BASE_DETECTION_FRAME_SKIP
 
         status_text = t("Settings saved.")
         if trigger == "settings-reset":
@@ -182,6 +189,7 @@ def register_settings_callbacks(app: Dash) -> None:
             workspace_path_val = default_workspace
             robot_calib_path_val = default_robot_calib
             target_label_val = default_auto_target_label
+            target_labels_val = default_auto_target_labels
             drop_ignore_radius_val = default_auto_drop_ignore_radius
             intrusion_match_val = default_auto_intrusion_match
             detection_stale_val = default_auto_detection_stale
@@ -201,6 +209,7 @@ def register_settings_callbacks(app: Dash) -> None:
             camera_safety_enabled_val = default_camera_safety_enabled
             camera_safety_zone_val = default_camera_safety_zone
             camera_safety_labels_val = default_camera_safety_labels
+            detection_frame_skip_val = default_detection_frame_skip
         else:
             host_val = (robot_host or "").strip() or None
             gripper_ip_val = (gripper_ip or "").strip() or None
@@ -222,6 +231,14 @@ def register_settings_callbacks(app: Dash) -> None:
                 robot_calib_path or "").strip() or default_robot_calib
             target_label_val = (auto_target_label or "").strip(
             ) or default_auto_target_label
+            target_labels_val = [
+                str(label).strip()
+                for label in auto_target_labels or []
+                if str(label).strip()
+            ]
+            if not target_labels_val:
+                target_labels_val = [target_label_val]
+            target_label_val = target_labels_val[0]
             drop_ignore_radius_val = codroid_picker_module._safe_float(
                 auto_drop_ignore_radius, default_auto_drop_ignore_radius
             )
@@ -285,6 +302,12 @@ def register_settings_callbacks(app: Dash) -> None:
             camera_safety_labels_val = normalize_safety_labels(camera_safety_labels)
             if not camera_safety_labels_val:
                 camera_safety_labels_val = default_camera_safety_labels
+            detection_frame_skip_val = max(
+                codroid_picker_module._safe_int(
+                    detection_frame_skip, default_detection_frame_skip
+                ),
+                1,
+            )
 
         codroid_picker_module._commit_settings(
             robot_host=host_val,
@@ -296,6 +319,8 @@ def register_settings_callbacks(app: Dash) -> None:
             workspace_path=workspace_path_val,
             robot_calibration_path=robot_calib_path_val,
             auto_target_label=target_label_val,
+            auto_target_labels=target_labels_val,
+            auto_label_profiles=SESSION.auto_config.get("label_profiles", {}),
             auto_drop_ignore_radius_mm=drop_ignore_radius_val,
             auto_intrusion_match_mm=intrusion_match_val,
             auto_detection_stale_s=detection_stale_val,
@@ -315,6 +340,7 @@ def register_settings_callbacks(app: Dash) -> None:
             camera_safety_enabled=camera_safety_enabled_val,
             camera_safety_zone=camera_safety_zone_val,
             camera_safety_labels=camera_safety_labels_val,
+            detection_frame_skip=detection_frame_skip_val,
         )
 
         # Refresh global settings
@@ -338,6 +364,7 @@ def register_settings_callbacks(app: Dash) -> None:
         )
         SESSION.marker_ids = (marker_a_val, marker_b_val)
         SESSION.marker_size_mm = marker_size_val
+        SESSION.detection_frame_skip = detection_frame_skip_val
         codroid_picker_module.ROBOT_COORDINATE_ID = codroid_picker_module.SETTINGS.robot_coordinate_id
         camera_safety_interval_ms = codroid_picker_module.SETTINGS.camera_safety_check_interval_ms
         if camera_safety_interval_ms is None:
@@ -360,6 +387,7 @@ def register_settings_callbacks(app: Dash) -> None:
             workspace_path_val,
             robot_calib_path_val,
             target_label_val,
+            target_labels_val,
             drop_ignore_radius_val,
             intrusion_match_val,
             detection_stale_val,
@@ -381,6 +409,7 @@ def register_settings_callbacks(app: Dash) -> None:
             camera_safety_enabled_val,
             camera_safety_zone_val,
             camera_safety_labels_val,
+            detection_frame_skip_val,
             int(camera_safety_interval_ms),
             not camera_safety_enabled_val,
         )

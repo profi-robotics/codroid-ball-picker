@@ -1,103 +1,117 @@
-"""Flask video streaming routes for the calibration UI.
-
-This module provides HTTP endpoints for serving camera frames
-as Motion JPEG streams or individual JPEG images.
-"""
+"""Flask WebRTC signaling routes for the calibration UI."""
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
-import cv2
+from flask import request, stream_with_context
 
 from app.codroid_picker.app_instance import registry
-from app.codroid_picker.utils import placeholder_frame
+from app.codroid_picker.ui_snapshots import get_ui_snapshot_service
+from app.codroid_picker.webrtc import get_webrtc_video_service
 
 if TYPE_CHECKING:
     from dash import Dash
 
 LOGGER = logging.getLogger(__name__)
+_CLIENT_DIAGNOSTICS_LOCK = threading.Lock()
+_CLIENT_DIAGNOSTICS: dict = {}
+
+
+def _record_client_diagnostics(payload: object) -> dict:
+    """Store the latest browser-side WebRTC diagnostics."""
+    global _CLIENT_DIAGNOSTICS
+    if not isinstance(payload, dict):
+        payload = {}
+    diagnostic = {
+        "received_at": time.time(),
+        **{
+            str(key): value
+            for key, value in payload.items()
+            if isinstance(key, str)
+            and isinstance(value, (str, int, float, bool, type(None), list, dict))
+        },
+    }
+    with _CLIENT_DIAGNOSTICS_LOCK:
+        _CLIENT_DIAGNOSTICS = diagnostic
+        return deepcopy(_CLIENT_DIAGNOSTICS)
+
+
+def _client_diagnostics_snapshot() -> dict:
+    """Return the latest browser-side WebRTC diagnostics."""
+    with _CLIENT_DIAGNOSTICS_LOCK:
+        return deepcopy(_CLIENT_DIAGNOSTICS)
 
 
 def register_video_routes(app: "Dash") -> None:
-    """Register Flask video streaming routes with the Dash app.
+    """Register Flask state and WebRTC routes with the Dash app.
 
     Provides:
-    - /video_feed: Motion JPEG stream for fullscreen playback
-    - /camera_frame.jpg: Latest camera frame with overlays
-    - /raw_camera_frame.jpg: Latest raw camera frame without overlays
+    - /ui_events: Server-Sent Events stream with cached UI snapshots
+    - /webrtc/offer: WebRTC offer/answer signaling for raw camera preview
+    - /webrtc/stats: WebRTC transport and camera stats
     """
-    @app.server.route("/video_feed")
-    def video_feed():
-        """Stream Motion JPEG video for fullscreen playback."""
-        LOGGER.debug("/video_feed endpoint accessed")
+    service = get_ui_snapshot_service()
+    service.start()
 
-        def generate():
-            boundary = b'--frame\r\n'
-            frame_count = 0
-            last_frame_index = -1
-            while True:
-                frame_data, frame_index = registry().mjpeg_stream.get_frame_with_index()
+    if not getattr(app.server, "_codroid_ui_events_registered", False):
+        app.server._codroid_ui_events_registered = True
 
-                if not frame_data or frame_index == last_frame_index:
-                    time.sleep(0.005)
-                    continue
-
-                last_frame_index = frame_index
-                frame_count += 1
-                if frame_count == 1:
-                    LOGGER.debug(
-                        "/video_feed serving first frame, size=%s bytes", len(frame_data))
-
-                yield boundary
-                yield b'Content-Type: image/jpeg\r\n'
-                yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
-                yield frame_data
-                yield b'\r\n'
-
-        return app.server.response_class(
-            generate(),
-            mimetype='multipart/x-mixed-replace; boundary=frame'
-        )
-
-    @app.server.route("/camera_frame.jpg")
-    def camera_frame():
-        """Get the latest camera frame as a JPEG image."""
-        frame_data = registry().mjpeg_stream.get_frame()
-        if not frame_data:
-            # Return placeholder as JPEG bytes
-            placeholder = placeholder_frame(
-                "Camera stream offline", size=(480, 640))
-            success, buffer = cv2.imencode(".jpg", placeholder)
-            if success:
-                frame_data = buffer.tobytes()
-            else:
-                return app.server.response_class(
-                    b"",
-                    mimetype='image/jpeg'
-                )
-        return app.server.response_class(
-            frame_data,
-            mimetype='image/jpeg'
-        )
-
-    @app.server.route("/raw_camera_frame.jpg")
-    def raw_camera_frame():
-        """Get the latest raw camera frame (no overlays) as a JPEG image."""
-        raw_frame = registry().raw_stream.get_latest_frame()
-        if raw_frame is None:
-            placeholder = placeholder_frame(
-                "Camera stream offline", size=(480, 640))
-            raw_frame = placeholder
-        success, buffer = cv2.imencode(".jpg", raw_frame)
-        if not success:
+        @app.server.route("/ui_events")
+        def ui_events():
+            """Stream cached UI snapshot updates to the browser."""
+            raw_last_id = request.headers.get("Last-Event-ID", "0")
+            try:
+                last_seq = max(int(raw_last_id), 0)
+            except (TypeError, ValueError):
+                last_seq = 0
             return app.server.response_class(
-                b"",
-                mimetype='image/jpeg'
+                stream_with_context(service.iter_sse(last_seq)),
+                mimetype="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
             )
-        return app.server.response_class(
-            buffer.tobytes(),
-            mimetype='image/jpeg'
-        )
+
+    @app.server.route("/webrtc/offer", methods=["POST"])
+    def webrtc_offer():
+        """Accept a browser WebRTC offer and return a server answer."""
+        service = get_webrtc_video_service(registry().raw_stream)
+        payload = request.get_json(silent=True)
+        try:
+            answer = service.create_answer_sync(payload)
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        except RuntimeError as exc:
+            status = 503 if not service.available else 429
+            return {"error": str(exc)}, status
+        except FutureTimeoutError:
+            return {"error": "Timed out creating WebRTC answer"}, 504
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Failed to create WebRTC answer: %s", exc, exc_info=True)
+            return {"error": "Failed to create WebRTC answer"}, 500
+        return answer
+
+    @app.server.route("/webrtc/stats")
+    def webrtc_stats():
+        """Return current WebRTC transport state."""
+        service = get_webrtc_video_service(registry().raw_stream)
+        stream = registry().session.camera_stream
+        return {
+            **service.stats(),
+            "capture_fps": stream.get_fps() if stream is not None else 0.0,
+            "camera_status": stream.status() if stream is not None else "off",
+            "camera_id": stream.device_id() if stream is not None else None,
+            "client_diagnostics": _client_diagnostics_snapshot(),
+        }
+
+    @app.server.route("/webrtc/client_diagnostics", methods=["POST"])
+    def webrtc_client_diagnostics():
+        """Record browser-side WebRTC capability diagnostics."""
+        return _record_client_diagnostics(request.get_json(silent=True))

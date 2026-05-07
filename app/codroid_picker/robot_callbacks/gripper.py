@@ -42,55 +42,20 @@ def register_gripper_callbacks(app: Dash) -> None:
             return no_update, no_update, no_update, no_update, no_update, no_update
         if codroid_picker_module.SESSION.gripper is None:
             return no_update, no_update, no_update, no_update, no_update, no_update
-
-        status_snapshot = None
-        try:
-            t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
-            if codroid_picker_module.SESSION.gripper.get_status_snapshot(t_index=t_index) is None:
-                codroid_picker_module.SESSION.gripper.start_status_stream()
-            status_snapshot = codroid_picker_module.SESSION.gripper.get_status_snapshot(
-                t_index=t_index
-            )
-            if status_snapshot:
-                width = status_snapshot.get("external_width")
-                force = status_snapshot.get("force")
-                min_width = status_snapshot.get("min_external_width")
-                max_width = status_snapshot.get("max_external_width")
-                busy = status_snapshot.get("busy")
-                gripped = status_snapshot.get("grip_detected")
-                status = status_snapshot.get("status")
-                outward = status_snapshot.get("finger_orientation_outward")
-                orientation = None
-                if isinstance(outward, bool):
-                    orientation = "outward" if outward else "inward"
-                elif isinstance(outward, str):
-                    cleaned = outward.strip().lower()
-                    if cleaned in {"true", "1", "yes", "on"}:
-                        orientation = "outward"
-                    elif cleaned in {"false", "0", "no", "off"}:
-                        orientation = "inward"
-            else:
-                width = codroid_picker_module.SESSION.gripper.get_ext_width(
-                    t_index=t_index)
-                force = codroid_picker_module.SESSION.gripper.get_force(
-                    t_index=t_index)
-                min_width = codroid_picker_module.SESSION.gripper.get_min_ext_width(
-                    t_index=t_index)
-                max_width = codroid_picker_module.SESSION.gripper.get_max_ext_width(
-                    t_index=t_index)
-                busy = codroid_picker_module.SESSION.gripper.isBusy(
-                    t_index=t_index)
-                gripped = codroid_picker_module.SESSION.gripper.isGripped(
-                    t_index=t_index)
-                status = codroid_picker_module.SESSION.gripper.getStatus(
-                    t_index=t_index)
-                orientation = codroid_picker_module.SESSION.gripper.get_finger_orientation_label(
-                    t_index=t_index
-                )
-        except Exception as exc:  # noqa: BLE001
-            codroid_picker_module.LOGGER.debug(
-                "Failed to poll gripper values: %s", exc)
+        adapter = codroid_picker_module.SESSION.gripper_adapter
+        if adapter is None:
             return no_update, no_update, no_update, no_update, no_update, no_update
+
+        sync_data = dict(codroid_picker_module.SESSION.gripper_sync or {})
+        width = sync_data.get("width")
+        force = codroid_picker_module.SESSION.gripper_force
+        if force is None:
+            force = sync_data.get("force")
+        min_width = codroid_picker_module.SESSION.gripper_min_width
+        max_width = codroid_picker_module.SESSION.gripper_max_width
+        busy = codroid_picker_module.SESSION.gripper_busy
+        gripped = codroid_picker_module.SESSION.gripper_grip_detected
+        orientation = codroid_picker_module.SESSION.gripper_orientation
 
         width_update: Optional[float] = no_update
         force_update: Optional[float] = no_update
@@ -104,12 +69,7 @@ def register_gripper_callbacks(app: Dash) -> None:
             if current_force is None or abs(force - current_force) > 0.1:
                 force_update = float(force)
 
-        if (
-            isinstance(force, (int, float))
-            and force < 0
-            and status_snapshot
-            and isinstance(status_snapshot.get("max_force"), (int, float))
-        ):
+        if isinstance(force, (int, float)) and force < 0:
             force = None
 
         min_update: Optional[float] = no_update
@@ -143,8 +103,6 @@ def register_gripper_callbacks(app: Dash) -> None:
             codroid_picker_module.SESSION.gripper_busy = bool(busy)
         if isinstance(gripped, (bool, int, float)) and gripped != -2:
             codroid_picker_module.SESSION.gripper_grip_detected = bool(gripped)
-        if isinstance(status, (int, float)) and status != -2:
-            codroid_picker_module.SESSION.gripper_status_code = int(status)
         previous_orientation = codroid_picker_module.SESSION.gripper_orientation
         if orientation in {"inward", "outward"}:
             codroid_picker_module.SESSION.gripper_orientation = orientation
@@ -159,14 +117,26 @@ def register_gripper_callbacks(app: Dash) -> None:
             if codroid_picker_module.SESSION.gripper_grip_detected is None
             else ("yes" if codroid_picker_module.SESSION.gripper_grip_detected else "no")
         )
-        meta_text = (
-            t(
+        if adapter.capabilities.vacuum:
+            meta_text = t(
+                "Vacuum A: {vac_a:.1f} · Vacuum B: {vac_b:.1f} · Grip: {grip}",
+                vac_a=float(width or 0.0),
+                vac_b=0.0,
+                grip=grip_text,
+            )
+        elif adapter.capabilities.orientation:
+            meta_text = t(
                 "Orientation: {orientation} · Busy: {busy} · Grip: {grip}",
                 orientation=codroid_picker_module.SESSION.gripper_orientation or t("unknown"),
                 busy=busy_text,
                 grip=grip_text,
             )
-        )
+        else:
+            meta_text = t(
+                "Busy: {busy} · Grip: {grip}",
+                busy=busy_text,
+                grip=grip_text,
+            )
         if isinstance(force, (int, float)) and force >= 0:
             meta_text = t("{meta} · Force: {force:.0f} N", meta=meta_text, force=float(force))
 
@@ -217,6 +187,9 @@ def register_gripper_callbacks(app: Dash) -> None:
             return t("Gripper is offline."), no_update, no_update
         if codroid_picker_module.SESSION.gripper is None:
             return t("Gripper is unavailable."), no_update, no_update
+        adapter = codroid_picker_module.SESSION.gripper_adapter
+        if adapter is None or not adapter.capabilities.orientation:
+            return t("Finger orientation is only available for 2FG7."), no_update, no_update
         if orientation not in {"inward", "outward"}:
             return no_update, no_update, no_update
         if codroid_picker_module.SESSION.gripper_orientation == orientation:
@@ -270,10 +243,11 @@ def register_gripper_callbacks(app: Dash) -> None:
         status = (gripper_state or {}).get("status", "offline")
         if status != "online" or codroid_picker_module.SESSION.gripper is None:
             return t("Holding object: unknown (gripper offline)")
+        gripped = codroid_picker_module.SESSION.gripper_grip_detected
+        if gripped is None:
+            return t("Holding object: unknown")
         try:
-            t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
-            is_gripped = bool(
-                codroid_picker_module.SESSION.gripper.isGripped(t_index=t_index))
+            is_gripped = bool(gripped)
             codroid_picker_module.SESSION.robot_has_object = is_gripped
             return t("Holding object: {state}", state=(t("yes") if is_gripped else t("no")))
         except Exception as exc:  # noqa: BLE001
@@ -301,18 +275,22 @@ def register_gripper_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
 
         status = (gripper_state or {}).get("status", "offline")
+        capabilities = (gripper_state or {}).get("capabilities") or {}
         disabled = status != "online" or bool(
             codroid_picker_module.SESSION.gripper_busy)
+        width_disabled = disabled or not bool(capabilities.get("width") or capabilities.get("vacuum"))
+        force_disabled = disabled or not bool(capabilities.get("force"))
+        speed_disabled = disabled or not bool(capabilities.get("speed"))
         return (
-            disabled,
-            disabled,
-            disabled,
-            disabled,
-            disabled,
-            disabled,
-            disabled,
-            disabled,
-            disabled,
+            width_disabled,
+            force_disabled,
+            speed_disabled,
+            width_disabled,
+            width_disabled,
+            force_disabled,
+            force_disabled,
+            speed_disabled,
+            speed_disabled,
         )
 
     @app.callback(
@@ -326,10 +304,11 @@ def register_gripper_callbacks(app: Dash) -> None:
 
         if (gripper_state or {}).get("status") != "online":
             return no_update, no_update
-        if codroid_picker_module.SESSION.gripper is None:
+        min_width = codroid_picker_module.SESSION.gripper_min_width
+        max_width = codroid_picker_module.SESSION.gripper_max_width
+        if min_width is None or max_width is None:
             return no_update, no_update
-        min_width, max_width = codroid_picker_module._resolve_gripper_limits()
-        return min_width, max_width
+        return float(min_width), float(max_width)
 
     @app.callback(
         Output("footer-gripper-status", "children"),
@@ -369,6 +348,13 @@ def register_gripper_callbacks(app: Dash) -> None:
                 width = codroid_picker_module._safe_float(
                     footer_width, codroid_picker_module.GRIPPER_CLOSE_WIDTH_DEFAULT
                 )
+                adapter = codroid_picker_module.SESSION.gripper_adapter
+                if adapter is not None and adapter.capabilities.vacuum:
+                    return codroid_picker_module._command_gripper(
+                        width,
+                        "moved",
+                        vacuum_setpoint=int(width),
+                    )
                 return codroid_picker_module._command_gripper(
                     width,
                     "moved",

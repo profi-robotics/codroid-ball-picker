@@ -14,6 +14,7 @@ def register_detection_callbacks(app: Dash) -> None:
         Input("detection-confidence", "value"),
         Input("detection-iou", "value"),
         Input("detection-max", "value"),
+        Input("detection-frame-skip", "value"),
         Input("detection-classes", "value"),
         State("detection-confidence", "value"),
         prevent_initial_call=True,
@@ -22,6 +23,7 @@ def register_detection_callbacks(app: Dash) -> None:
         confidence: Optional[float],
         iou: Optional[float],
         max_detections: Optional[float],
+        frame_skip: Optional[float],
         class_filter: Optional[str],
         current_confidence: Optional[float],
     ) -> float:
@@ -35,6 +37,7 @@ def register_detection_callbacks(app: Dash) -> None:
         SESSION.detection_confidence = _safe_float(confidence, 0.4)
         SESSION.detection_iou = _safe_float(iou, 0.45)
         SESSION.detection_max = _safe_int(max_detections, 10)
+        SESSION.detection_frame_skip = max(_safe_int(frame_skip, 1), 1)
         SESSION.detection_classes = class_filter
         return SESSION.detection_confidence
 
@@ -47,6 +50,7 @@ def register_detection_callbacks(app: Dash) -> None:
         State("detection-confidence", "value"),
         State("detection-iou", "value"),
         State("detection-max", "value"),
+        State("detection-frame-skip", "value"),
         State("detection-classes", "value"),
         prevent_initial_call=True,
     )
@@ -55,6 +59,7 @@ def register_detection_callbacks(app: Dash) -> None:
         confidence: Optional[float],
         iou: Optional[float],
         max_detections: Optional[float],
+        frame_skip: Optional[float],
         class_filter: Optional[str],
     ) -> Tuple[str, list, list, Optional[str]]:
         """Run object detection on the current camera frame."""
@@ -78,6 +83,7 @@ def register_detection_callbacks(app: Dash) -> None:
         conf_value = _safe_float(confidence, 0.4)
         iou_value = _safe_float(iou, 0.45)
         max_value = _safe_int(max_detections, 10)
+        SESSION.detection_frame_skip = max(_safe_int(frame_skip, 1), 1)
         try:
             detections = _run_detection(
                 frame, conf_value, iou_value, max_value, class_filter)

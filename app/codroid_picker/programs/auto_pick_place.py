@@ -34,6 +34,7 @@ from app.codroid_picker.robot_motion import (
     log_move_target,
     resolve_gripper_limits,
 )
+from app.codroid_picker.robot_helpers import is_gripper_connected
 from app.codroid_picker.pick_place_helpers import build_drop_poses, select_closest_detection
 from app.codroid_picker.gripper_utils import await_grip_status
 from app.codroid_picker.persistence import _record_pick_cycle
@@ -48,6 +49,7 @@ from app.codroid_picker.auto_plan_state import (
     publish_auto_plan_snapshot,
     update_auto_plan_snapshot,
 )
+from app.codroid_picker.session import normalize_auto_label_profile
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +72,41 @@ def _record_cycle_metrics_safe(success: bool, cycle_started_at: Optional[float])
             SESSION.pick_successes += 1
         else:
             SESSION.pick_failures += 1
+
+
+def _profile_for_label(
+    label: str,
+    profiles: dict,
+    *,
+    approach_mm: float,
+    pick_mm: float,
+    settings,
+) -> dict:
+    """Resolve per-label pick settings with global fallbacks."""
+    default_profile = normalize_auto_label_profile(
+        {
+            "approach_mm": approach_mm,
+            "pick_mm": pick_mm,
+            "gripper_close_mm": settings.gripper_profile.close_width_default,
+            "gripper_force": min(
+                settings.gripper_profile.force_default * 2,
+                settings.gripper_profile.force_max,
+            ),
+            "gripper_speed": 80.0,
+            "soft_gentle": getattr(settings.gripper_profile, "gentle_default", False),
+            "vacuum_setpoint": getattr(settings.gripper_profile, "vacuum_default", 40),
+            "vacuum_threshold": (
+                getattr(settings.gripper_profile, "vacuum_default", 40)
+                * getattr(settings.gripper_profile, "vacuum_hold_threshold_ratio", 0.8)
+            ),
+            "grip_timeout_s": settings.plate_test_grip_timeout_s,
+        }
+    )
+    raw = profiles.get(label) if isinstance(profiles, dict) else None
+    if not isinstance(raw, dict):
+        return default_profile
+    merged = {**default_profile, **raw}
+    return normalize_auto_label_profile(merged)
 
 
 class AutoPickPlaceProgram(RobotProgram):
@@ -104,9 +141,7 @@ class AutoPickPlaceProgram(RobotProgram):
             return False, "Robot posture stream not available."
 
         # Check gripper
-        gripper = registry().gripper or SESSION.gripper
-        gripper_defaults = registry().gripper_defaults
-        if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
+        if not is_gripper_connected():
             return False, "Gripper not connected."
 
         # Check workspace
@@ -259,9 +294,19 @@ class AutoPickPlaceProgram(RobotProgram):
                 target_labels = config.get(
                     "target_labels", settings.auto_target_labels
                 )
+                if isinstance(target_labels, str):
+                    target_labels = [target_labels]
+                target_labels = [
+                    str(label).strip()
+                    for label in target_labels
+                    if str(label).strip()
+                ]
                 # Support legacy single target_label config
                 if "target_label" in config and config["target_label"] not in target_labels:
                     target_labels = [config["target_label"]]
+                label_profiles = config.get(
+                    "label_profiles", getattr(settings, "auto_label_profiles", {})
+                )
                 drop_ignore_radius_mm = float(
                     config.get("drop_ignore_radius_mm",
                                settings.auto_drop_ignore_radius_mm)
@@ -495,6 +540,14 @@ class AutoPickPlaceProgram(RobotProgram):
 
                     target = candidate.detection
                     target_coord5 = candidate.coord5_xy
+                    target_label = str(target.get("label", "")).strip()
+                    pick_profile = _profile_for_label(
+                        target_label,
+                        label_profiles,
+                        approach_mm=approach_mm,
+                        pick_mm=pick_mm,
+                        settings=settings,
+                    )
                     LOGGER.info(
                         "Auto: selected C-axis %.1f for pick at (%.1f, %.1f)",
                         pick_plan.final_c,
@@ -506,14 +559,21 @@ class AutoPickPlaceProgram(RobotProgram):
                         await self._execute_pick(
                             robot_api,
                             target_coord5=target_coord5,
-                            approach_mm=approach_mm,
-                            pick_mm=pick_mm,
+                            approach_mm=pick_profile["approach_mm"],
+                            pick_mm=pick_profile["pick_mm"],
                             estimate_width=estimate_width,
                             target=target,
                             target_labels=target_labels,
                             tracking_mode=tracking_mode,
                             orientation=run_orientation,
                             final_c=pick_plan.final_c,
+                            gripper_close_mm=pick_profile["gripper_close_mm"],
+                            gripper_force=pick_profile["gripper_force"],
+                            gripper_speed=pick_profile["gripper_speed"],
+                            soft_gentle=pick_profile.get("soft_gentle"),
+                            vacuum_setpoint=pick_profile.get("vacuum_setpoint"),
+                            vacuum_threshold=pick_profile.get("vacuum_threshold"),
+                            grip_timeout_s=pick_profile["grip_timeout_s"],
                         )
                         await self._execute_drop(
                             robot_api,
@@ -604,6 +664,13 @@ class AutoPickPlaceProgram(RobotProgram):
         tracking_mode: str,
         orientation: Tuple[float, float, float],
         final_c: float,
+        gripper_close_mm: Optional[float] = None,
+        gripper_force: Optional[float] = None,
+        gripper_speed: Optional[float] = None,
+        soft_gentle: Optional[bool] = None,
+        vacuum_setpoint: Optional[float] = None,
+        vacuum_threshold: Optional[float] = None,
+        grip_timeout_s: Optional[float] = None,
     ) -> None:
         """Execute a pick operation."""
         from app.codroid_picker.session import SESSION
@@ -614,7 +681,11 @@ class AutoPickPlaceProgram(RobotProgram):
         use_segment_tracking = tracking_mode == "segment"
 
         # Determine gripper width
-        gripper_close = settings.gripper_profile.close_width_default
+        gripper_close = (
+            float(gripper_close_mm)
+            if gripper_close_mm is not None
+            else settings.gripper_profile.close_width_default
+        )
         if estimate_width and "bbox" in target:
             # Estimate width from bounding box
             bbox = target["bbox"]
@@ -820,15 +891,44 @@ class AutoPickPlaceProgram(RobotProgram):
 
         # Close gripper
         await wait_for_operation_resume(self._run_id)
-        grip_force = min(
-            settings.gripper_profile.force_default * 2,
-            settings.gripper_profile.force_max,
+        grip_force = (
+            int(gripper_force)
+            if gripper_force is not None
+            else min(
+                settings.gripper_profile.force_default * 2,
+                settings.gripper_profile.force_max,
+            )
         )
-        result = command_gripper(gripper_close, "closed", force=grip_force)
+        grip_speed = int(gripper_speed) if gripper_speed is not None else 80
+        gripper_kwargs = {"force": grip_force, "speed": grip_speed}
+        if soft_gentle is not None:
+            gripper_kwargs["gentle"] = soft_gentle
+        if vacuum_setpoint is not None:
+            gripper_kwargs["vacuum_setpoint"] = int(vacuum_setpoint)
+        if vacuum_threshold is not None:
+            gripper_kwargs["vacuum_threshold"] = vacuum_threshold
+        result = command_gripper(gripper_close, "closed", **gripper_kwargs)
         LOGGER.info(f"Gripper close result: {result}")
-        grip_timeout_s = max(float(settings.plate_test_grip_timeout_s), 0.5)
-        gripped = await await_grip_status(grip_timeout_s)
-        LOGGER.info("Auto: grip verification result=%s timeout=%.2fs", gripped, grip_timeout_s)
+        resolved_grip_timeout_s = max(
+            float(
+                grip_timeout_s
+                if grip_timeout_s is not None
+                else settings.plate_test_grip_timeout_s
+            ),
+            0.5,
+        )
+        if vacuum_threshold is None:
+            gripped = await await_grip_status(resolved_grip_timeout_s)
+        else:
+            gripped = await await_grip_status(
+                resolved_grip_timeout_s,
+                vacuum_threshold=vacuum_threshold,
+            )
+        LOGGER.info(
+            "Auto: grip verification result=%s timeout=%.2fs",
+            gripped,
+            resolved_grip_timeout_s,
+        )
 
         # Retreat
         await wait_for_operation_resume(self._run_id)
@@ -1010,13 +1110,13 @@ class AutoPickPlaceProgram(RobotProgram):
         LOGGER.info(f"Gripper open result: {result}")
 
         # Wait for gripper to finish
-        gripper = registry().gripper
+        adapter = SESSION.gripper_adapter
         gripper_defaults = registry().gripper_defaults
-        if gripper is not None and gripper.isConnected(t_index=gripper_defaults["t_index"]):
+        if adapter is not None and adapter.is_connected(t_index=gripper_defaults["t_index"]):
             max_polls = 20  # 2 seconds max
             for _ in range(max_polls):
                 try:
-                    if not gripper.isBusy(t_index=gripper_defaults["t_index"]):
+                    if not adapter.is_busy(t_index=gripper_defaults["t_index"]):
                         break
                 except Exception:
                     pass

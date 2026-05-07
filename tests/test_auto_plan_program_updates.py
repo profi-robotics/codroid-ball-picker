@@ -127,6 +127,55 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         updated_stages = [call.kwargs.get("stage") for call in update_mock.call_args_list]
         self.assertIn("cycle_complete", updated_stages)
 
+    async def test_execute_pick_uses_label_specific_grip_parameters(self) -> None:
+        program = AutoPickPlaceProgram()
+        fake_registry = _FakeRegistry()
+
+        with (
+            patch("app.codroid_picker.programs.auto_pick_place.registry", return_value=fake_registry),
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.wait_for_operation_resume",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(program, "_move_linear_with_hold", new=AsyncMock(return_value=None)) as move_mock,
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.command_gripper",
+                return_value="closed",
+            ) as gripper_mock,
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.await_grip_status",
+                new=AsyncMock(return_value=True),
+            ) as grip_status_mock,
+            patch("app.codroid_picker.programs.auto_pick_place.publish_auto_plan_snapshot"),
+        ):
+            await program._execute_pick(
+                _FakeRobotAPI(),
+                target_coord5=(12.0, 22.0),
+                approach_mm=-44.0,
+                pick_mm=4.0,
+                estimate_width=False,
+                target={"label": "cube"},
+                target_labels=["cube"],
+                tracking_mode="move",
+                orientation=(0.0, 0.0, 0.0),
+                final_c=15.0,
+                gripper_close_mm=17.0,
+                gripper_force=33.0,
+                gripper_speed=12.0,
+                grip_timeout_s=1.7,
+            )
+
+        move_targets = [call.args[1] for call in move_mock.call_args_list]
+        self.assertTrue(any(target["z"] == -44.0 for target in move_targets))
+        self.assertTrue(any(target["z"] == 4.0 for target in move_targets))
+        gripper_mock.assert_any_call(
+            17.0,
+            "closed",
+            force=33,
+            speed=12,
+        )
+        grip_status_mock.assert_awaited_with(1.7)
+
 
 if __name__ == "__main__":
     unittest.main()

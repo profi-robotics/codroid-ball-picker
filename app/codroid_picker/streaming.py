@@ -1,32 +1,32 @@
 """Streaming infrastructure for the calibration UI.
 
-This module handles camera streaming, video feed management, and frame processing
-for the calibration interface.
+This module handles camera streaming and frame processing for the calibration
+interface.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import platform
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Optional
 
-import cv2
 import numpy as np
 
 from app.codroid_picker.session import SESSION
 from app.codroid_picker.utils import safe_float, safe_int
-from vision.stream import DepthAIFrameStream, StreamConfig
+from vision.stream import DepthAIFrameStream, HostCameraFrameStream, StreamConfig
 
 LOGGER = logging.getLogger(__name__)
 _CAMERA_START_MAX_ATTEMPTS = 8
 _CAMERA_START_RETRY_DELAY_S = 2.0
 _RGB_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS", "30"))
 _RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "30"))
-_MJPEG_MAX_FPS = float(os.getenv("CODROID_MJPEG_MAX_FPS", "30"))
+_OVERLAY_MAX_FPS = float(os.getenv("CODROID_OVERLAY_MAX_FPS", "10"))
 _RETRYABLE_CAMERA_ERROR_SUBSTRINGS = (
     "no available devices",
     "device already closed or disconnected",
@@ -52,68 +52,6 @@ class OverlayTask:
     runner: Callable[[np.ndarray], OverlayResult]
 
 
-class MotionJPEGStream:
-    """Manager for Motion JPEG video streaming for fullscreen video playback."""
-
-    def __init__(self, frame_rate: float = 30.0, min_push_interval_s: Optional[float] = None):
-        self.frame_rate = frame_rate
-        self.frame_queue: list[bytes] = []
-        self.lock = threading.Lock()
-        self.max_queue_size = 3
-        self.frame_count = 0
-        if min_push_interval_s is None:
-            max_fps = _MJPEG_MAX_FPS if _MJPEG_MAX_FPS > 0 else 30.0
-            min_push_interval_s = 1.0 / max_fps
-        self.min_push_interval_s = min_push_interval_s
-        self._last_push_ts = 0.0
-        self._fps = 0.0
-        self._last_fps_ts = 0.0
-        self._frame_index = 0
-
-    def add_frame(self, frame: np.ndarray) -> None:
-        """Add a frame to the stream queue, dropping frames if pushing too fast."""
-        now = time.time()
-        if now - self._last_push_ts < self.min_push_interval_s:
-            return
-        success, buffer = cv2.imencode(".jpg", frame)
-        if not success:
-            return
-
-        with self.lock:
-            self.frame_queue.append(buffer.tobytes())
-            self.frame_count += 1
-            self._frame_index += 1
-            self._last_push_ts = now
-            if self._last_fps_ts > 0.0:
-                dt = now - self._last_fps_ts
-                if dt > 0:
-                    inst_fps = 1.0 / dt
-                    self._fps = 0.9 * self._fps + 0.1 * inst_fps
-            self._last_fps_ts = now
-            # Keep only recent frames
-            if len(self.frame_queue) > self.max_queue_size:
-                self.frame_queue.pop(0)
-
-    def get_frame(self) -> Optional[bytes]:
-        """Get the most recent frame from the queue."""
-        with self.lock:
-            if self.frame_queue:
-                return self.frame_queue[-1]
-        return None
-
-    def get_frame_with_index(self) -> tuple[Optional[bytes], int]:
-        """Get the latest frame bytes and monotonic frame index."""
-        with self.lock:
-            if self.frame_queue:
-                return self.frame_queue[-1], self._frame_index
-            return None, self._frame_index
-
-    def get_fps(self) -> float:
-        """Get the current FPS of the stream."""
-        with self.lock:
-            return self._fps
-
-
 class FrameProcessor:
     """Background processor that keeps only the newest request and result."""
 
@@ -123,6 +61,7 @@ class FrameProcessor:
         self._queue = deque(maxlen=max_queue)
         self._lock = threading.Lock()
         self._latest: dict[str, OverlayResult] = {}
+        self._last_submit_ts = 0.0
         self._running = True
         self._thread = threading.Thread(
             target=self._worker, name="FrameProcessor", daemon=True
@@ -131,6 +70,10 @@ class FrameProcessor:
 
     def submit(self, task: OverlayTask, frame: np.ndarray) -> None:
         """Submit a frame processing task."""
+        now = time.time()
+        if _OVERLAY_MAX_FPS > 0 and now - self._last_submit_ts < (1.0 / _OVERLAY_MAX_FPS):
+            return
+        self._last_submit_ts = now
         # Drop older pending tasks and keep the newest request only.
         with self._lock:
             self._queue.clear()
@@ -152,11 +95,7 @@ class FrameProcessor:
             self._thread.join(timeout=1.0)
 
     def _worker(self) -> None:
-        """Background worker thread for processing frames.
-
-        After computing the overlay, this worker pushes the result directly
-        to MJPEG_STREAM, decoupling video streaming from Dash callback timing.
-        """
+        """Background worker thread for processing frames."""
         while self._running:
             task: Optional[tuple[str, np.ndarray,
                                  Callable[[np.ndarray], OverlayResult]]] = None
@@ -176,8 +115,6 @@ class FrameProcessor:
                 result = OverlayResult(frame, f"Processing error: {exc}", "--")
             with self._lock:
                 self._latest[key] = result
-            # Push directly to MJPEG stream - decouples video from Dash callbacks
-            MJPEG_STREAM.add_frame(result.vis)
 
 
 class RawFrameStore:
@@ -186,11 +123,15 @@ class RawFrameStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._latest: Optional[np.ndarray] = None
+        self._frame_index = 0
+        self._last_update_ts = 0.0
 
     def add_frame(self, frame: np.ndarray) -> None:
         """Store the latest raw frame."""
         with self._lock:
-            self._latest = frame.copy()
+            self._latest = frame
+            self._frame_index += 1
+            self._last_update_ts = time.time()
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """Return a copy of the most recent raw frame."""
@@ -199,21 +140,28 @@ class RawFrameStore:
                 return None
             return self._latest.copy()
 
+    def get_latest_frame_with_metadata(self) -> tuple[Optional[np.ndarray], int, float]:
+        """Return the latest frame reference plus its monotonic index and timestamp."""
+        with self._lock:
+            if self._latest is None:
+                return None, self._frame_index, self._last_update_ts
+            return self._latest, self._frame_index, self._last_update_ts
 
-def _format_fps(capture_fps: float, stream_fps: float) -> str:
+
+def _format_fps(capture_fps: float) -> str:
     """Format FPS for display."""
     cap_text = f"{capture_fps:.1f}" if capture_fps > 0 else "--"
-    stream_text = f"{stream_fps:.1f}" if stream_fps > 0 else "--"
-    return f"FPS — capture: {cap_text}, stream: {stream_text}"
+    return f"FPS — capture: {cap_text}"
 
 
 # Global streaming instances
-MJPEG_STREAM = MotionJPEGStream()
 FRAME_PROCESSOR = FrameProcessor()
 RAW_STREAM = RawFrameStore()
 _ACTIVE_OVERLAY_TASK: Optional[OverlayTask] = None
 _OVERLAY_TASK_LOCK = threading.Lock()
 _STREAM_LIFECYCLE_LOCK = threading.RLock()
+_CAMERA_AUTOSTART_LOCK = threading.Lock()
+_CAMERA_AUTOSTART_THREAD: Optional[threading.Thread] = None
 
 
 def _publish_raw_frame(frame: np.ndarray) -> None:
@@ -238,10 +186,81 @@ def process_camera_frame(frame: np.ndarray) -> None:
     """Process camera frames on arrival from the DepthAI reader thread."""
     _publish_raw_frame(frame)
     task = get_active_overlay_task()
-    if task is None:
-        MJPEG_STREAM.add_frame(frame)
+    if task is not None:
+        FRAME_PROCESSOR.submit(task, frame)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean environment flag."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def schedule_camera_autostart(delay_s: float = 0.25) -> bool:
+    """Start the configured camera from a background thread.
+
+    The UI switch defaults to enabled, but relying on Dash's initial callback
+    for camera startup is fragile while the page is mounting. Running the same
+    startup path in a daemon thread keeps WebRTC fed without blocking the first
+    usable page render.
+    """
+    global _CAMERA_AUTOSTART_THREAD
+    if not _env_flag("CODROID_CAMERA_AUTOSTART", True):
+        LOGGER.info("Camera autostart disabled by CODROID_CAMERA_AUTOSTART")
+        return False
+
+    with _CAMERA_AUTOSTART_LOCK:
+        if (
+            _CAMERA_AUTOSTART_THREAD is not None
+            and _CAMERA_AUTOSTART_THREAD.is_alive()
+        ):
+            return False
+        _CAMERA_AUTOSTART_THREAD = threading.Thread(
+            target=_camera_autostart_worker,
+            args=(delay_s,),
+            name="CameraAutostart",
+            daemon=True,
+        )
+        _CAMERA_AUTOSTART_THREAD.start()
+        return True
+
+
+def _camera_autostart_worker(delay_s: float) -> None:
+    """Camera autostart worker entrypoint."""
+    if delay_s > 0:
+        time.sleep(delay_s)
+
+    stream = SESSION.camera_stream
+    if stream is not None and stream.is_running():
         return
-    FRAME_PROCESSOR.submit(task, frame)
+
+    from app.settings import DEFAULT_RESOLUTION, DEFAULT_FPS, SETTINGS
+    source = getattr(SETTINGS, "camera_source", "oak")
+    if _normalize_camera_source(source) == "host" and platform.system() == "Darwin":
+        # macOS AVFoundation permission prompts must run on the main run loop.
+        # Local testing grants permission separately; app worker threads should
+        # only open the already-authorized device.
+        os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"
+
+    try:
+        message = start_camera_stream(
+            DEFAULT_RESOLUTION[0],
+            DEFAULT_RESOLUTION[1],
+            DEFAULT_FPS,
+            lock_af=False,
+            enable_depth_override=False,
+            source=source,
+            host_camera_index=int(getattr(SETTINGS, "host_camera_index", 0) or 0),
+        )
+        LOGGER.info("Camera autostart result: %s", message)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.error("Camera autostart failed: %s", exc, exc_info=True)
+        SESSION.camera_last_error_message = str(exc)
+        SESSION.camera_last_error_key = "Camera startup error: {error}"
+        SESSION.camera_last_error_params = {"error": str(exc)}
+        SESSION.camera_last_error_status = "error"
 
 
 def _is_retryable_camera_error(exc: Exception) -> bool:
@@ -250,9 +269,25 @@ def _is_retryable_camera_error(exc: Exception) -> bool:
     return any(token in message for token in _RETRYABLE_CAMERA_ERROR_SUBSTRINGS)
 
 
-def start_camera_stream(width: Optional[float], height: Optional[float], fps: Optional[float],
-                        lock_af: bool = False, frame_hook: Optional[Callable] = None,
-                        enable_depth_override: Optional[bool] = None) -> str:
+def _normalize_camera_source(source: Optional[str]) -> str:
+    """Return a supported camera source key."""
+    normalized = (source or "").strip().lower()
+    if normalized in {"host", "webcam", "opencv", "local"}:
+        return "host"
+    return "oak"
+
+
+def start_camera_stream(
+    width: Optional[float],
+    height: Optional[float],
+    fps: Optional[float],
+    lock_af: bool = False,
+    frame_hook: Optional[Callable] = None,
+    enable_depth_override: Optional[bool] = None,
+    *,
+    source: Optional[str] = None,
+    host_camera_index: Optional[int] = None,
+) -> str:
     """Start the camera stream with the specified configuration."""
     with _STREAM_LIFECYCLE_LOCK:
         stop_camera_stream()
@@ -262,10 +297,15 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
         resolution = (safe_int(width, DEFAULT_RESOLUTION[0]), safe_int(
             height, DEFAULT_RESOLUTION[1]))
         fps_value = safe_float(fps, DEFAULT_FPS)
+        camera_source = _normalize_camera_source(
+            source or getattr(SETTINGS, "camera_source", "oak")
+        )
         if enable_depth_override is None:
             enable_depth = bool(getattr(SETTINGS, "camera_enable_depth", False))
         else:
             enable_depth = bool(enable_depth_override)
+        if camera_source == "host":
+            enable_depth = False
         fast_depth = bool(getattr(SETTINGS, "camera_fast_depth", True))
         requested_fps = fps_value
         fps_cap = _RGB_WITH_DEPTH_MAX_FPS if enable_depth else _RGB_MAX_FPS
@@ -284,24 +324,49 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
         last_error: Optional[Exception] = None
         for attempt in range(1, _CAMERA_START_MAX_ATTEMPTS + 1):
             try:
-                # Create and start stream
-                stream = DepthAIFrameStream(
-                    StreamConfig(
-                        resolution=resolution,
-                        fps=fps_value,
-                        lock_af=lock_af,
-                        enable_depth=enable_depth,
-                        fast_depth=fast_depth,
-                    ),
-                    frame_hook=hook,
+                config = StreamConfig(
+                    resolution=resolution,
+                    fps=fps_value,
+                    lock_af=lock_af and camera_source == "oak",
+                    enable_depth=enable_depth,
+                    fast_depth=fast_depth,
                 )
+                if camera_source == "host":
+                    stream = HostCameraFrameStream(
+                        config,
+                        frame_hook=hook,
+                        camera_index=safe_int(
+                            host_camera_index,
+                            int(getattr(SETTINGS, "host_camera_index", 0) or 0),
+                        ),
+                    )
+                else:
+                    stream = DepthAIFrameStream(
+                        config,
+                        frame_hook=hook,
+                    )
                 stream.start()
                 SESSION.camera_stream = stream
 
+                deadline = time.monotonic() + 2.5
+                while time.monotonic() < deadline:
+                    if stream.status() == "live":
+                        break
+                    if stream.status() == "retrying":
+                        break
+                    time.sleep(0.05)
+
                 device_id = stream.device_id() or "unknown"
+                if stream.status() == "retrying":
+                    last_error = stream.last_error() or "camera unavailable"
+                    return (
+                        f"Camera retrying ({resolution[0]}x{resolution[1]} @ "
+                        f"{fps_value:.1f} FPS): {last_error}"
+                    )
+                device_label = "Host camera" if camera_source == "host" else "MXID"
                 return (
                     f"Camera stream running ({resolution[0]}x{resolution[1]} @ "
-                    f"{fps_value:.1f} FPS, MXID {device_id})."
+                    f"{fps_value:.1f} FPS, {device_label} {device_id})."
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -365,44 +430,15 @@ def get_stream_stats() -> dict:
     if SESSION.camera_stream is None:
         return {
             "capture_fps": 0.0,
-            "stream_fps": 0.0,
-            "formatted_fps": _format_fps(0.0, 0.0),
+            "formatted_fps": _format_fps(0.0),
             "frame_count": 0,
             "status": "stopped"
         }
 
+    capture_fps = SESSION.camera_stream.get_fps()
     return {
-        "capture_fps": 0.0,  # Would need to be implemented in DepthAIFrameStream
-        "stream_fps": 0.0,   # Would need to be implemented in DepthAIFrameStream
-        "formatted_fps": _format_fps(0.0, 0.0),
-        "frame_count": 0,    # Would need to be implemented in DepthAIFrameStream
+        "capture_fps": capture_fps,
+        "formatted_fps": _format_fps(capture_fps),
+        "frame_count": 0,
         "status": "running"
     }
-
-
-def create_video_feed_generator():
-    """Create a generator for the video feed endpoint."""
-    def generate():
-        boundary = b'--frame\r\n'
-        frame_count = 0
-        last_frame_index = -1
-        while True:
-            frame_data, frame_index = MJPEG_STREAM.get_frame_with_index()
-
-            if not frame_data or frame_index == last_frame_index:
-                time.sleep(0.005)
-                continue
-
-            last_frame_index = frame_index
-            frame_count += 1
-            if frame_count == 1:
-                LOGGER.debug(
-                    "/video_feed serving first frame, size=%s bytes", len(frame_data))
-
-            yield boundary
-            yield b'Content-Type: image/jpeg\r\n'
-            yield b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n'
-            yield frame_data
-            yield b'\r\n'
-
-    return generate()

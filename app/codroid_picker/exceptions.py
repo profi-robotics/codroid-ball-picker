@@ -36,3 +36,15 @@ class TrackingLost(Exception):
 
     pass
 
+
+class OperatorSafeError(Exception):
+    """Base structured error with user-facing and technical context."""
+
+    def __init__(self, public_message: str, *, detail: str | None = None) -> None:
+        super().__init__(detail or public_message)
+        self.public_message = public_message
+        self.detail = detail or public_message
+
+
+class GripperCommandError(OperatorSafeError):
+    """Raised when a gripper command cannot be executed safely."""

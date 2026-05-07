@@ -74,9 +74,10 @@ def _robot_posture_ready(
         max_age_s = settings.SETTINGS.robot_posture_max_age_s
 
     session = _get_robot_session()
-    if not session.posture_seen():
+    snapshot = session.snapshot()
+    if not snapshot.posture_seen:
         return False, "Robot posture stream not available yet."
-    age = session.position_snapshot().age_seconds()
+    age = snapshot.posture_age_seconds()
     if age > max_age_s:
         return False, f"Robot posture stale ({age:.1f}s old)."
     return True, "Robot posture stream healthy."
@@ -84,7 +85,7 @@ def _robot_posture_ready(
 
 def _current_coordinate_id(session: RobotSession) -> Optional[int]:
     """Get the current coordinate ID from robot status."""
-    status = session.robot_status_snapshot()
+    status = session.snapshot().robot_status
     if not isinstance(status, dict):
         return None
     coord_id = status.get("CoordinateId")
@@ -117,7 +118,7 @@ def _check_coordinate_id(expected_id: int) -> Tuple[bool, Optional[int]]:
         (matched, current_id): True if matched, and the current coordinate ID.
     """
     session = _get_robot_session()
-    status = session.robot_status_snapshot()
+    status = session.snapshot().robot_status
     coord_id = None
     if isinstance(status, dict):
         coord_id = status.get("CoordinateId")

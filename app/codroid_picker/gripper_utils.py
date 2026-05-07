@@ -18,6 +18,7 @@ from app.codroid_picker.robot_helpers import (
     is_recently_synced,
     safe_int,
 )
+from app.codroid_picker.gripper_adapters import adapter_for_key
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,18 +73,43 @@ async def _await_grip_status(timeout_s: float) -> bool:
     return await await_grip_status(timeout_s)
 
 
-async def await_grip_status(timeout_s: float) -> bool:
-    """Poll the gripper until it reports a gripped state or timeout."""
+def _active_gripper_adapter():
+    """Return the connected gripper adapter, creating a 2FG7 fallback if needed."""
     session = registry().session
+    if session.gripper_adapter is not None:
+        return session.gripper_adapter
+    if session.gripper is None:
+        return None
+    settings = registry().settings
+    key = getattr(settings, "gripper_type", "twofg7")
+    if key == "auto":
+        key = "twofg7"
+    try:
+        session.gripper_adapter = adapter_for_key(key, session.gripper)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("Unable to build gripper adapter fallback: %s", exc)
+        return None
+    return session.gripper_adapter
+
+
+async def await_grip_status(
+    timeout_s: float,
+    *,
+    vacuum_threshold: Optional[float] = None,
+) -> bool:
+    """Poll the gripper until it reports a gripped state or timeout."""
+    adapter = _active_gripper_adapter()
     gripper_defaults = registry().gripper_defaults
-    gripper = session.gripper
-    if gripper is None:
+    if adapter is None:
         return False
     t_index = gripper_defaults["t_index"]
     deadline = time.monotonic() + max(timeout_s, 0.1)
     while time.monotonic() < deadline:
         try:
-            if gripper.isGripped(t_index=t_index):
+            if adapter.is_holding(
+                t_index=t_index,
+                vacuum_threshold=vacuum_threshold,
+            ):
                 return True
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("Failed to poll gripper grip state: %s", exc)
@@ -103,45 +129,31 @@ def _command_gripper(
     *,
     force: Optional[int] = None,
     speed: Optional[int] = None,
+    gentle: Optional[bool] = None,
+    vacuum_setpoint: Optional[int] = None,
+    vacuum_threshold: Optional[float] = None,
     prevent_overclose: bool = False,
 ) -> str:
     """Move gripper to target width and return status text."""
     session = registry().session
     gripper_defaults = registry().gripper_defaults
-    if session.gripper is None or not session.gripper.isConnected(t_index=gripper_defaults["t_index"]):
+    adapter = _active_gripper_adapter()
+    if adapter is None or not adapter.is_connected(t_index=gripper_defaults["t_index"]):
         return "Gripper is not connected. Enable gripper in Setup menu."
 
     try:
-        safe_width = float(target_width)
-        min_width, max_width = _resolve_gripper_limits()
-        if min_width > max_width:
-            min_width, max_width = max_width, min_width
-        if prevent_overclose:
-            current_width = session.gripper.get_ext_width(
-                t_index=gripper_defaults["t_index"]
-            )
-            if isinstance(current_width, (int, float)) and current_width >= 0:
-                if safe_width < current_width:
-                    safe_width = current_width
-        safe_width = min(max(safe_width, min_width), max_width)
-
-        applied_force = _safe_int(force, GRIPPER_FORCE_DEFAULT)
-        applied_force = min(
-            max(applied_force, GRIPPER_FORCE_MIN), GRIPPER_FORCE_MAX
-        )
-        applied_speed = _safe_int(speed, 80)
-
-        session.gripper.grip(
+        message = adapter.command(
+            float(target_width),
+            action_label,
             t_index=gripper_defaults["t_index"],
-            t_width=safe_width,
-            n_force=applied_force,
-            p_speed=applied_speed,
-            f_wait=True,
+            force=_safe_int(force, GRIPPER_FORCE_DEFAULT) if force is not None else None,
+            speed=_safe_int(speed, 80) if speed is not None else None,
+            gentle=gentle,
+            vacuum_setpoint=vacuum_setpoint,
+            vacuum_threshold=vacuum_threshold,
+            prevent_overclose=prevent_overclose,
         )
-        session.last_action = (
-            f"Gripper {action_label} to {safe_width:.1f} mm @ "
-            f"{applied_force} N / {applied_speed}% speed."
-        )
+        session.last_action = message
         return session.last_action
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Gripper command failed")
@@ -158,17 +170,21 @@ def _prepare_gripper_for_calibration() -> None:
     session = registry().session
     gripper_defaults = registry().gripper_defaults
     session.robot_calibration_gripper_width = None
-    gripper = session.gripper
-    if gripper is not None:
+    adapter = _active_gripper_adapter()
+    if adapter is not None:
         try:
-            width = gripper.get_ext_width(
-                t_index=gripper_defaults["t_index"])
+            telemetry = adapter.read_telemetry(t_index=gripper_defaults["t_index"])
+            width = telemetry.get("width")
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug(
                 "Unable to read gripper width before calibration: %s", exc)
         else:
             if isinstance(width, (int, float)):
                 session.robot_calibration_gripper_width = float(width)
+    if adapter is not None and adapter.capabilities.vacuum:
+        response = _command_gripper(0.0, "opened")
+        LOGGER.debug("Calibration vacuum gripper released: %s", response)
+        return
     response = _command_gripper(
         GRIPPER_CALIBRATION_WIDTH_MM,
         "prepping for calibration",
@@ -182,6 +198,11 @@ def _restore_calibration_gripper_width() -> None:
     """Restore gripper width saved prior to calibration."""
     session = registry().session
     width = session.robot_calibration_gripper_width
+    adapter = _active_gripper_adapter()
+    if adapter is not None and adapter.capabilities.vacuum:
+        response = _command_gripper(0.0, "opened")
+        LOGGER.debug("Calibration vacuum gripper released after calibration: %s", response)
+        return
     if width is None:
         return
     response = _command_gripper(

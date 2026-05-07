@@ -8,6 +8,7 @@ import faulthandler
 import logging
 import sys
 import os
+import platform
 import time
 import importlib.util
 
@@ -51,6 +52,14 @@ def cleanup_on_reload():
             logger.info("Camera stream closed")
         except Exception as exc:
             logger.error("Failed to close camera stream: %s", exc)
+
+        # Close WebRTC peer connections before resetting singletons
+        try:
+            from app.codroid_picker.webrtc import close_webrtc_video_service
+            close_webrtc_video_service()
+            logger.info("WebRTC video service closed")
+        except Exception as exc:
+            logger.error("Failed to close WebRTC video service: %s", exc)
 
         # Close robot session
         try:
@@ -185,6 +194,38 @@ def main() -> None:
 
     # Create and run the app
     app = getattr(codroid_picker, "app", None) or codroid_picker.create_app()
+    try:
+        settings = getattr(codroid_picker, "SETTINGS", None)
+        camera_source = getattr(settings, "camera_source", "oak")
+        if platform.system() == "Darwin" and camera_source == "host":
+            from app.codroid_picker.streaming import start_camera_stream
+
+            message = start_camera_stream(
+                codroid_picker.DEFAULT_RESOLUTION[0],
+                codroid_picker.DEFAULT_RESOLUTION[1],
+                codroid_picker.DEFAULT_FPS,
+                lock_af=False,
+                enable_depth_override=False,
+                source=camera_source,
+                host_camera_index=getattr(settings, "host_camera_index", 0),
+            )
+            logging.info("Camera autostart result: %s", message)
+        else:
+            from app.codroid_picker.streaming import schedule_camera_autostart
+
+            scheduled = schedule_camera_autostart()
+            if scheduled:
+                logging.info("Camera autostart scheduled")
+    except Exception as exc:  # noqa: BLE001
+        logging.error("Failed to start camera automatically: %s", exc)
+        try:
+            from app.codroid_picker.streaming import schedule_camera_autostart
+
+            if schedule_camera_autostart(delay_s=1.0):
+                logging.info("Camera retry autostart scheduled")
+        except Exception as retry_exc:  # noqa: BLE001
+            logging.error("Failed to schedule camera retry autostart: %s", retry_exc)
+
     app.run(
         host=args.host,
         port=args.port,

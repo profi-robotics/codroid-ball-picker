@@ -7,7 +7,7 @@ from typing import Optional, Sequence, Tuple
 
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, State, no_update
+from dash import ALL, Dash, Input, Output, State, no_update
 
 from app.codroid_picker.auto_plan_state import DEFAULT_PLAN_STALE_S, get_auto_plan_snapshot
 from app.codroid_picker.i18n import t
@@ -203,8 +203,193 @@ def register_monitoring_callbacks(app: Dash) -> None:
     """Register monitoring-related callbacks with the Dash app."""
 
     @app.callback(
+        Output("auto-label-profile-editor", "children"),
+        Input("auto-target-labels", "value"),
+    )
+    def _render_label_profiles(labels: Optional[list[str]]) -> list:
+        """Render per-label pick/grip profile controls."""
+        from app.codroid_picker.session import (
+            SESSION,
+            normalize_auto_label_profiles,
+        )
+
+        selected = [str(label).strip() for label in labels or [] if str(label).strip()]
+        if not selected:
+            return [
+                dmc.Text(
+                    t("Load a model and choose at least one pick label."),
+                    size="sm",
+                    c="dimmed",
+                )
+            ]
+
+        profiles = normalize_auto_label_profiles(
+            selected, SESSION.auto_config.get("label_profiles")
+        )
+        cards = []
+        for label in selected:
+            profile = profiles[label]
+            cards.append(
+                dmc.Card(
+                    [
+                        dmc.Text(label, fw=600, size="sm"),
+                        dmc.Grid(
+                            [
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "approach_mm",
+                                        },
+                                        label=t("Approach height (mm)"),
+                                        value=profile["approach_mm"],
+                                        min=-200,
+                                        max=0,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "pick_mm",
+                                        },
+                                        label=t("Pick height (mm)"),
+                                        value=profile["pick_mm"],
+                                        min=-50,
+                                        max=200,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "gripper_close_mm",
+                                        },
+                                        label=t("Close width (mm)"),
+                                        value=profile["gripper_close_mm"],
+                                        min=0,
+                                        max=200,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "gripper_force",
+                                        },
+                                        label=t("Grip force (N)"),
+                                        value=profile["gripper_force"],
+                                        min=0,
+                                        max=200,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "gripper_speed",
+                                        },
+                                        label=t("Grip speed (%)"),
+                                        value=profile["gripper_speed"],
+                                        min=1,
+                                        max=100,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "grip_timeout_s",
+                                        },
+                                        label=t("Grip timeout (s)"),
+                                        value=profile["grip_timeout_s"],
+                                        min=0.5,
+                                        max=10,
+                                        step=0.5,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.Switch(
+                                        id={
+                                            "type": "auto-label-profile-toggle",
+                                            "label": label,
+                                            "field": "soft_gentle",
+                                        },
+                                        label=t("Soft gentle grip"),
+                                        checked=bool(profile["soft_gentle"]),
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "vacuum_setpoint",
+                                        },
+                                        label=t("Vacuum setpoint (kPa)"),
+                                        value=profile["vacuum_setpoint"],
+                                        min=1,
+                                        max=80,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                                dmc.GridCol(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "auto-label-profile-field",
+                                            "label": label,
+                                            "field": "vacuum_threshold",
+                                        },
+                                        label=t("Vacuum threshold (kPa)"),
+                                        value=profile["vacuum_threshold"],
+                                        min=1,
+                                        max=80,
+                                        step=1,
+                                        size="sm",
+                                    ),
+                                    span=4,
+                                ),
+                            ],
+                            gutter="xs",
+                        ),
+                    ],
+                    withBorder=True,
+                    radius="md",
+                    padding="sm",
+                )
+            )
+        return cards
+
+    @app.callback(
         Output("auto-config-state", "data"),
-        Input("auto-target-class", "value"),
+        Input("auto-target-labels", "value"),
         Input("auto-drop-ignore-radius", "value"),
         Input("plate-test-approach-height", "value"),
         Input("plate-test-pick-height", "value"),
@@ -213,9 +398,42 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Input("shared-segment-min", "value"),
         Input("shared-segment-max", "value"),
         Input("shared-segment-fraction", "value"),
+        Input("detection-frame-skip", "value"),
+        Input(
+            {
+                "type": "auto-label-profile-field",
+                "label": ALL,
+                "field": ALL,
+            },
+            "value",
+        ),
+        Input(
+            {
+                "type": "auto-label-profile-toggle",
+                "label": ALL,
+                "field": ALL,
+            },
+            "checked",
+        ),
+        State(
+            {
+                "type": "auto-label-profile-field",
+                "label": ALL,
+                "field": ALL,
+            },
+            "id",
+        ),
+        State(
+            {
+                "type": "auto-label-profile-toggle",
+                "label": ALL,
+                "field": ALL,
+            },
+            "id",
+        ),
     )
     def _update_auto_config(
-        target_label: Optional[str],
+        target_labels: Optional[list[str]],
         drop_ignore_radius: Optional[float],
         approach_height: Optional[float],
         pick_height: Optional[float],
@@ -224,15 +442,50 @@ def register_monitoring_callbacks(app: Dash) -> None:
         segment_min: Optional[float],
         segment_max: Optional[float],
         segment_fraction: Optional[float],
+        frame_skip: Optional[float],
+        profile_values: Optional[list[float]],
+        profile_toggle_values: Optional[list[bool]],
+        profile_ids: Optional[list[dict]],
+        profile_toggle_ids: Optional[list[dict]],
     ) -> dict:
         """Update auto operation configuration from UI inputs."""
         import app.codroid_picker as codroid_picker_module
-        from app.codroid_picker.session import SESSION
+        import app.settings as app_settings
+        from app.codroid_picker.session import (
+            SESSION,
+            normalize_auto_label_profiles,
+        )
+
+        selected_labels = [
+            str(label).strip()
+            for label in target_labels or []
+            if str(label).strip()
+        ]
+        if not selected_labels:
+            selected_labels = list(codroid_picker_module.SETTINGS.auto_target_labels)
+        raw_profiles = dict(SESSION.auto_config.get("label_profiles") or {})
+        for field_id, value in zip(profile_ids or [], profile_values or []):
+            label = str(field_id.get("label", "")).strip()
+            field = str(field_id.get("field", "")).strip()
+            if not label or not field:
+                continue
+            raw_profiles.setdefault(label, {})[field] = value
+        for field_id, value in zip(profile_toggle_ids or [], profile_toggle_values or []):
+            label = str(field_id.get("label", "")).strip()
+            field = str(field_id.get("field", "")).strip()
+            if not label or not field:
+                continue
+            raw_profiles.setdefault(label, {})[field] = bool(value)
+        profiles = normalize_auto_label_profiles(selected_labels, raw_profiles)
+        primary_label = selected_labels[0] if selected_labels else (
+            codroid_picker_module.SETTINGS.auto_target_label
+        )
+        frame_skip_value = max(codroid_picker_module._safe_int(frame_skip, 1), 1)
 
         config = {
-            "target_label": (
-                target_label or codroid_picker_module.SETTINGS.auto_target_label
-            ),
+            "target_label": primary_label,
+            "target_labels": selected_labels,
+            "label_profiles": profiles,
             "drop_ignore_radius_mm": codroid_picker_module._safe_float(
                 drop_ignore_radius, codroid_picker_module.SETTINGS.auto_drop_ignore_radius_mm
             ),
@@ -260,8 +513,17 @@ def register_monitoring_callbacks(app: Dash) -> None:
             "segment_fraction": codroid_picker_module._safe_float(
                 segment_fraction, codroid_picker_module.SETTINGS.segment_fraction
             ),
+            "detection_frame_skip": frame_skip_value,
         }
         SESSION.auto_config.update(config)
+        SESSION.detection_frame_skip = frame_skip_value
+        codroid_picker_module._commit_settings(
+            auto_target_label=primary_label,
+            auto_target_labels=selected_labels,
+            auto_label_profiles=profiles,
+            detection_frame_skip=frame_skip_value,
+        )
+        app_settings.reload_defaults()
         return config
 
     @app.callback(
@@ -341,6 +603,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         State("robot-speed-state", "data"),
         State("settings-calib-path", "value"),
         State("settings-robot-calib-path", "value"),
+        State("main-tabs", "value"),
         prevent_initial_call=True,
     )
     def _update_monitoring_summary(
@@ -352,10 +615,14 @@ def register_monitoring_callbacks(app: Dash) -> None:
         robot_speed: Optional[dict],
         bundle_path_value: Optional[str],
         robot_calib_path_value: Optional[str],
+        active_tab: Optional[str],
     ) -> Tuple[list, list, list, list, go.Figure, go.Figure, dict, dict, bool, bool]:
         """Update monitoring panels, trends, and utility button states."""
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.session import SESSION
+
+        if active_tab not in {"monitoring", "monitor"}:
+            return (no_update,) * 10
 
         camera_status = (camera_state or {}).get("status", "off")
         camera_message = (camera_state or {}).get("message") or ""
@@ -373,7 +640,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         cycle_trend_figure = _build_cycle_trend_figure(list(SESSION.cycle_times))
 
         stream = SESSION.camera_stream
-        stream_fps = stream.get_fps() if stream else 0.0
+        capture_fps = stream.get_fps() if stream else 0.0
         stream_cfg_fps = stream.config.fps if stream else codroid_picker_module.DEFAULT_FPS
         res_w, res_h = stream.config.resolution if stream else codroid_picker_module.DEFAULT_RESOLUTION
 
@@ -396,7 +663,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
                     status=t(camera_status),
                     w=res_w,
                     h=res_h,
-                    fps=stream_fps,
+                    fps=capture_fps,
                     cfg=stream_cfg_fps,
                 ),
                 size="sm",

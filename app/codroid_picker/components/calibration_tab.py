@@ -325,7 +325,7 @@ def build_camera_panel(title: str | None = None) -> dmc.Card:
                 c="dimmed",
             ),
             dmc.Text(
-                t("Camera: -- FPS · Stream: -- FPS"),
+                t("Camera: -- FPS"),
                 id="camera-fps",
                 size="sm",
                 c="dark",

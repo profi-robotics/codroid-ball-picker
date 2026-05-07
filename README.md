@@ -7,17 +7,18 @@ robot motion commands.
 
 ## Layout
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
-- `robot/` – WebSocket client, gripper control (OnRobot 2FG7), and command catalog extracted from browser traffic.
 - `app/` – orchestration logic that ties vision outputs to robot commands, now powering the Dash UI.
+- `codroid-api` (external dependency) – robot WebSocket/HTTP control client.
+- `onrobot-api` (external dependency) – OnRobot gripper control client.
 - `run_codroid_picker.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 - `docs/` – integration guides for gripper and other peripherals.
 
 ## Quickstart
-1. Install dependencies (Python 3.11+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
+1. Install dependencies (Python 3.11+ recommended) via `uv sync`; the manifest pins DepthAI to the tested runtime version:
    ```bash
-   uv install
+   uv sync
    ```
 2. Capture calibration data (ChArUco board images + one depth frame) and place them somewhere accessible to the Jetson. The helper script can automate the capture. For the default ChArUco board layout run:
    ```bash
@@ -35,7 +36,9 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime OAK-D startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. For local testing without an OAK-D, choose **Host camera** in Setup and set the OpenCV camera index, or start with `CODROID_CAMERA_SOURCE=host CODROID_HOST_CAMERA_INDEX=0`. Host cameras provide RGB frames only; depth capture and OAK-D calibration helpers still require DepthAI hardware. Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+
+The live camera preview uses WebRTC only. WebRTC sends raw camera frames from the latest-frame store, caps output with `CODROID_WEBRTC_MAX_FPS` (default `30`), limits software-encoded width with `CODROID_WEBRTC_MAX_WIDTH` (default `640`), and limits concurrent browser peers with `CODROID_WEBRTC_MAX_PEERS` (default `2`). Other stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_OVERLAY_MAX_FPS` (default `10`), and `CODROID_CAMERA_RETRY_MAX_BACKOFF_S` (default `30`).
 To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
@@ -44,7 +47,18 @@ For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
 python run_codroid_picker.py
 ```
-On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive.
+On Jetson-class devices, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive. Override with `CODROID_UI_STATUS_INTERVAL_MS` and `CODROID_UI_MONITOR_INTERVAL_MS` when a deployment needs different UI update cadence.
+The Dash shell also opens `/ui_events` as a Server-Sent Events stream. That stream pushes cached camera, robot, gripper, operation, safety, model, detection, and monitoring snapshots into Dash stores so display updates do not poll hardware. If the stream is disconnected for more than 3 seconds, the existing low-rate interval callbacks resume as a fallback until SSE reconnects.
+
+## Run checks locally
+
+```bash
+uv sync --dev
+uv run python -m compileall .
+uv run ruff check .
+uv run pytest -q
+uv build
+```
 
 ## User Manual (UK)
 
@@ -83,7 +97,7 @@ Default output path:
 
 ## Application Settings
 
-`app/settings.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings, and it now exposes auto pick-and-place defaults (target class, drop-ignore radius, approach/pick/drop offsets, estimate width, etc.). The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
+`app/settings.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings. It also stores auto pick defaults, selected YOLO pick labels, per-label pick/grip profiles, and the YOLO frame-skip cadence used on Jetson-class hardware. The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
 
 ## Calibration UI (Dash)
 The calibration console is a Dash + Dash Mantine Components UI that stitches the
@@ -128,6 +142,8 @@ Tailscale IP (for example `100.x.x.x:8050`) while backend services still reach
 local robot/gripper IPs such as `192.168.101.95`.
 
 ## CI/CD
+Use branch protection rules to require the `CI` workflow to pass before merging pull requests.
+
 GitHub Actions publishes releases and container images automatically for pushes to `master`:
 - Computes the next `vX.Y.Z` tag from existing git tags (patch increment).
 - Creates and pushes the new tag.
@@ -203,26 +219,27 @@ The script will:
 5. Disable the robot.
 
 ## WebSocket Protocol Notes
-A concise command catalog derived from DevTools captures is available at
-`robot/command_catalog.md`. If new commands are discovered, extend that file and
-mirror the behaviour in `codroid-api` (the legacy `robot/websocket_client.py`
-remains for reference only).
+A concise command catalog derived from DevTools captures lives in the
+`codroid-api` repository. If new commands are discovered, extend the command
+catalog and API behaviour there.
 
-## OnRobot 2FG7 Gripper Integration
+## OnRobot Gripper Integration
 
-The system supports the **OnRobot 2FG7** two-finger gripper via the OnRobot Compute Box using XML-RPC. The gripper integration is available in the calibration UI for manual control and pick-place operations.
+The system supports **OnRobot 2FG7**, **OnRobot Soft Gripper**, and **OnRobot VGC10** through the OnRobot Compute Box using XML-RPC. The gripper integration is available in the calibration UI for manual control and pick-place operations.
 
 **Quick Setup:**
-1. Connect the 2FG7 gripper to the OnRobot Compute Box
+1. Connect the gripper to the OnRobot Compute Box.
 2. Note the Compute Box IP address (default: `192.168.101.95`)
-3. In the calibration UI, click **Setup** → **OnRobot 2FG7 Gripper**
-4. Enter the Compute Box IP and enable the connection
-5. Click **Test gripper** to verify
+3. In the calibration UI, click **Setup** → **OnRobot Gripper**.
+4. Leave **Gripper type** on **Auto detect** or choose `2FG7`, `Soft Gripper`, or `VGC10` manually.
+5. Enter the Compute Box IP, enable the connection, and click **Test gripper**.
 
 **Features:**
-- Real-time gripper status monitoring (width, force, grip detection)
+- Auto detection using `onrobot-api` product codes.
+- Real-time status monitoring for the connected gripper: width/force for 2FG7, width/depth/init state for Soft Gripper, and vacuum A/B for VGC10.
 - Manual open/close control from Applications > Pick & Place
 - Automatic grip/release during pick-drop sequences
+- Per-label auto-pick grip profiles: 2FG7 uses close width/force/speed, Soft Gripper uses close width/gentle grip, and VGC10 uses a vacuum setpoint/hold threshold.
 - No authentication required (direct TCP/IP connection)
 
 For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_integration.md) and
@@ -233,7 +250,12 @@ For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_int
 Auto mode uses YOLO detections to continuously pick the nearest target:
 
 - Start/stop from the **Auto pick & place** controls in the footer.
-- Set the **Target class** (default `orange`) and **Drop ignore radius** in the Pick & Place tab.
+- Upload or select any Ultralytics YOLO-compatible `.pt` model in **Detect**.
+- After load, the UI extracts the model class names and uses them for the **Pick labels** multi-select.
+- Use the per-label profile editor to tune approach height, pick height, grip timeout, and the connected gripper's pick parameters. 2FG7 uses close width/force/speed, Soft Gripper uses close width/gentle grip, and VGC10 uses vacuum setpoint/threshold.
+- Run the model benchmark in **Detect** to measure inference latency/FPS on the current hardware. The rating is a practical Jetson Nano signal: `usable`, `warning`, or `poor`.
+- Use **YOLO frame skip** to run inference once every N frames (`1` = every frame). Skipped frames reuse the latest successful detections so Jetson Nano deployments can trade responsiveness for stability.
+- Set the **Drop ignore radius** in the Pick & Place tab.
 - Teach a drop position first; auto waits at the drop when no targets are visible.
 - The robot pauses if any other detection enters the workspace and resumes once clear.
 - Auto uses the shared **Tracking mode** controls; segmented tracking keeps the last known target when it is obscured.

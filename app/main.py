@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from flask import request
 from dash import Dash, Input, Output, State, no_update
 
 import app.settings as app_settings
@@ -30,7 +31,6 @@ from app.codroid_picker.robot_callbacks import register_robot_callbacks
 from app.codroid_picker.session import SESSION, GripperDevice  # noqa: F401 - used via globals()
 # Import functions that were extracted to modules but are still accessed via codroid_picker_module
 from app.codroid_picker.streaming import (
-    MJPEG_STREAM,
     RAW_STREAM,
 )
 from app.codroid_picker.ui_callbacks import register_ui_callbacks
@@ -227,7 +227,6 @@ def _initialize_app() -> None:
         model_dir=DEFAULT_MODEL_DIR,
         default_robot_uri=DEFAULT_ROBOT_URI,
         # Stream references
-        mjpeg_stream=MJPEG_STREAM,
         raw_stream=RAW_STREAM,
         # Logger
         logger=LOGGER,
@@ -383,8 +382,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=False,
     )
 
-    # Auto-refresh camera image (enabled only when camera is live)
-    # (Client refresh removed; MJPEG stream handles updates)
+    # Camera video is delivered by the WebRTC asset, independent of Dash callbacks.
 
 
 def create_app() -> Dash:
@@ -401,6 +399,14 @@ def create_app() -> Dash:
 
     # Register Flask video streaming routes
     register_video_routes(app)
+
+    @app.server.after_request
+    def _disable_asset_cache(response):
+        """Avoid stale JS while iterating on the video transport client."""
+        if request.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     return app
 

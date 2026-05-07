@@ -6,7 +6,15 @@ from typing import Optional, Tuple
 
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, html, no_update
+from onrobot.errors import (
+    OnRobotConnectionError,
+    OnRobotTimeoutError,
+    OnRobotValidationError,
+)
+
 from app.codroid_picker.i18n import t
+from app.codroid_picker.gripper_adapters import detect_or_create_gripper
+from app.codroid_picker.app_instance import registry
 
 
 def _control_state_payload(
@@ -47,8 +55,336 @@ async def _release_robot_ownership(
     await codroid_picker_module._get_robot_session().close()
 
 
-def register_connection_callbacks(app: Dash) -> None:
-    """Register robot connection, gripper, and power management callbacks."""
+def _connection_no_update() -> Tuple[object, object, object, object, object]:
+    """Return no-update payload for connection callback outputs."""
+    return no_update, no_update, no_update, no_update, no_update
+
+
+async def _handle_robot_connection_event(
+    codroid_picker_module,
+    *,
+    trigger: Optional[str],
+    uri: str,
+    control_state: Optional[dict],
+) -> Tuple[str, str, str, dict, dict]:
+    """Handle robot connect/release/probe actions."""
+    if trigger is None:
+        return _connection_no_update()
+
+    session = codroid_picker_module._get_robot_session()
+    ui_session = codroid_picker_module.SESSION
+    resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
+    probe_retry_interval_s = 5.0
+    control_released = codroid_picker_module._robot_control_released(control_state)
+
+    if trigger == "auto-init":
+        return _connection_no_update()
+
+    if trigger == "robot-release-control":
+        try:
+            await _release_robot_ownership(codroid_picker_module, resolved_uri)
+        except Exception as exc:  # noqa: BLE001
+            codroid_picker_module.LOGGER.warning(
+                "Robot release sequence encountered errors: %s",
+                exc,
+            )
+
+        now = time.time()
+        ui_session.robot_control_mode = "released"
+        ui_session.robot_control_released_at = now
+        ui_session.robot_connection_attempted = False
+        ui_session.robot_last_connection_error = None
+        ui_session.robot_probe_inflight = False
+        ui_session.robot_last_probe_started_at = 0.0
+        session.clear_position()
+        codroid_picker_module._set_robot_guidance(
+            t("Robot calibration idle. Click 'Begin calibrating robot' to start."),
+            status="idle",
+            step=0,
+            verification_ready=False,
+        )
+        status = t("Robot control released. Acquire control to reconnect.")
+        return (
+            status,
+            t("Robot: released"),
+            "yellow",
+            {"status": "offline", "message": status},
+            _control_state_payload(mode="released", message=status, released_at=now),
+        )
+
+    if trigger in {"robot-acquire-control", "robot-test"}:
+        control_released = False
+        ui_session.robot_control_mode = "acquired"
+        ui_session.robot_control_released_at = 0.0
+
+    if trigger == "monitor-interval" and control_released:
+        return _connection_no_update()
+
+    if trigger == "monitor-interval":
+        if session.is_connected(resolved_uri):
+            target = session.resolve_robot_target(resolved_uri)
+            status = t(
+                "Robot connected to {host}:{port}.",
+                host=target["host"],
+                port=target["port"],
+            )
+            ui_session.robot_connection_attempted = True
+            ui_session.robot_last_connection_error = None
+            return (
+                status,
+                t("Robot: online"),
+                "brand",
+                {"status": "online", "message": status},
+                _control_state_payload(mode="acquired"),
+            )
+
+        if not ui_session.robot_connection_attempted:
+            return _connection_no_update()
+        if ui_session.robot_probe_inflight:
+            return _connection_no_update()
+
+        now = time.time()
+        if now - ui_session.robot_last_probe_started_at < probe_retry_interval_s:
+            return _connection_no_update()
+
+    if ui_session.robot_probe_inflight:
+        status = t("Robot connection check already in progress.")
+        return (
+            status,
+            t("Robot: probing"),
+            "yellow",
+            {"status": "probing", "message": status},
+            _control_state_payload(mode="acquired"),
+        )
+
+    ui_session.robot_probe_inflight = True
+    ui_session.robot_last_probe_started_at = time.time()
+    try:
+        response = await codroid_picker_module._probe_robot(resolved_uri)
+        if not response:
+            raise RuntimeError(t("Robot probe returned no response."))
+
+        host = response.get("host", t("unknown"))
+        port = response.get("port", t("unknown"))
+        status = t("Robot connected to {host}:{port}.", host=host, port=port)
+        ui_session.robot_connection_attempted = True
+        ui_session.robot_last_connection_error = None
+        return (
+            status,
+            t("Robot: online"),
+            "brand",
+            {"status": "online", "message": status},
+            _control_state_payload(mode="acquired"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        error = t("Robot connection failed: {error}", error=exc)
+        ui_session.robot_connection_attempted = True
+        ui_session.robot_last_connection_error = error
+        return (
+            error,
+            t("Robot: error"),
+            "yellow",
+            {"status": "error", "message": error},
+            _control_state_payload(mode="acquired"),
+        )
+    finally:
+        ui_session.robot_probe_inflight = False
+
+
+def _build_gripper_info_card(
+    display_name: str,
+    telemetry: dict,
+    product_code: Optional[int] = None,
+) -> html.Div:
+    """Build compact gripper telemetry card for the setup panel."""
+    def _metric(label: str, value: str) -> dmc.Stack:
+        return dmc.Stack(
+            [
+                dmc.Text(t(label), size="sm", c="dimmed"),
+                dmc.Text(value, fw=500),
+            ],
+            gap=0,
+        )
+
+    width = telemetry.get("width")
+    force = telemetry.get("force")
+    depth = telemetry.get("depth")
+    vac_a = telemetry.get("vacuum_a")
+    vac_b = telemetry.get("vacuum_b")
+    is_gripped = bool(telemetry.get("gripped"))
+    metrics = []
+    if isinstance(width, (int, float)) and width > -2:
+        metrics.append(_metric("Width", f"{width:.1f} mm"))
+    if isinstance(force, (int, float)) and force > -2:
+        metrics.append(_metric("Force", f"{force:.1f} N"))
+    if isinstance(depth, (int, float)) and depth > -2:
+        metrics.append(_metric("Depth", f"{depth:.1f} mm"))
+    if isinstance(vac_a, (int, float)):
+        metrics.append(_metric("Vacuum A", f"{vac_a:.1f} kPa"))
+    if isinstance(vac_b, (int, float)):
+        metrics.append(_metric("Vacuum B", f"{vac_b:.1f} kPa"))
+    if not metrics:
+        metrics.append(_metric("Telemetry", t("N/A")))
+    metrics.append(
+        dmc.Stack(
+            [
+                dmc.Text(t("Status"), size="sm", c="dimmed"),
+                dmc.Badge(
+                    t("Gripped") if is_gripped else t("Open"),
+                    color="teal" if is_gripped else "gray",
+                    variant="light",
+                ),
+            ],
+            gap=0,
+        )
+    )
+    subtitle = display_name
+    if product_code:
+        subtitle = f"{display_name} · 0x{int(product_code):02X}"
+    return html.Div(
+        dmc.Card(
+            [
+                dmc.Text(subtitle, fw=600, mb="xs"),
+                dmc.Group(
+                    metrics,
+                    grow=True,
+                )
+            ],
+            withBorder=True,
+            padding="sm",
+            mt="xs",
+        )
+    )
+
+
+def _handle_gripper_event(
+    codroid_picker_module,
+    *,
+    trigger: Optional[str],
+    enabled: bool,
+    cb_ip: str,
+    requested_type: Optional[str] = None,
+) -> Tuple[str, html.Div, str, str, dict]:
+    """Handle gripper enable/test flow."""
+    if trigger is None:
+        return no_update, no_update, no_update, no_update, no_update
+
+    if not enabled and trigger == "gripper-enable":
+        codroid_picker_module.SESSION.gripper = None
+        codroid_picker_module.SESSION.gripper_device = None
+        codroid_picker_module.SESSION.gripper_adapter = None
+        codroid_picker_module.SESSION.robot.gripper_key = None
+        codroid_picker_module.SESSION.robot.gripper_display_name = None
+        codroid_picker_module.SESSION.robot.gripper_product_code = None
+        codroid_picker_module.SESSION.robot.gripper_dimensions = None
+        with contextlib.suppress(Exception):
+            registry().set_gripper(None)
+        return (
+            t("Gripper disabled"),
+            html.Div(),
+            t("Gripper: off"),
+            "gray",
+            {"status": "disabled", "message": t("Gripper disabled")},
+        )
+
+    if not enabled:
+        return no_update, no_update, no_update, no_update, no_update
+
+    try:
+        device = codroid_picker_module.GripperDevice(Global_cbip=cb_ip)
+        cb = device.getCB()
+        if cb is None:
+            message = t("Failed to connect to Compute Box at {ip}", ip=cb_ip)
+            return (
+                message,
+                html.Div(
+                    dmc.Alert(
+                        t("Cannot reach the gripper control box. Check power and network."),
+                        title=t("Gripper Unavailable"),
+                        color="yellow",
+                    )
+                ),
+                t("Gripper: error"),
+                "yellow",
+                {"status": "error", "message": message},
+            )
+
+        t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
+        detection = detect_or_create_gripper(
+            device,
+            requested_key=requested_type or codroid_picker_module.SETTINGS.gripper_type,
+            t_index=t_index,
+        )
+
+        codroid_picker_module.SESSION.gripper_device = device
+        codroid_picker_module.SESSION.gripper = detection.adapter.client
+        codroid_picker_module.SESSION.gripper_adapter = detection.adapter
+        codroid_picker_module.SESSION.robot.gripper_key = detection.key
+        codroid_picker_module.SESSION.robot.gripper_display_name = detection.display_name
+        codroid_picker_module.SESSION.robot.gripper_product_code = detection.product_code
+        codroid_picker_module.SESSION.robot.gripper_dimensions = detection.dimensions
+        with contextlib.suppress(Exception):
+            registry().set_gripper(detection.adapter.client)
+
+        detection.adapter.start_status_stream(t_index=t_index)
+        telemetry = detection.adapter.read_telemetry(t_index=t_index)
+        codroid_picker_module.SESSION.robot_has_object = bool(telemetry.get("gripped"))
+        if isinstance(telemetry.get("min_width"), (int, float)):
+            codroid_picker_module.SESSION.gripper_min_width = float(telemetry["min_width"])
+        if isinstance(telemetry.get("max_width"), (int, float)):
+            codroid_picker_module.SESSION.gripper_max_width = float(telemetry["max_width"])
+
+        status_text = t(
+            "{gripper} connected at {ip}",
+            gripper=detection.display_name,
+            ip=cb_ip,
+        )
+        state = {
+            "status": "online",
+            "message": status_text,
+            **detection.adapter.to_state(),
+        }
+
+        return (
+            status_text,
+            _build_gripper_info_card(
+                detection.display_name,
+                telemetry,
+                detection.product_code,
+            ),
+            t("Gripper: online"),
+            "brand",
+            state,
+        )
+
+    except (
+        OnRobotConnectionError,
+        OnRobotTimeoutError,
+        OnRobotValidationError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+    ) as exc:
+        codroid_picker_module.LOGGER.warning("Gripper connection failed: %s", exc)
+        codroid_picker_module.SESSION.gripper = None
+        codroid_picker_module.SESSION.gripper_adapter = None
+        return (
+            t("Gripper error: {error}", error=exc),
+            html.Div(
+                dmc.Alert(
+                    t("Failed to connect to gripper. Check network configuration and hardware."),
+                    title=t("Connection Error"),
+                    color="red",
+                )
+            ),
+            t("Gripper: error"),
+            "red",
+            {"status": "error", "message": t("Gripper error: {error}", error=exc)},
+        )
+
+
+def _register_connection_status_callback(app: Dash) -> None:
+    """Register robot connect/release callback."""
 
     @app.callback(
         Output("robot-status-text", "children"),
@@ -76,117 +412,16 @@ def register_connection_callbacks(app: Dash) -> None:
     ) -> Tuple[str, str, str, dict, dict]:
         import app.codroid_picker as codroid_picker_module
 
-        trigger = callback_context.triggered_id
-        session = codroid_picker_module._get_robot_session()
-        ui_session = codroid_picker_module.SESSION
-        resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
-        probe_retry_interval_s = 5.0
-        control_released = codroid_picker_module._robot_control_released(control_state)
+        return await _handle_robot_connection_event(
+            codroid_picker_module,
+            trigger=callback_context.triggered_id,
+            uri=uri,
+            control_state=control_state,
+        )
 
-        if trigger == "auto-init":
-            # Keep first paint lightweight on embedded devices:
-            # don't block page load on websocket probes.
-            return no_update, no_update, no_update, no_update, no_update
 
-        if trigger == "robot-release-control":
-            try:
-                await _release_robot_ownership(codroid_picker_module, resolved_uri)
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.LOGGER.warning(
-                    "Robot release sequence encountered errors: %s", exc
-                )
-            now = time.time()
-            ui_session.robot_control_mode = "released"
-            ui_session.robot_control_released_at = now
-            ui_session.robot_connection_attempted = False
-            ui_session.robot_last_connection_error = None
-            ui_session.robot_probe_inflight = False
-            ui_session.robot_last_probe_started_at = 0.0
-            session.clear_position()
-            codroid_picker_module._set_robot_guidance(
-                t("Robot calibration idle. Click 'Begin calibrating robot' to start."),
-                status="idle",
-                step=0,
-                verification_ready=False,
-            )
-            status = t("Robot control released. Acquire control to reconnect.")
-            return (
-                status,
-                t("Robot: released"),
-                "yellow",
-                {"status": "offline", "message": status},
-                _control_state_payload(mode="released", message=status, released_at=now),
-            )
-        if trigger in {"robot-acquire-control", "robot-test"}:
-            control_released = False
-            ui_session.robot_control_mode = "acquired"
-            ui_session.robot_control_released_at = 0.0
-        if trigger == "monitor-interval" and control_released:
-            return no_update, no_update, no_update, no_update, no_update
-        if trigger == "monitor-interval":
-            if session.is_connected(resolved_uri):
-                target = session.resolve_robot_target(resolved_uri)
-                status = t("Robot connected to {host}:{port}.", host=target["host"], port=target["port"])
-                ui_session.robot_connection_attempted = True
-                ui_session.robot_last_connection_error = None
-                return (
-                    status,
-                    t("Robot: online"),
-                    "brand",
-                    {"status": "online", "message": status},
-                    _control_state_payload(mode="acquired"),
-                )
-            # Skip background probes until the user explicitly requests
-            # a connection test at least once.
-            if not ui_session.robot_connection_attempted:
-                return no_update, no_update, no_update, no_update, no_update
-            if ui_session.robot_probe_inflight:
-                return no_update, no_update, no_update, no_update, no_update
-            now = time.time()
-            if now - ui_session.robot_last_probe_started_at < probe_retry_interval_s:
-                if ui_session.robot_connection_attempted and ui_session.robot_last_connection_error:
-                    return no_update, no_update, no_update, no_update, no_update
-                return no_update, no_update, no_update, no_update, no_update
-        if ui_session.robot_probe_inflight:
-            status = t("Robot connection check already in progress.")
-            return (
-                status,
-                t("Robot: probing"),
-                "yellow",
-                {"status": "probing", "message": status},
-                _control_state_payload(mode="acquired"),
-            )
-        ui_session.robot_probe_inflight = True
-        ui_session.robot_last_probe_started_at = time.time()
-        try:
-            response = await codroid_picker_module._probe_robot(resolved_uri)
-            if not response:
-                raise RuntimeError(t("Robot probe returned no response."))
-            host = response.get("host", t("unknown"))
-            port = response.get("port", t("unknown"))
-            status = t("Robot connected to {host}:{port}.", host=host, port=port)
-            ui_session.robot_connection_attempted = True
-            ui_session.robot_last_connection_error = None
-            return (
-                status,
-                t("Robot: online"),
-                "brand",
-                {"status": "online", "message": status},
-                _control_state_payload(mode="acquired"),
-            )
-        except Exception as exc:
-            error = t("Robot connection failed: {error}", error=exc)
-            ui_session.robot_connection_attempted = True
-            ui_session.robot_last_connection_error = error
-            return (
-                error,
-                t("Robot: error"),
-                "yellow",
-                {"status": "error", "message": error},
-                _control_state_payload(mode="acquired"),
-            )
-        finally:
-            ui_session.robot_probe_inflight = False
+def _register_gripper_callback(app: Dash) -> None:
+    """Register gripper test/enable callback."""
 
     @app.callback(
         Output("gripper-status-text", "children"),
@@ -198,6 +433,7 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("gripper-enable", "checked"),
         Input("auto-init", "n_intervals"),
         State("gripper-cb-ip", "value"),
+        State("gripper-type", "value"),
         prevent_initial_call=True,
     )
     def _handle_gripper(
@@ -205,194 +441,21 @@ def register_connection_callbacks(app: Dash) -> None:
         enabled: bool,
         _init: int,
         cb_ip: str,
+        requested_type: Optional[str],
     ) -> Tuple[str, html.Div, str, str, dict]:
-        """Handle gripper connection and testing."""
         import app.codroid_picker as codroid_picker_module
 
-        trigger = callback_context.triggered_id
+        return _handle_gripper_event(
+            codroid_picker_module,
+            trigger=callback_context.triggered_id,
+            enabled=enabled,
+            cb_ip=cb_ip,
+            requested_type=requested_type,
+        )
 
-        if trigger is None:
-            return no_update, no_update, no_update, no_update, no_update
 
-        if not enabled and trigger == "gripper-enable":
-            # Disable gripper
-            if codroid_picker_module.SESSION.gripper is not None:
-                codroid_picker_module.SESSION.gripper = None
-                codroid_picker_module.SESSION.gripper_device = None
-            return (
-                t("Gripper disabled"),
-                html.Div(),
-                t("Gripper: off"),
-                "gray",
-                {"status": "disabled", "message": t("Gripper disabled")},
-            )
-
-        if not enabled:
-            return no_update, no_update, no_update, no_update, no_update
-
-        # Enable or test gripper
-        try:
-            if codroid_picker_module.SESSION.gripper_device is None or codroid_picker_module.SESSION.gripper_device.Global_cbip != cb_ip:
-                # Create new connection
-                # Note: GripperDevice uses XML-RPC with default socket timeout (likely 60s)
-                # Timeout cannot be configured via constructor parameters
-                device = codroid_picker_module.GripperDevice(Global_cbip=cb_ip)
-                cb = device.getCB()
-
-                if cb is None:
-                    return (
-                        t("Failed to connect to Compute Box at {ip}", ip=cb_ip),
-                        html.Div(
-                            dmc.Alert(
-                                t("Cannot reach the gripper control box. Check power and network."),
-                                title=t("Gripper Unavailable"),
-                                color="yellow",
-                            )
-                        ),
-                        t("Gripper: error"),
-                        "yellow",
-                        {
-                            "status": "error",
-                            "message": t("Failed to connect to Compute Box at {ip}", ip=cb_ip),
-                        },
-                    )
-
-                codroid_picker_module.SESSION.gripper_device = device
-                codroid_picker_module.SESSION.gripper = codroid_picker_module.TwoFG7Gripper(
-                    device)
-
-            # Check gripper connection
-            try:
-                is_connected = codroid_picker_module.SESSION.gripper.isConnected(
-                    t_index=codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
-                )
-            except Exception as exc:  # noqa: BLE001
-                codroid_picker_module.SESSION.gripper = None
-                codroid_picker_module.SESSION.gripper_device = None
-                return (
-                    t("Failed to query gripper at {ip}: {error}", ip=cb_ip, error=exc),
-                    html.Div(
-                        dmc.Alert(
-                            t("Could not reach the gripper. Verify the Compute Box IP and network connection."),
-                            title=t("Gripper Unavailable"),
-                            color="yellow",
-                        )
-                    ),
-                    t("Gripper: error"),
-                    "yellow",
-                    {
-                        "status": "error",
-                        "message": t("Failed to query gripper at {ip}: {error}", ip=cb_ip, error=exc),
-                    },
-                )
-
-            if not is_connected:
-                return (
-                    t("No 2FG7 gripper detected at Compute Box {ip}", ip=cb_ip),
-                    html.Div(
-                        dmc.Alert(
-                            t("Ensure the 2FG7 gripper is connected to the Compute Box and powered on. Check the tool index setting if using a dual gripper setup."),
-                            title=t("Gripper Not Detected"),
-                            color="yellow",
-                        )
-                    ),
-                    t("Gripper: error"),
-                    "yellow",
-                    {
-                        "status": "error",
-                        "message": t("No 2FG7 gripper detected at Compute Box {ip}", ip=cb_ip),
-                    },
-                )
-
-            # Get gripper status and information
-            status_text = t("2FG7 connected at {ip}", ip=cb_ip)
-            t_index = codroid_picker_module.GRIPPER_DEFAULTS["t_index"]
-            codroid_picker_module.SESSION.gripper.start_status_stream()
-
-            # Query gripper state
-            width = codroid_picker_module.SESSION.gripper.get_ext_width(
-                t_index=t_index)
-            force = codroid_picker_module.SESSION.gripper.get_force(
-                t_index=t_index)
-            is_gripped = codroid_picker_module.SESSION.gripper.isGripped(
-                t_index=t_index)
-            codroid_picker_module.SESSION.robot_has_object = bool(is_gripped)
-
-            info_card = html.Div(
-                dmc.Card(
-                    [
-                        dmc.Group(
-                            [
-                                dmc.Stack(
-                                    [
-                                        dmc.Text(
-                                            t("Width"), size="sm", c="dimmed"),
-                                        dmc.Text(
-                                            f"{width:.1f} mm" if isinstance(
-                                                width, (int, float)) and width > -2 else t("N/A"),
-                                            fw=500,
-                                        ),
-                                    ],
-                                    gap=0,
-                                ),
-                                dmc.Stack(
-                                    [
-                                        dmc.Text(
-                                            t("Force"), size="sm", c="dimmed"),
-                                        dmc.Text(
-                                            f"{force:.1f} N" if isinstance(
-                                                force, (int, float)) and force > -2 else t("N/A"),
-                                            fw=500,
-                                        ),
-                                    ],
-                                    gap=0,
-                                ),
-                                dmc.Stack(
-                                    [
-                                        dmc.Text(
-                                            t("Status"), size="sm", c="dimmed"),
-                                        dmc.Badge(
-                                            t("Gripped") if is_gripped else t("Open"),
-                                            color="teal" if is_gripped else "gray",
-                                            variant="light",
-                                        ),
-                                    ],
-                                    gap=0,
-                                ),
-                            ],
-                            grow=True,
-                        ),
-                    ],
-                    withBorder=True,
-                    padding="sm",
-                    mt="xs",
-                )
-            )
-
-            return (
-                status_text,
-                info_card,
-                t("Gripper: online"),
-                "brand",
-                {"status": "online", "message": status_text},
-            )
-
-        except Exception as exc:
-            codroid_picker_module.LOGGER.exception(
-                "Gripper connection failed: %s", exc)
-            return (
-                t("Gripper error: {error}", error=exc),
-                html.Div(
-                    dmc.Alert(
-                        t("Failed to connect to gripper. Check network configuration and hardware."),
-                        title=t("Connection Error"),
-                        color="red",
-                    )
-                ),
-                t("Gripper: error"),
-                "red",
-                {"status": "error", "message": t("Gripper error: {error}", error=exc)},
-            )
+def _register_power_callbacks(app: Dash) -> None:
+    """Register robot power toggle and sync callbacks."""
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),
@@ -421,16 +484,22 @@ def register_connection_callbacks(app: Dash) -> None:
         if power_state and power_state.get("value") == checked:
             return no_update
         try:
+
             async def _apply_power(api) -> None:
                 if checked:
                     await api.power_on()
                 else:
                     await api.power_off()
 
-            await codroid_picker_module._with_robot_api(robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _apply_power)
+            await codroid_picker_module._with_robot_api(
+                robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
+                _apply_power,
+            )
             action = t("Power on") if checked else t("Power off")
-            codroid_picker_module.SESSION.last_action = t("{action} command sent.", action=action)
-            # Set a debounce timestamp to prevent sync from overriding user action immediately
+            codroid_picker_module.SESSION.last_action = t(
+                "{action} command sent.",
+                action=action,
+            )
             codroid_picker_module.SESSION.robot_power_toggle_time = time.time()
             return dmc.Notification(
                 action="show",
@@ -465,85 +534,40 @@ def register_connection_callbacks(app: Dash) -> None:
         robot_uri: Optional[str],
         current_state: Optional[dict],
     ) -> dict:
-        import asyncio
         import app.codroid_picker as codroid_picker_module
 
         if codroid_picker_module._robot_control_released(control_state):
             return no_update
         if (robot_state or {}).get("status") != "online":
             return no_update
-        now = time.time()
 
-        # Don't sync for 3 seconds after user manually toggles power
-        # to give robot time to respond to the command
-        last_toggle = getattr(codroid_picker_module.SESSION, 'robot_power_toggle_time', 0)
+        now = time.time()
+        last_toggle = getattr(
+            codroid_picker_module.SESSION,
+            "robot_power_toggle_time",
+            0,
+        )
         if now - last_toggle < 3.0:
             return no_update
 
-        session = codroid_picker_module._get_robot_session()
-        status_snapshot = session.robot_status_snapshot()
-        status_age = session.robot_status_age_seconds()
-        status_is_fresh = (
-            bool(status_snapshot)
-            and status_age is not None
-            and status_age <= 2.0
-        )
-
-        # Skip throttle on first poll (current_state is None or empty).
-        # Back off polling when recent power polls are failing.
-        if current_state and current_state.get("value") is not None:
-            min_poll_interval_s = 5.0 if (
-                now - codroid_picker_module.SESSION.robot_power_poll_error_logged_at < 5.0
-            ) else 1.0
-            if now - codroid_picker_module.SESSION.robot_status_last_poll < min_poll_interval_s:
-                return no_update
-
-        async def _poll(api) -> None:
-            await api.read_system_data()
-            await api.read_global_data()
-            # Small delay to allow listener to process response
-            await asyncio.sleep(0.1)
-
-        if not status_is_fresh:
-            try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
-                    _poll,
-                )
-                codroid_picker_module.SESSION.robot_status_last_poll = now
-            except Exception as exc:  # noqa: BLE001
-                if (
-                    now
-                    - codroid_picker_module.SESSION.robot_power_poll_error_logged_at
-                    >= 5.0
-                ):
-                    codroid_picker_module.LOGGER.debug(
-                        "Robot power poll failed: %s", exc
-                    )
-                codroid_picker_module.SESSION.robot_power_poll_error_logged_at = now
-                codroid_picker_module.SESSION.robot_status_last_poll = now
-                return no_update
-
+        session = getattr(codroid_picker_module.SESSION, "robot_session", None)
+        if session is None:
+            return no_update
+        snapshot = session.snapshot()
         power_on = session.robot_power_on()
-        status_snapshot = session.robot_status_snapshot()
-        
-        # Fallback: if robot_power_on returns None but we have a state field,
-        # interpret state >= 2 as powered on (common for Dobot/Codroid robots)
+        status_snapshot = snapshot.robot_status
+
         if power_on is None and isinstance(status_snapshot, dict):
             state_value = status_snapshot.get("state")
             if isinstance(state_value, (int, float)):
-                # State 0/1: typically off or idle
-                # State 2+: typically powered on / servo enabled
                 power_on = state_value >= 2
 
         if power_on is None:
-            # Status not yet available, try to use status age to determine if we should wait
-            status_age = session.robot_status_age_seconds()
+            status_age = snapshot.robot_status_age_seconds()
             if status_age is None or status_age > 5.0:
-                # No recent status, don't update toggle
                 return no_update
+
         desired = {"value": bool(power_on), "timestamp": time.time()}
-        # Always update on first poll (when current value is None) to sync toggle state
         if current_state and current_state.get("value") is not None:
             if current_state.get("value") == desired["value"]:
                 return no_update
@@ -565,3 +589,10 @@ def register_connection_callbacks(app: Dash) -> None:
         if current is None or current != desired:
             return desired
         return no_update
+
+
+def register_connection_callbacks(app: Dash) -> None:
+    """Register robot connection, gripper, and power management callbacks."""
+    _register_connection_status_callback(app)
+    _register_gripper_callback(app)
+    _register_power_callbacks(app)

@@ -26,8 +26,6 @@ def initialize_modules(
     robot_calibration_path,
     model_dir,
     default_robot_uri: str,
-    # Stream references
-    mjpeg_stream,
     raw_stream,
     # Logger
     logger=None,
@@ -53,7 +51,6 @@ def initialize_modules(
         workspace_path=workspace_path,
         robot_calibration_path=robot_calibration_path,
         model_dir=model_dir,
-        mjpeg_stream=mjpeg_stream,
         raw_stream=raw_stream,
         logger=logger,
     )

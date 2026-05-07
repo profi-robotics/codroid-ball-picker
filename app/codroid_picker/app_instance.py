@@ -86,7 +86,6 @@ class AppRegistry:
         self._model_dir: Optional[Path] = None
 
         # Streams
-        self._mjpeg_stream: Any = None
         self._raw_stream: Any = None
 
     # -------------------------------------------------------------------------
@@ -106,7 +105,6 @@ class AppRegistry:
         workspace_path: Path,
         robot_calibration_path: Path,
         model_dir: Path,
-        mjpeg_stream: Any,
         raw_stream: Any,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -125,8 +123,7 @@ class AppRegistry:
             workspace_path: Path to workspace definition.
             robot_calibration_path: Path to robot calibration JSON.
             model_dir: Path to model directory.
-            mjpeg_stream: MotionJPEGStream instance for overlayed frames.
-            raw_stream: MotionJPEGStream instance for raw frames.
+            raw_stream: RawFrameStore instance for raw frames.
             logger: Optional logger instance.
         """
         self._session = session
@@ -139,7 +136,6 @@ class AppRegistry:
         self._workspace_path = workspace_path
         self._robot_calibration_path = robot_calibration_path
         self._model_dir = model_dir
-        self._mjpeg_stream = mjpeg_stream
         self._raw_stream = raw_stream
         if logger:
             self._logger = logger
@@ -214,12 +210,14 @@ class AppRegistry:
             from codroid_api import (
                 CodroidSettings,
                 RobotSession,
+                RobotSessionConfig,
                 DEFAULT_FLANGE_BUTTON_PORT,
                 DEFAULT_FLANGE_BUTTON_PORTS,
             )
 
             self._robot_session = RobotSession(
                 CodroidSettings(),
+                config=RobotSessionConfig(io_poll_interval_s=0.5),
                 flange_button_port=DEFAULT_FLANGE_BUTTON_PORT,
                 flange_button_ports=DEFAULT_FLANGE_BUTTON_PORTS,
             )
@@ -299,12 +297,6 @@ class AppRegistry:
     # -------------------------------------------------------------------------
 
     @property
-    def mjpeg_stream(self) -> Any:
-        """Get the MJPEG stream for overlayed frames."""
-        self._check_initialized()
-        return self._mjpeg_stream
-
-    @property
     def raw_stream(self) -> Any:
         """Get the raw frame stream."""
         self._check_initialized()
@@ -327,4 +319,3 @@ def registry() -> AppRegistry:
         settings = registry().settings
     """
     return AppRegistry()
-

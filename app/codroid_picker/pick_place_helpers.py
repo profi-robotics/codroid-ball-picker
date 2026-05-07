@@ -122,7 +122,21 @@ def resolve_gripper_widths(
     close_val = close_default
     open_val = open_default
 
-    if gripper is not None and gripper.isConnected(t_index=gripper_defaults.get("t_index", 0)):
+    try:
+        from app.codroid_picker.session import SESSION
+
+        adapter = SESSION.gripper_adapter
+    except Exception:  # noqa: BLE001
+        adapter = None
+
+    if adapter is not None:
+        try:
+            close_val, open_val = adapter.width_limits(
+                t_index=gripper_defaults.get("t_index", 0)
+            )
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning(f"Error getting dynamic gripper limits: {e}")
+    elif gripper is not None and gripper.isConnected(t_index=gripper_defaults.get("t_index", 0)):
         try:
             max_width = gripper.get_max_ext_width(
                 t_index=gripper_defaults["t_index"])

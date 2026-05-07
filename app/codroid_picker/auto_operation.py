@@ -126,11 +126,14 @@ def _run_detection(
     class_filter: Optional[str],
     *,
     crop_to_workspace: bool = True,
+    force: bool = False,
 ) -> list[dict]:
     """Run YOLO detection on a frame."""
     if SESSION.yolo_model is None:
         raise RuntimeError(
             "No YOLO model loaded. Upload a model or install ultralytics.")
+    if not _should_run_yolo_inference(force=force):
+        return list(SESSION.detections or [])
     classes = None
     if class_filter:
         classes = [int(val.strip())
@@ -212,6 +215,23 @@ def _run_detection(
                     detection["workspace_mm"] = None
             detections.append(detection)
     return detections
+
+
+def _should_run_yolo_inference(*, force: bool = False) -> bool:
+    """Apply the configured YOLO frame-skip cadence."""
+    if force:
+        return True
+    SESSION.detection_frame_index += 1
+    skip = getattr(SESSION, "detection_frame_skip", SETTINGS.detection_frame_skip)
+    try:
+        skip = max(int(skip), 1)
+    except (TypeError, ValueError):
+        skip = max(int(SETTINGS.detection_frame_skip), 1)
+    if skip <= 1:
+        return True
+    if not SESSION.detections:
+        return True
+    return (SESSION.detection_frame_index - 1) % skip == 0
 
 
 def _format_detection_list(detections: list[dict]) -> list:

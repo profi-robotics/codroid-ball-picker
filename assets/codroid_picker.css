@@ -218,6 +218,29 @@ body {
   width: 100%;
 }
 
+.camera-video-wrapper {
+  position: relative;
+  width: 100%;
+  margin-top: 12px;
+  background: #0b0f14;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.camera-feed-video {
+  margin-top: 0;
+  border: 0;
+  border-radius: 18px;
+  background: #000000;
+  display: block;
+}
+
+.camera-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 /* Action button styles for consistent appearance */
 .action-btn {
   font-weight: 600;

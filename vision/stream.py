@@ -1,5 +1,5 @@
 """
-Live DepthAI camera streaming helpers for the Dash calibration UI.
+Live camera streaming helpers for the Dash calibration UI.
 
 This module keeps the most recent RGB/depth frames in memory so the web UI can
 poll without blocking on device queues.
@@ -10,6 +10,8 @@ from __future__ import annotations
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 import logging
+import os
+import platform
 import threading
 import time
 from typing import Callable, Optional, Tuple
@@ -29,6 +31,221 @@ class StreamConfig:
     enable_depth: bool = True
     fast_depth: bool = True
     lock_af: bool = False
+
+
+class HostCameraFrameStream:
+    """Background OpenCV reader for local USB/built-in host cameras."""
+
+    def __init__(
+        self,
+        config: StreamConfig,
+        frame_hook: Optional[Callable[[np.ndarray], None]] = None,
+        *,
+        camera_index: int = 0,
+    ) -> None:
+        self.config = config
+        self.camera_index = int(camera_index)
+        self._frame_hook = frame_hook
+        self._capture: Optional[cv2.VideoCapture] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._last_frame: Optional[np.ndarray] = None
+        self._fps = 0.0
+        self._last_ts = 0.0
+        self._status = "stopped"
+        self._last_error_message: Optional[str] = None
+        self._retry_attempt = 0
+        self._retry_max_backoff_s = float(
+            os.getenv("CODROID_CAMERA_RETRY_MAX_BACKOFF_S", "30")
+        )
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._status = "starting"
+        if platform.system() == "Darwin":
+            try:
+                # AVFoundation camera authorization and device opening are
+                # safest from the caller thread. The reader thread can then
+                # consume the already-open capture handle.
+                self._open_capture()
+                self._status = "live"
+                self._last_error_message = None
+            except Exception:
+                self._running = False
+                self._status = "retrying"
+                raise
+        self._thread = threading.Thread(
+            target=self._reader_loop,
+            name=f"HostCameraFrameStream-{self.camera_index}",
+            daemon=True,
+        )
+        self._thread.start()
+        logging.info("Host camera reader supervisor started for index %s", self.camera_index)
+
+    def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        with self._state_lock:
+            self._close_capture()
+        self._thread = None
+        with self._lock:
+            self._last_frame = None
+        self._status = "stopped"
+        self._last_error_message = None
+        self._retry_attempt = 0
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def status(self) -> str:
+        return self._status
+
+    def last_error(self) -> Optional[str]:
+        return self._last_error_message
+
+    def device_id(self) -> Optional[str]:
+        return f"host:{self.camera_index}"
+
+    def get_latest(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        with self._lock:
+            if self._last_frame is None:
+                return None, None
+            return self._last_frame.copy(), None
+
+    def get_fps(self) -> float:
+        return self._fps
+
+    def set_frame_hook(self, hook: Optional[Callable[[np.ndarray], None]]) -> None:
+        self._frame_hook = hook
+
+    def set_focus_lock(self, lock: bool, lens_position: Optional[int] = None) -> None:
+        """Keep the camera callback API compatible; host focus control is optional."""
+
+    def _reader_loop(self) -> None:
+        while self._running:
+            try:
+                capture = self._capture
+                if capture is None:
+                    self._open_capture_with_backoff()
+                    continue
+
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    raise RuntimeError(f"Host camera {self.camera_index} did not return a frame")
+
+                frame = self._normalize_frame(frame)
+                now = time.time()
+                if self._last_ts > 0.0:
+                    dt = now - self._last_ts
+                    if dt > 0:
+                        inst_fps = 1.0 / dt
+                        self._fps = 0.9 * self._fps + 0.1 * inst_fps
+                self._last_ts = now
+                with self._lock:
+                    self._last_frame = frame
+                self._status = "live"
+                self._last_error_message = None
+                self._retry_attempt = 0
+                if self._frame_hook is not None:
+                    with suppress(Exception):
+                        self._frame_hook(frame)
+            except Exception as exc:  # noqa: BLE001
+                self._last_error_message = str(exc)
+                self._status = "retrying"
+                logging.warning("Host camera reader error: %s", exc)
+                with self._state_lock:
+                    self._close_capture()
+                time.sleep(0.05)
+
+    def _open_capture_with_backoff(self) -> None:
+        if not self._running:
+            return
+        try:
+            self._open_capture()
+            self._status = "live"
+            self._last_error_message = None
+            self._retry_attempt = 0
+        except Exception as exc:  # noqa: BLE001
+            self._last_error_message = str(exc)
+            self._status = "retrying"
+            self._retry_attempt += 1
+            delay = min(
+                self._retry_max_backoff_s,
+                1.0 if self._retry_attempt <= 1 else 3.0 * (2 ** (self._retry_attempt - 2)),
+            )
+            logging.warning(
+                "Host camera %s unavailable; retrying in %.1fs: %s",
+                self.camera_index,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+
+    def _open_capture(self) -> None:
+        with self._state_lock:
+            backend = _host_camera_backend()
+            capture = cv2.VideoCapture(self.camera_index, backend)
+            if not capture.isOpened():
+                capture.release()
+                raise RuntimeError(f"Host camera {self.camera_index} unavailable")
+            width, height = self.config.resolution
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+            capture.set(cv2.CAP_PROP_FPS, float(self.config.fps))
+            self._capture = capture
+
+    def _close_capture(self) -> None:
+        if self._capture is not None:
+            self._capture.release()
+        self._capture = None
+
+    @staticmethod
+    def _normalize_frame(frame: np.ndarray) -> np.ndarray:
+        if frame.ndim == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        return frame.copy()
+
+
+def list_host_camera_devices(max_index: Optional[int] = None) -> list[dict[str, object]]:
+    """Return host camera indices that OpenCV can open."""
+    if max_index is None:
+        max_index = int(os.getenv("CODROID_HOST_CAMERA_SCAN_MAX", "4"))
+    devices: list[dict[str, object]] = []
+    backend = _host_camera_backend()
+    for index in range(max(0, int(max_index))):
+        capture = cv2.VideoCapture(index, backend)
+        try:
+            if not capture.isOpened():
+                continue
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            devices.append(
+                {
+                    "index": index,
+                    "name": f"Host camera {index}",
+                    "resolution": (width, height),
+                }
+            )
+        finally:
+            capture.release()
+    return devices
+
+
+def _host_camera_backend() -> int:
+    """Return the OpenCV backend for host camera capture."""
+    if platform.system() == "Darwin":
+        os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_ANY
 
 
 class DepthAIFrameStream:
@@ -55,23 +272,22 @@ class DepthAIFrameStream:
         self._frame_hook = frame_hook
         self._consecutive_errors = 0
         self._last_error_ts = 0.0
+        self._status = "stopped"
+        self._last_error_message: Optional[str] = None
+        self._retry_attempt = 0
+        self._retry_max_backoff_s = float(
+            os.getenv("CODROID_CAMERA_RETRY_MAX_BACKOFF_S", "30")
+        )
 
     def start(self) -> None:
         if self._running:
             return
-        try:
-            self._running = True
-            self._open_pipeline()
-            self._thread = threading.Thread(
-                target=self._reader_loop, name="DepthAIFrameStream", daemon=True)
-            self._thread.start()
-            logging.info("Reader thread started")
-        except Exception as exc:  # noqa: BLE001
-            logging.error(
-                "Failed to start DepthAIFrameStream: %s", exc, exc_info=True)
-            self._running = False
-            self._close_pipeline()
-            raise
+        self._running = True
+        self._status = "starting"
+        self._thread = threading.Thread(
+            target=self._reader_loop, name="DepthAIFrameStream", daemon=True)
+        self._thread.start()
+        logging.info("DepthAI reader supervisor started")
 
     def stop(self) -> None:
         if not self._running:
@@ -88,9 +304,18 @@ class DepthAIFrameStream:
             self._last_lens_pos = None
         self._consecutive_errors = 0
         self._last_error_ts = 0.0
+        self._status = "stopped"
+        self._last_error_message = None
+        self._retry_attempt = 0
 
     def is_running(self) -> bool:
         return self._running
+
+    def status(self) -> str:
+        return self._status
+
+    def last_error(self) -> Optional[str]:
+        return self._last_error_message
 
     def device_id(self) -> Optional[str]:
         with self._state_lock:
@@ -115,7 +340,7 @@ class DepthAIFrameStream:
             try:
                 color_queue = self._color_queue
                 if color_queue is None:
-                    time.sleep(0.01)
+                    self._open_pipeline_with_backoff()
                     continue
                 packet = color_queue.tryGet()
                 if packet is None:
@@ -164,10 +389,14 @@ class DepthAIFrameStream:
                     self._last_frame = frame
                     if depth_frame is not None:
                         self._last_depth = depth_frame
+                self._status = "live"
+                self._last_error_message = None
+                self._retry_attempt = 0
                 if self._frame_hook is not None:
                     with suppress(Exception):
                         self._frame_hook(frame)
             except Exception as exc:  # noqa: BLE001
+                self._last_error_message = str(exc)
                 logging.error(
                     "DepthAIFrameStream reader error: %s", exc, exc_info=True)
                 now = time.time()
@@ -180,8 +409,32 @@ class DepthAIFrameStream:
                     logging.warning(
                         "Restarting camera pipeline after repeated errors.")
                     self._consecutive_errors = 0
-                    self._restart_pipeline()
+                    self._close_pipeline()
                 time.sleep(0.05)
+
+    def _open_pipeline_with_backoff(self) -> None:
+        if not self._running:
+            return
+        try:
+            self._open_pipeline()
+            self._status = "live"
+            self._last_error_message = None
+            self._retry_attempt = 0
+        except Exception as exc:  # noqa: BLE001
+            self._last_error_message = str(exc)
+            self._status = "retrying"
+            self._close_pipeline()
+            self._retry_attempt += 1
+            delay = min(
+                self._retry_max_backoff_s,
+                2.0 if self._retry_attempt <= 1 else 5.0 * (2 ** (self._retry_attempt - 2)),
+            )
+            logging.warning(
+                "Camera pipeline unavailable; retrying in %.1fs: %s",
+                delay,
+                exc,
+            )
+            time.sleep(delay)
 
     def _open_pipeline(self) -> None:
         with self._state_lock:

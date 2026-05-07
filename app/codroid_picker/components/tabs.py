@@ -154,7 +154,14 @@ def build_detection_tab() -> dmc.Stack:
             ),
             dmc.Button(t("Load selected model"),
                        id="load-model", variant="outline", disabled=not has_models),
+            dmc.Button(
+                t("Run model benchmark"),
+                id="benchmark-model",
+                variant="light",
+                disabled=not has_models,
+            ),
             dmc.Text(id="model-status", size="sm", c="dimmed"),
+            dmc.Text(id="model-benchmark-status", size="sm", c="dimmed"),
         ],
         withBorder=True,
         radius="lg",
@@ -195,6 +202,19 @@ def build_detection_tab() -> dmc.Stack:
                         value=10,
                         min=1,
                         max=200,
+                    ),
+                    dmc.Slider(
+                        id="detection-frame-skip",
+                        label=t("YOLO frame skip"),
+                        value=SETTINGS.detection_frame_skip,
+                        min=1,
+                        max=10,
+                        step=1,
+                        marks=[
+                            {"value": 1, "label": "1"},
+                            {"value": 5, "label": "5"},
+                            {"value": 10, "label": "10"},
+                        ],
                     ),
                     dmc.TextInput(
                         id="detection-classes",
@@ -393,7 +413,19 @@ def build_pick_place_tab() -> dmc.Stack:
                         id="auto-target-class",
                         label=t("Target class"),
                         value=SETTINGS.auto_target_label,
-                        description=t("YOLO label to pick (case-insensitive)."),
+                        style={"display": "none"},
+                    ),
+                    dmc.MultiSelect(
+                        id="auto-target-labels",
+                        label=t("Pick labels"),
+                        data=[
+                            {"value": label, "label": label}
+                            for label in SESSION.model_labels
+                        ],
+                        value=SETTINGS.auto_target_labels,
+                        searchable=True,
+                        clearable=True,
+                        description=t("YOLO labels to pick from the active model."),
                     ),
                     dmc.NumberInput(
                         id="auto-drop-ignore-radius",
@@ -407,6 +439,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 ],
                 grow=True,
             ),
+            html.Div(id="auto-label-profile-editor"),
         ],
         withBorder=True,
         radius="lg",

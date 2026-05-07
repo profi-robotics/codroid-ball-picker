@@ -17,13 +17,22 @@ import time
 from typing import Awaitable, Callable, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
+from onrobot.errors import (
+    OnRobotConnectionError,
+    OnRobotTimeoutError,
+    OnRobotValidationError,
+)
 
 if TYPE_CHECKING:
     from codroid_api import CodroidAPI, RobotSession
     from onrobot.twofg import TWOFG
 
 from app.codroid_picker.app_instance import registry
-from app.codroid_picker.exceptions import OperationPaused, OperationAbort
+from app.codroid_picker.exceptions import (
+    GripperCommandError,
+    OperationAbort,
+    OperationPaused,
+)
 from app.codroid_picker.robot_helpers import (
     resolve_gripper_limits as _resolve_gripper_limits,
     safe_int,
@@ -98,6 +107,9 @@ def command_gripper(
     *,
     force: Optional[int] = None,
     speed: Optional[int] = None,
+    gentle: Optional[bool] = None,
+    vacuum_setpoint: Optional[int] = None,
+    vacuum_threshold: Optional[float] = None,
     prevent_overclose: bool = False,
 ) -> str:
     """Move gripper to target width and return status text.
@@ -112,64 +124,18 @@ def command_gripper(
     Returns:
         Status message string.
     """
-    from app.codroid_picker.session import SESSION
+    from app.codroid_picker.gripper_utils import _command_gripper
 
-    gripper = registry().gripper or SESSION.gripper
-    gripper_defaults = registry().gripper_defaults
-    settings = registry().settings
-    gripper_profile = settings.gripper_profile
-
-    if gripper is None or not gripper.isConnected(t_index=gripper_defaults["t_index"]):
-        return "Gripper is not connected. Enable gripper in Setup menu."
-
-    try:
-        safe_width = float(target_width)
-        min_width, max_width = resolve_gripper_limits(gripper)
-
-        if prevent_overclose:
-            current_width = gripper.get_ext_width(
-                t_index=gripper_defaults["t_index"])
-            if isinstance(current_width, (int, float)) and current_width >= 0:
-                if safe_width < current_width:
-                    safe_width = current_width
-
-        label_lower = action_label.lower()
-        if "open" in label_lower and safe_width <= min_width and max_width > min_width:
-            LOGGER.warning(
-                "Open width %.1f <= min width %.1f; using max width %.1f",
-                safe_width,
-                min_width,
-                max_width,
-            )
-            safe_width = max_width
-
-        safe_width = min(max(safe_width, min_width), max_width)
-
-        applied_force = force if force is not None else gripper_profile.force_default
-        applied_force = min(
-            max(applied_force, gripper_profile.force_min),
-            gripper_profile.force_max,
-        )
-        applied_speed = speed if speed is not None else 80
-
-        gripper.grip(
-            t_index=gripper_defaults["t_index"],
-            t_width=safe_width,
-            n_force=applied_force,
-            p_speed=applied_speed,
-            f_wait=True,
-        )
-
-        message = (
-            f"Gripper {action_label} to {safe_width:.1f} mm @ "
-            f"{applied_force} N / {applied_speed}% speed."
-        )
-        SESSION.last_action = message
-        return message
-
-    except Exception as exc:
-        LOGGER.exception("Gripper command failed")
-        return f"Gripper action failed: {exc}"
+    return _command_gripper(
+        target_width,
+        action_label,
+        force=force,
+        speed=speed,
+        gentle=gentle,
+        vacuum_setpoint=vacuum_setpoint,
+        vacuum_threshold=vacuum_threshold,
+        prevent_overclose=prevent_overclose,
+    )
 
 
 async def drop_with_verify(
@@ -196,7 +162,10 @@ async def drop_with_verify(
     """
     from app.codroid_picker.session import SESSION
 
+    from app.codroid_picker.gripper_utils import _active_gripper_adapter
+
     gripper = registry().gripper or SESSION.gripper
+    adapter = _active_gripper_adapter()
     gripper_defaults = registry().gripper_defaults
 
     # Initial open command
@@ -206,7 +175,7 @@ async def drop_with_verify(
         LOGGER.warning(f"Gripper command may have failed: {result}")
         return result
 
-    if gripper is None:
+    if gripper is None or adapter is None:
         return result
 
     # Wait for gripper to finish
@@ -214,21 +183,23 @@ async def drop_with_verify(
     max_polls = 20  # 2 seconds max
     for poll_count in range(max_polls):
         try:
-            busy = gripper.isBusy(t_index=t_index)
+            busy = adapter.is_busy(t_index=t_index)
             if not busy:
                 break
-        except Exception:
+        except (OnRobotConnectionError, OnRobotTimeoutError):
             break
         await asyncio.sleep(0.1)
 
     LOGGER.info(f"Gripper ready after {(poll_count + 1) * 0.1:.1f}s")
 
     # Verify gripper opened
-    if not gripper.isConnected(t_index=t_index):
+    if not adapter.is_connected(t_index=t_index):
+        return result
+    if not adapter.capabilities.width:
         return result
 
     try:
-        actual_width = gripper.get_ext_width(t_index=t_index)
+        actual_width = adapter.read_telemetry(t_index=t_index).get("width")
         LOGGER.info(f"Gripper actual width after open: {actual_width} mm")
 
         if not isinstance(actual_width, (int, float)) or actual_width <= 0:
@@ -249,12 +220,12 @@ async def drop_with_verify(
 
             # Try to get max width
             try:
-                max_width = gripper.get_max_ext_width(t_index=t_index)
+                _min_width, max_width = adapter.width_limits(t_index=t_index)
                 if isinstance(max_width, (int, float)) and max_width > actual_width:
                     retry_width = max_width
                 else:
                     retry_width = gripper_open_width + 10.0
-            except Exception:
+            except (OnRobotConnectionError, OnRobotTimeoutError, OnRobotValidationError):
                 retry_width = gripper_open_width + 10.0
 
             LOGGER.info(f"Retrying with width: {retry_width} mm")
@@ -266,7 +237,7 @@ async def drop_with_verify(
             )
 
             # Check final width
-            actual_width = gripper.get_ext_width(t_index=t_index)
+            actual_width = adapter.read_telemetry(t_index=t_index).get("width")
             LOGGER.info(f"Final gripper width: {actual_width} mm")
 
             if isinstance(actual_width, (int, float)) and actual_width > 0:
@@ -274,7 +245,7 @@ async def drop_with_verify(
                 if new_diff <= max_width_diff:
                     break
 
-    except Exception as exc:
+    except (OnRobotConnectionError, OnRobotTimeoutError, OnRobotValidationError, TypeError, ValueError) as exc:
         LOGGER.warning(f"Error verifying gripper state: {exc}")
 
     return result

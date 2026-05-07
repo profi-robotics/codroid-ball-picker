@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
 from .base import ProgramResult, ProgramStatus, RobotProgram
+from app.codroid_picker.robot_helpers import is_gripper_connected
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,10 +87,7 @@ class PlateTestProgram(RobotProgram):
         if SESSION.robot_calibration_min_z is None:
             return False, "Robot calibration is missing; run robot calibration first."
 
-        if SESSION.gripper is None:
-            return False, "Gripper session is not active; enable the gripper."
-
-        if not SESSION.gripper.isConnected(t_index=GRIPPER_DEFAULTS["t_index"]):
+        if not is_gripper_connected():
             return False, "Gripper is not connected; re-enable the gripper."
 
         frame, _depth = ui.get_latest_frame()
