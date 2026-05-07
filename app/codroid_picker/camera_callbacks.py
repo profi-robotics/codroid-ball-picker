@@ -1130,30 +1130,32 @@ def register_camera_callbacks(app: Dash) -> None:
         ):
             status = SESSION.camera_last_error_status or "unavailable"
 
-        if status == "live":
-            # Camera is connected - show the low-latency video feed.
-            if should_try_webrtc():
-                return html.Div(
-                    [
-                        html.Video(
-                            id="camera-feed",
-                            className="camera-feed camera-feed-video",
-                            autoPlay=True,
-                            muted=True,
-                        ),
-                        html.Canvas(
-                            id="camera-overlay-canvas",
-                            className="camera-overlay-canvas",
-                        ),
-                    ],
-                    id="camera-video-wrapper",
-                    className="camera-video-wrapper",
-                    **{
-                        "data-video-transport": "webrtc",
-                        "data-webrtc-preferred": "true",
-                    },
-                )
+        if should_try_webrtc():
+            message = _resolve_camera_message(camera_state)
+            return html.Div(
+                [
+                    html.Video(
+                        id="camera-feed",
+                        className="camera-feed camera-feed-video",
+                        autoPlay=True,
+                        muted=True,
+                    ),
+                    html.Canvas(
+                        id="camera-overlay-canvas",
+                        className="camera-overlay-canvas",
+                    ),
+                ],
+                id="camera-video-wrapper",
+                className="camera-video-wrapper",
+                **{
+                    "data-video-transport": "webrtc",
+                    "data-webrtc-preferred": "true",
+                    "data-camera-status": status,
+                    "data-camera-message": message,
+                },
+            )
 
+        if status == "live":
             return html.Div(
                 t("WebRTC video transport unavailable."),
                 id="camera-feed",

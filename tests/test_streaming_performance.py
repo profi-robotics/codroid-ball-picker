@@ -59,7 +59,7 @@ class StreamingPerformanceTests(unittest.TestCase):
         SESSION.camera_stream = None
         try:
             with patch.object(streaming, "DepthAIFrameStream", _RetryingStream):
-                message = streaming.start_camera_stream(640, 480, 30)
+                message = streaming.start_camera_stream(640, 480, 30, source="oak")
 
             self.assertIn("Camera retrying", message)
             self.assertIsNotNone(SESSION.camera_stream)
