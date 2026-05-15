@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="{{ locale }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codroid Ball Picker</title>
+    <link rel="icon" href="/legacy-assets/favicon.ico">
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script>
+      window.__INITIAL_STATE__ = {{ initial_state_json | safe }};
+      window.__I18N__ = {{ catalog_json | safe }};
+    </script>
+    <script defer src="/static/js/i18n.js"></script>
+    <script defer src="/static/js/sse.js"></script>
+    <script defer src="/static/js/video.js"></script>
+    <script defer src="/static/js/app.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <img src="/legacy-assets/profi-robotics.webp" alt="Profi Robotics">
+        <h1>Codroid Ball Picker</h1>
+      </div>
+      <div class="header-status">
+        <span class="badge" data-badge="camera">Camera: off</span>
+        <span class="badge" data-badge="robot">Robot: offline</span>
+        <span class="badge" data-badge="gripper">Gripper: offline</span>
+        <span class="badge" data-badge="safety">Safety: clear</span>
+        <span class="badge" data-badge="sse">SSE: connecting</span>
+        <select id="language-select" aria-label="Language">
+          <option value="en" {% if locale == "en" %}selected{% endif %}>English</option>
+          <option value="uk" {% if locale == "uk" %}selected{% endif %}>Українська</option>
+        </select>
+        <button id="open-setup" class="primary" type="button">Setup</button>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <section class="workflow-column control-panel">
+        <nav class="tabs" aria-label="Main workflow tabs">
+          <button data-tab-target="applications" class="active" type="button">Applications</button>
+          <button data-tab-target="monitoring" type="button">Monitoring</button>
+          <button data-tab-target="calibration" type="button">Calibration</button>
+        </nav>
+
+        <section class="tab active" data-tab="applications">
+          <nav class="subtabs" aria-label="Application tabs">
+            <button data-subtab-target="pick-place" class="active" type="button">Pick & Place</button>
+            <button data-subtab-target="workspace" type="button">Workspace</button>
+          </nav>
+
+          <section class="subtab active" data-subtab="pick-place">
+            <article class="panel">
+              <h2>Tracking Controls</h2>
+              <div class="form-grid">
+                <label>Tracking mode
+                  <select data-setting="tracking_mode">
+                    <option value="move">Move target</option>
+                    <option value="segment">Segmented tracking</option>
+                  </select>
+                </label>
+                <label>Segment min (mm)<input type="number" step="1" data-setting="segment_min"></label>
+                <label>Segment max (mm)<input type="number" step="5" data-setting="segment_max"></label>
+                <label>Segment fraction<input type="number" step="0.1" min="0.1" max="1" data-setting="segment_fraction"></label>
+              </div>
+            </article>
+
+            <details class="panel" open>
+              <summary>Detect</summary>
+              <div class="stack">
+                <div class="button-row">
+                  <label class="file-button">Upload YOLO model
+                    <input id="model-upload-input" type="file" accept=".pt,.onnx,.engine">
+                  </label>
+                  <select id="model-select" aria-label="Active model"></select>
+                  <button id="load-model" type="button">Load selected model</button>
+                  <button id="benchmark-model" type="button">Run benchmark</button>
+                </div>
+                <div class="form-grid">
+                  <label>Confidence<input type="number" min="0" max="1" step="0.05" data-detection-param="confidence"></label>
+                  <label>IOU<input type="number" min="0" max="1" step="0.05" data-detection-param="iou"></label>
+                  <label>Max detections<input type="number" min="1" max="200" step="1" data-detection-param="max_detections"></label>
+                  <label>YOLO frame skip<input type="range" min="1" max="10" step="1" data-detection-param="frame_skip"><span data-text="detection-frame-skip">3</span></label>
+                  <label>Class filter<input type="text" data-detection-param="classes" placeholder="e.g. 0,32"></label>
+                </div>
+                <div class="button-row">
+                  <button id="save-detection-params" type="button">Apply detection params</button>
+                  <button data-command="/detection/run" data-payload='{"force":true}' type="button">Run detection</button>
+                </div>
+                <p class="muted" data-text="model-status">Model idle.</p>
+                <p class="muted" data-text="detection-status">Detection idle.</p>
+                <div class="list" data-list="detections"></div>
+              </div>
+            </details>
+
+            <details class="panel" open>
+              <summary>Drop Location</summary>
+              <p class="muted" data-text="drop-position-metrics">No drop target taught.</p>
+              <div class="form-grid compact">
+                <label>Drop height offset (mm)<input id="drop-height" type="number" min="-50" max="200" step="1" value="10"></label>
+              </div>
+              <div class="button-row">
+                <button data-command="/drop-target/teach" type="button">Teach drop position</button>
+                <button data-command="/drop-target/return" data-payload-source="drop" type="button">Return to drop position</button>
+              </div>
+            </details>
+
+            <details class="panel" open>
+              <summary>Auto pick & place</summary>
+              <div class="button-row">
+                <button data-command="/auto/start" class="primary" data-requires="auto-ready" type="button">Start Auto</button>
+                <button data-command="/auto/stop" class="danger" type="button">Stop Auto</button>
+              </div>
+              <div class="prereq-grid" data-list="prerequisites"></div>
+              <div class="form-grid">
+                <label>Pick labels<input type="text" data-auto-config="target_labels" placeholder="orange,sports ball"></label>
+                <label>Drop ignore radius (mm)<input type="number" step="5" min="0" max="200" data-auto-config="drop_ignore_radius_mm"></label>
+              </div>
+              <div class="label-profile-editor" id="auto-label-profile-editor"></div>
+              <button id="save-auto-config" type="button">Apply auto config</button>
+              <p class="muted" data-text="auto-message">Auto idle.</p>
+            </details>
+
+            <details class="panel">
+              <summary>Plate Pick & Place Test</summary>
+              <div class="form-grid">
+                <label>Approach height (mm)<input type="number" value="-30" min="-200" max="0" data-plate-test="approach_mm"></label>
+                <label>Pick height (mm)<input type="number" value="0" min="-50" max="200" data-plate-test="pick_mm"></label>
+                <label>Drop height offset (mm)<input type="number" value="10" min="-50" max="200" data-plate-test="drop_mm"></label>
+                <label>Grip timeout (s)<input type="number" value="2.5" min="0.5" max="10" step="0.5" data-plate-test="grip_timeout_s"></label>
+                <label class="switch-row"><input type="checkbox" data-plate-test="dry_run"> Dry run</label>
+              </div>
+              <button id="run-plate-test" data-command="/plate-test/run" data-payload-source="plate-test" type="button">Run plate test</button>
+              <p class="muted" data-text="plate-test-status">Plate test idle.</p>
+            </details>
+
+            <article class="panel">
+              <h2>Pick & Drop Controls</h2>
+              <div class="button-row">
+                <button data-command="/pick/closest" type="button">Pick closest object</button>
+                <button data-command="/pick/drop" data-payload-source="drop" type="button">Drop</button>
+                <button data-command="/pick/pick-and-drop" class="primary" type="button">Pick & Drop closest</button>
+                <button data-command="/operation/reset" class="ghost-danger" type="button">Reset if stuck</button>
+              </div>
+              <p class="muted" data-text="operation-message-inline">Program idle.</p>
+            </article>
+          </section>
+
+          <section class="subtab" data-subtab="workspace">
+            <article class="panel">
+              <h2>Workspace</h2>
+              <p>Use the two corner markers to define the workarea size.</p>
+              <div class="button-row">
+                <button data-command="/calibration/workspace/compute" data-payload-source="workspace" type="button">Compute workspace</button>
+                <button data-command="/calibration/workspace/load" type="button">Use saved workspace</button>
+                <button data-command="/calibration/workspace/clear" class="ghost-danger" type="button">Clear workspace</button>
+              </div>
+              <p class="muted" data-text="workspace-metrics">Workspace missing.</p>
+            </article>
+          </section>
+        </section>
+
+        <section class="tab" data-tab="monitoring">
+          <div class="monitor-grid">
+            <article class="panel"><h2>System Summary</h2><div class="kv-list" data-monitor="system"></div></article>
+            <article class="panel"><h2>Detection Summary</h2><div class="kv-list" data-monitor="detection"></div></article>
+            <article class="panel"><h2>Pick & Drop Summary</h2><div class="kv-list" data-monitor="pick"></div></article>
+            <article class="panel"><h2>Auto Plan Summary</h2><div class="kv-list" data-monitor="auto-plan"></div></article>
+            <article class="panel"><h2>Robot Health</h2><div class="kv-list" data-monitor="robot-health"></div></article>
+            <article class="panel chart-panel"><h2>Detection Trend</h2><div class="trend" data-trend="detection"></div></article>
+            <article class="panel chart-panel"><h2>Cycle Time Trend</h2><div class="trend" data-trend="cycle"></div></article>
+          </div>
+          <details class="panel diagnostics">
+            <summary>Raw diagnostics</summary>
+            <pre data-json="state-summary">{}</pre>
+          </details>
+        </section>
+
+        <section class="tab" data-tab="calibration">
+          <article class="panel">
+            <h2>Calibration Steps</h2>
+            <ol class="stepper">
+              <li data-step="camera">
+                <strong>Camera calibration</strong>
+                <span data-text="camera-calibration-state">Idle</span>
+                <div class="progress"><span data-progress="camera-calibration"></span></div>
+                <div class="button-row">
+                  <button data-command="/calibration/camera/capture" type="button">Calibrate camera</button>
+                  <button data-command="/calibration/camera/load" type="button">Use saved calibration</button>
+                </div>
+              </li>
+              <li data-step="workspace">
+                <strong>Workspace</strong>
+                <span data-text="workspace-calibration-state">Missing</span>
+                <div class="button-row">
+                  <button data-command="/calibration/workspace/compute" data-payload-source="workspace" type="button">Compute workspace</button>
+                  <button data-command="/calibration/workspace/load" type="button">Use saved workspace</button>
+                </div>
+              </li>
+              <li data-step="robot">
+                <strong>Robot calibration</strong>
+                <span data-text="robot-calibration-state">Idle</span>
+                <div class="plate-summary" data-monitor="plate"></div>
+                <div class="button-row">
+                  <button data-command="/calibration/plate/detect" type="button">Detect plate</button>
+                  <button data-command="/calibration/robot/start" type="button">Begin teaching</button>
+                  <button data-command="/calibration/robot/cancel" type="button">Cancel teaching</button>
+                </div>
+                <div class="button-row">
+                  <button data-command="/calibration/robot/point" data-payload='{"index":1}' type="button">Capture point 1</button>
+                  <button data-command="/calibration/robot/point" data-payload='{"index":2}' type="button">Capture point 2</button>
+                  <button data-command="/calibration/robot/point" data-payload='{"index":3}' type="button">Capture point 3</button>
+                </div>
+                <div class="button-row">
+                  <button data-command="/calibration/robot/finish" class="primary" type="button">Apply calibration</button>
+                  <button data-command="/calibration/robot/load" type="button">Use saved robot calibration</button>
+                  <button data-command="/calibration/robot/verify" type="button" data-requires="robot-verification">Run verification move</button>
+                </div>
+                <div class="kv-list" data-monitor="robot-calibration"></div>
+              </li>
+            </ol>
+            <button data-command="/calibration/reset" data-payload='{"scope":"all"}' class="ghost-danger" type="button">Reset calibration</button>
+          </article>
+        </section>
+      </section>
+
+      <section class="camera-column camera-band">
+        <div class="camera-toolbar">
+          <strong>Camera View</strong>
+          <div class="segmented" data-overlay-group>
+            <button data-overlay="auto" class="active" type="button">Auto</button>
+            <button data-overlay="calibration" type="button">Calib</button>
+            <button data-overlay="workspace" type="button">Workspace</button>
+            <button data-overlay="plate" type="button">Plate</button>
+            <button data-overlay="detection" type="button">Detections</button>
+            <button data-overlay="auto_plan" type="button">Auto Plan</button>
+            <button data-overlay="none" type="button">Off</button>
+          </div>
+          <button class="icon-btn" id="fullscreen-video" title="Fullscreen" type="button">Fullscreen</button>
+        </div>
+        <p class="overlay-status" data-text="overlay-status">Overlay: auto</p>
+        <div class="video-shell">
+          <img id="camera-stream" src="/video/stream" alt="Live camera stream">
+        </div>
+        <div class="status-line">
+          <span data-text="camera-message">Camera stream offline.</span>
+          <span data-text="video-stats">MJPEG</span>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer" id="app-footer">
+      <div class="footer-header">
+        <div class="stop-block">
+          <span>Emergency stop</span>
+          <button class="stop" data-command="/robot/stop" type="button">STOP</button>
+          <label class="switch-row"><input id="robot-power-toggle" type="checkbox"> Robot power</label>
+        </div>
+        <div class="footer-group">
+          <strong>Auto pick & place</strong>
+          <div class="button-row">
+            <button data-command="/auto/start" data-requires="auto-ready" type="button">Start Auto</button>
+            <button data-command="/auto/stop" class="danger" type="button">Stop Auto</button>
+          </div>
+          <div class="mini-prereqs" data-list="footer-prerequisites"></div>
+        </div>
+        <div class="footer-group">
+          <strong>Program control</strong>
+          <div class="button-row">
+            <button data-command="/operation/pause" type="button">Pause</button>
+            <button data-command="/operation/reset" type="button">Reset</button>
+          </div>
+          <span data-text="operation-message">Program idle.</span>
+        </div>
+        <div class="footer-group">
+          <strong>Gripper width</strong>
+          <span data-text="footer-gripper-status">Gripper offline.</span>
+          <div class="range-row">
+            <button data-step-input="footer-gripper-width" data-step="-0.5" type="button">-</button>
+            <input id="footer-gripper-width" type="range" min="0" max="100" step="0.5" value="20">
+            <button data-step-input="footer-gripper-width" data-step="0.5" type="button">+</button>
+            <output data-output-for="footer-gripper-width">20</output>
+          </div>
+        </div>
+        <div class="footer-status">
+          <span data-text="robot-pose">X=-- Y=-- Z=--</span>
+          <div class="flange">
+            <span>Flange</span>
+            <i data-di="1"></i><i data-di="2"></i><i data-di="3"></i><i data-di="4"></i>
+          </div>
+          <button id="footer-toggle" type="button">Hide footer</button>
+        </div>
+      </div>
+      <div class="footer-body">
+        <div class="footer-group wide">
+          <strong>Robot speed</strong>
+          <div class="range-row">
+            <button data-step-input="robot-speed-slider" data-step="-5" type="button">-</button>
+            <input id="robot-speed-slider" type="range" min="0" max="100" step="5" value="25">
+            <button data-step-input="robot-speed-slider" data-step="5" type="button">+</button>
+            <output data-output-for="robot-speed-slider">25</output>
+          </div>
+        </div>
+        <div class="footer-group wide">
+          <strong>Gripper advanced</strong>
+          <div class="range-row">
+            <label>Force <input id="footer-gripper-force" type="range" min="0" max="100" step="5" value="40"></label>
+            <label>Speed <input id="footer-gripper-speed" type="range" min="10" max="100" step="5" value="80"></label>
+            <button id="footer-gripper-open" type="button">Open</button>
+            <button id="footer-gripper-close" type="button">Close</button>
+          </div>
+        </div>
+        <div class="footer-group rescue">
+          <strong>Rescue joint control</strong>
+          <div class="joint-grid">
+            {% for idx in range(1, 7) %}
+            <span>J{{ idx }}</span>
+            <button data-command="/robot/jog" data-payload='{"axis":"j{{ idx }}","direction":-1,"mode":"rescue"}' type="button">-</button>
+            <button data-command="/robot/jog" data-payload='{"axis":"j{{ idx }}","direction":1,"mode":"rescue"}' type="button">+</button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <dialog id="setup-dialog" class="setup-dialog">
+      <form method="dialog">
+        <header>
+          <h2>Setup & Connections</h2>
+          <button value="close" type="submit">Close</button>
+        </header>
+      </form>
+      <div class="setup-body">
+        <section>
+          <h3>Camera connection</h3>
+          <div class="form-grid">
+            <label>Camera source
+              <select data-setting="camera_source">
+                <option value="oak">OAK-D / DepthAI</option>
+                <option value="host">Generic / host camera</option>
+                <option value="fake">Fake camera</option>
+              </select>
+            </label>
+            <label>Host camera index<input type="number" min="0" max="16" step="1" data-setting="host_camera_index"></label>
+            <label>Host camera device<input type="text" data-setting="host_camera_device" placeholder="/dev/video0"></label>
+            <label>Width<input type="number" min="320" max="3840" step="1" data-setting="camera_resolution.0"></label>
+            <label>Height<input type="number" min="240" max="2160" step="1" data-setting="camera_resolution.1"></label>
+            <label>FPS<input type="number" min="1" max="120" step="1" data-setting="camera_fps"></label>
+            <label class="switch-row"><input type="checkbox" data-setting="camera_enable_depth"> Enable depth</label>
+            <label class="switch-row"><input type="checkbox" id="camera-lock-af"> Lock autofocus</label>
+          </div>
+          <div class="button-row">
+            <button id="camera-scan" type="button">Scan for camera</button>
+            <button data-command="/camera/start" data-payload-source="camera-settings" type="button">Start configured camera</button>
+            <button data-command="/camera/stop" type="button">Stop camera</button>
+          </div>
+          <div class="list" id="camera-device-list"></div>
+          <p class="muted" data-text="camera-status-text">Camera idle.</p>
+        </section>
+
+        <section>
+          <h3>Robot connection</h3>
+          <div class="form-grid">
+            <label>Robot host<input type="text" data-setting="robot_host" placeholder="192.168.101.100"></label>
+            <label>Robot port<input type="number" min="1" data-setting="robot_port"></label>
+            <label>User WS port<input type="number" min="1" data-setting="user_port"></label>
+            <label>Robot coordinate ID<input type="number" min="0" max="10" data-setting="robot_coordinate_id"></label>
+          </div>
+          <div class="button-row">
+            <button data-command="/robot/connect" data-payload-source="robot-settings" type="button">Test robot connection</button>
+            <button data-command="/robot/acquire" type="button">Acquire robot control</button>
+            <button data-command="/robot/release" class="ghost-danger" type="button">Release robot control</button>
+          </div>
+          <p class="muted" data-text="robot-status-text">Robot offline.</p>
+        </section>
+
+        <section>
+          <h3>OnRobot Gripper</h3>
+          <div class="form-grid">
+            <label>Gripper type
+              <select data-setting="gripper_type">
+                <option value="auto">Auto</option>
+                <option value="twofg7">2FG7</option>
+                <option value="sg">SG</option>
+                <option value="vgc10">VGC10</option>
+              </select>
+            </label>
+            <label>Compute Box IP<input type="text" data-setting="gripper_ip" placeholder="192.168.101.95"></label>
+            <label>Finger orientation
+              <select id="gripper-orientation">
+                <option value="inward">Inward</option>
+                <option value="outward">Outward</option>
+              </select>
+            </label>
+          </div>
+          <div class="button-row">
+            <button data-command="/gripper/connect" data-payload-source="gripper-settings" type="button">Test gripper</button>
+            <button data-command="/gripper/disconnect" type="button">Disconnect gripper</button>
+            <button id="apply-gripper-orientation" type="button">Apply orientation</button>
+          </div>
+          <p class="muted" data-text="gripper-status-text">Gripper offline.</p>
+        </section>
+
+        <section>
+          <h3>Calibration & settings</h3>
+          <div class="form-grid">
+            <label>Marker ID A<input type="number" min="0" max="49" data-setting="marker_ids.0"></label>
+            <label>Marker ID B<input type="number" min="0" max="49" data-setting="marker_ids.1"></label>
+            <label>Marker size (mm)<input type="number" min="1" max="200" data-setting="marker_size_mm"></label>
+            <label>Calibration bundle path<input type="text" data-setting="calibration_bundle_path"></label>
+            <label>Workspace path<input type="text" data-setting="workspace_path"></label>
+            <label>Robot calibration path<input type="text" data-setting="robot_calibration_path"></label>
+          </div>
+        </section>
+
+        <section>
+          <h3>Auto pick & place defaults</h3>
+          <div class="form-grid">
+            <label>Pick labels<input type="text" data-setting="auto_target_labels" placeholder="orange,sports ball"></label>
+            <label>Drop ignore radius<input type="number" step="5" data-setting="auto_drop_ignore_radius_mm"></label>
+            <label>Intrusion match<input type="number" step="1" data-setting="auto_intrusion_match_mm"></label>
+            <label>Detection stale (s)<input type="number" step="0.05" data-setting="auto_detection_stale_s"></label>
+            <label>Approach height<input type="number" step="1" data-setting="auto_approach_mm"></label>
+            <label>Pick height<input type="number" step="1" data-setting="auto_pick_mm"></label>
+            <label>Drop height<input type="number" step="1" data-setting="auto_drop_mm"></label>
+            <label class="switch-row"><input type="checkbox" data-setting="auto_estimate_width"> Estimate width</label>
+          </div>
+        </section>
+
+        <section>
+          <h3>Pick follow tuning & safety</h3>
+          <div class="form-grid">
+            <label>Follow timeout<input type="number" step="1" data-setting="pick_follow_timeout_s"></label>
+            <label>Update interval<input type="number" step="0.01" data-setting="pick_follow_update_interval_s"></label>
+            <label>Segment hold<input type="number" step="0.01" data-setting="pick_follow_segment_hold_s"></label>
+            <label>Settle time<input type="number" step="0.05" data-setting="pick_follow_settle_s"></label>
+            <label>Tolerance<input type="number" step="0.1" data-setting="pick_follow_tolerance_mm"></label>
+            <label class="switch-row"><input type="checkbox" data-setting="camera_safety_enabled"> Enable camera safety pause</label>
+            <label>Safety zone
+              <select data-setting="camera_safety_zone">
+                <option value="workspace">Workspace only</option>
+                <option value="full_frame">Full frame</option>
+              </select>
+            </label>
+            <label>Safety stop labels<input type="text" data-setting="camera_safety_labels" placeholder="person,people"></label>
+            <label>Rescue jog hold<input type="number" step="0.05" data-setting="rescue_jog_hold_s"></label>
+            <label>Coord5 max Z<input type="number" step="1" data-setting="coord5_max_z_mm"></label>
+          </div>
+        </section>
+      </div>
+      <footer>
+        <button id="settings-save" class="primary" type="button">Save settings</button>
+        <button data-command="/settings/reset" class="ghost-danger" type="button">Reset to defaults</button>
+        <span class="muted" data-text="settings-status">Settings idle.</span>
+      </footer>
+    </dialog>
+
+    <dialog class="error-dialog" data-error-dialog="emergency">
+      <h2>Emergency stop triggered</h2>
+      <p>The current program has been paused. Clear the physical E-stop and acknowledge to continue.</p>
+      <div class="button-row">
+        <button data-command="/robot/errors/ack" data-payload='{"error_type":"emergency"}' class="danger" type="button">Clear</button>
+      </div>
+    </dialog>
+    <dialog class="error-dialog" data-error-dialog="overspeed">
+      <h2>Overspeed detected</h2>
+      <p>The program has been paused. Choose how to proceed.</p>
+      <div class="button-row">
+        <button data-command="/robot/errors/ack" data-payload='{"error_type":"overspeed"}' type="button">Clear</button>
+        <button data-command="/operation/pause" data-payload='{"reason":"overspeed"}' type="button">Stay paused</button>
+        <button data-command="/operation/resume" type="button">Clear & resume</button>
+        <button data-command="/operation/reset" class="ghost-danger" type="button">Cancel & reset</button>
+      </div>
+    </dialog>
+    <dialog class="error-dialog" data-error-dialog="joint_protection">
+      <h2>Joint protection detected</h2>
+      <p>Clear the protection alarm to continue.</p>
+      <div class="button-row">
+        <button data-command="/robot/errors/ack" data-payload='{"error_type":"joint_protection"}' type="button">Clear</button>
+        <button data-command="/operation/pause" data-payload='{"reason":"joint_protection"}' type="button">Stay paused</button>
+      </div>
+    </dialog>
+    <dialog class="error-dialog" data-error-dialog="wrong_tool">
+      <h2>Tool/payload mismatch</h2>
+      <p>Clear the tool error or use rescue controls.</p>
+      <div class="button-row">
+        <button data-command="/robot/errors/ack" data-payload='{"error_type":"wrong_tool"}' class="danger" type="button">Clear</button>
+      </div>
+    </dialog>
+    <dialog class="error-dialog" data-error-dialog="drag">
+      <h2>Drag not allowed</h2>
+      <p>Manual dragging is blocked. Clear the warning to continue.</p>
+      <div class="button-row">
+        <button data-command="/robot/errors/ack" data-payload='{"error_type":"drag"}' type="button">Clear</button>
+        <button data-command="/operation/pause" data-payload='{"reason":"drag_not_allowed"}' type="button">Stay paused</button>
+      </div>
+    </dialog>
+
+    <div id="notification-stack" class="notification-stack" aria-live="polite"></div>
+  </body>
+</html>

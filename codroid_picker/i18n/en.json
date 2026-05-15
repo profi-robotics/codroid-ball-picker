@@ -1,0 +1,15 @@
+{
+  "app.title": "Codroid Ball Picker",
+  "camera.offline": "Camera stream offline",
+  "status.connected": "Connected",
+  "status.disconnected": "Disconnected",
+  "Plate test idle.": "Plate test idle.",
+  "Run plate test": "Run plate test",
+  "Dry run": "Dry run",
+  "Fullscreen": "Fullscreen",
+  "Robot Health": "Robot Health",
+  "Migration parity": "Migration parity",
+  "Robot error acknowledged.": "Robot error acknowledged.",
+  "Plate test complete.": "Plate test complete.",
+  "Camera safety pause: configured object detected.": "Camera safety pause: configured object detected."
+}

@@ -50,6 +50,10 @@ jobs:
         working-directory: codroid-ball-picker
         run: uv run ruff check .
 
+      - name: Mypy
+        working-directory: codroid-ball-picker
+        run: uv run mypy --strict codroid_picker
+
       - name: Pytest
         working-directory: codroid-ball-picker
         run: uv run pytest -q

@@ -1,22 +1,25 @@
 # Codroid Vision-Guided Bootstrap Demo
 
 This repository contains a hardware-agnostic scaffold for bringing up the Estun
-Codroid + OAK-D pick-and-place pipeline. The focus is on repeatable calibration,
+Codroid + OAK-D pick-and-place pipeline. The runtime UI is now a FastAPI
+operator console with server-rendered HTML, Server-Sent Events status updates,
+and MJPEG camera streaming. The focus remains repeatable calibration,
 marker-driven workspace definition, coordinate mapping, and `codroid-api` for
 robot motion commands.
 
 ## Layout
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
-- `app/` – orchestration logic that ties vision outputs to robot commands, now powering the Dash UI.
+- `codroid_picker/` – FastAPI application, service layer, state store, hardware adapters, frontend assets, and no-build operator UI.
+- `app/` – legacy Dash-era orchestration modules retained during migration and for compatibility tests.
 - `codroid-api` (external dependency) – robot WebSocket/HTTP control client.
 - `onrobot-api` (external dependency) – OnRobot gripper control client.
-- `run_codroid_picker.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
+- `run_codroid_picker.py` – entry point for the FastAPI operator console.
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 - `docs/` – integration guides for gripper and other peripherals.
 
 ## Quickstart
-1. Install dependencies (Python 3.11+ recommended) via `uv sync`; the manifest pins DepthAI to the tested runtime version:
+1. Install dependencies with Python 3.11+ via `uv sync`; the manifest pins DepthAI to the tested runtime version:
    ```bash
    uv sync
    ```
@@ -27,28 +30,44 @@ robot motion commands.
      --count 15 \
      --preview
    ```
-3. Configure robot connectivity via `CODROID_*` env vars (defaults come from `codroid-api`). `AppSettings` in `app/settings.py` groups the robot/network, marker, and asset-path preferences and persists edits to `data/app_settings.json`. Add a `.env` file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_HOST=192.168.1.5`) to override those values in a particular environment.
+3. Configure robot connectivity via `CODROID_*` env vars. `AppSettings` in `codroid_picker/config.py` merges environment values, `data/app_settings.json`, and defaults. Add a `.env` file with `CODROID_`-prefixed keys, for example `CODROID_ROBOT_HOST=192.168.1.5`, to override values in a specific environment.
 4. Verify your OAK-D is visible:
    ```bash
-   python -m vision.camera_check
+   uv run python -m vision.camera_check
    ```
-5. Launch the Dash calibration console:
+5. Launch the FastAPI operator console:
    ```bash
-   python run_codroid_picker.py --debug
+   uv run python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime OAK-D startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the depth snapshot while the live stream is paused; click **Enable camera** after calibration to resume RGB streaming. For local testing without an OAK-D, choose **Host camera** in Setup and set the OpenCV camera index, or start with `CODROID_CAMERA_SOURCE=host CODROID_HOST_CAMERA_INDEX=0`. Host cameras provide RGB frames only; depth capture and OAK-D calibration helpers still require DepthAI hardware. Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+Then open `http://127.0.0.1:8050`. The root page is a single server-rendered operator panel with Manual, Auto, Calibration, Setup, and Monitor tabs. The camera preview is served through `GET /video/stream` as MJPEG and falls back to `GET /video/snapshot.jpg` polling if the stream disconnects. UI state is pushed through `GET /events/status` as SSE snapshots and deltas, with `GET /state` available for diagnostics.
 
-The live camera preview uses WebRTC only. WebRTC sends raw camera frames from the latest-frame store, caps output with `CODROID_WEBRTC_MAX_FPS` (default `30`), limits software-encoded width with `CODROID_WEBRTC_MAX_WIDTH` (default `640`), and limits concurrent browser peers with `CODROID_WEBRTC_MAX_PEERS` (default `2`). Other stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_OVERLAY_MAX_FPS` (default `10`), and `CODROID_CAMERA_RETRY_MAX_BACKOFF_S` (default `30`).
-To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
-When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
-The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
+For local testing without physical hardware, start with fake adapters:
+
+```bash
+CODROID_USE_FAKE_HARDWARE=1 uv run python run_codroid_picker.py --debug
+```
+
+Fake hardware does not override an explicit camera source: `CODROID_CAMERA_SOURCE=generic` or a **Start generic camera** command still opens the OpenCV host camera path, while robot and gripper adapters can remain fake.
+
+For a generic OpenCV camera, use an index or an explicit device path. OAK-D remains the default when `CODROID_CAMERA_SOURCE` is unset.
+
+```bash
+CODROID_CAMERA_SOURCE=generic CODROID_HOST_CAMERA_INDEX=0 uv run python run_codroid_picker.py
+CODROID_CAMERA_SOURCE=generic CODROID_HOST_CAMERA_DEVICE=/dev/video0 uv run python run_codroid_picker.py
+CODROID_CAMERA_SOURCE=generic CODROID_HOST_CAMERA_DEVICE=/dev/v4l/by-id/<camera-id> uv run python run_codroid_picker.py
+```
+
+Set `CODROID_CAMERA_AUTOSTART=1` to open the configured camera during server startup instead of pressing **Setup -> Start generic camera** in the UI.
+
+For Azure Kinect testing, first confirm that the color stream is exposed to OpenCV, for example as `/dev/video*` or through a GStreamer pipeline. If the Azure Kinect Sensor SDK is the only available interface on the host, install/configure a V4L2/GStreamer bridge first or add a dedicated `k4a` adapter; the generic path intentionally only depends on OpenCV.
+
+The FastAPI server intentionally runs as one process and one uvicorn worker so the camera, robot session, gripper session, state store, and detection worker are not duplicated. Robot and gripper network probes are not forced during initial page load; use the Setup tab to connect or acquire control. The UI supports English (`en`) and Ukrainian (`uk`) through locale JSON files in `codroid_picker/i18n/`; `ui_language` is persisted in `data/app_settings.json`.
 
 For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
-python run_codroid_picker.py
+uv run python run_codroid_picker.py
 ```
-On Jetson-class devices, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive. Override with `CODROID_UI_STATUS_INTERVAL_MS` and `CODROID_UI_MONITOR_INTERVAL_MS` when a deployment needs different UI update cadence.
-The Dash shell also opens `/ui_events` as a Server-Sent Events stream. That stream pushes cached camera, robot, gripper, operation, safety, model, detection, and monitoring snapshots into Dash stores so display updates do not poll hardware. If the stream is disconnected for more than 3 seconds, the existing low-rate interval callbacks resume as a fallback until SSE reconnects.
+Useful video knobs are `CODROID_VIDEO_MAX_FPS`, `CODROID_VIDEO_MAX_WIDTH`, and `CODROID_VIDEO_JPEG_QUALITY`. Detection is isolated behind `DetectionService`; install the optional ML stack with `uv sync --extra ml` when YOLO model loading is needed.
 
 ## Run checks locally
 
@@ -56,9 +75,14 @@ The Dash shell also opens `/ui_events` as a Server-Sent Events stream. That stre
 uv sync --dev
 uv run python -m compileall .
 uv run ruff check .
+uv run mypy --strict codroid_picker
 uv run pytest -q
 uv build
 ```
+
+For no-hardware development, use `docs/offline_fastapi_development.md`.
+Before retiring the legacy Dash package, run the FastAPI hardware acceptance
+checklist in `docs/fastapi_hardware_acceptance.md` on the real cell.
 
 ## User Manual (UK)
 
@@ -86,10 +110,10 @@ bash scripts/build_user_manual_pdf.sh --engine weasyprint
 
 ### PDF build prerequisites
 
-- `pandoc` available either from system `PATH` or from project dependencies (`pypandoc-binary` after `uv sync`)
-- A PDF engine available for the selected `--engine`:
+- `pandoc` available from system `PATH`.
+- A PDF engine available outside the runtime dependency set:
   - TeX engine (`pdflatex`, `xelatex`, `lualatex`) for LaTeX-based export, or
-  - `weasyprint` (provided by project dependencies after `uv sync`)
+  - `weasyprint` installed manually in a documentation environment.
 
 Default output path:
 
@@ -97,38 +121,33 @@ Default output path:
 
 ## Application Settings
 
-`app/settings.py` defines an `AppSettings` model backed by `pydantic-settings`. It groups robot connectivity, marker/workspace preferences, and persisted metadata (gripper IP, last/active model, drop marker info) into a single object that is written to `data/app_settings.json` whenever the UI saves settings. It also stores auto pick defaults, selected YOLO pick labels, per-label pick/grip profiles, and the YOLO frame-skip cadence used on Jetson-class hardware. The same model loads `.env` files automatically, so drop a file with `CODROID_`-prefixed keys (for example `CODROID_ROBOT_PORT=9000`, `CODROID_MARKER_IDS=[1,2]`) to override the defaults for a specific deployment without touching the UI.
+`codroid_picker/config.py` defines an `AppSettings` model backed by
+`pydantic-settings`. It groups robot connectivity, camera/video defaults,
+marker/workspace preferences, detection settings, safety settings, auto-pick
+defaults, and persisted metadata into one effective model. Runtime-editable
+settings are saved atomically to `data/app_settings.json`; environment variables
+with the `CODROID_` prefix continue to override deployment-specific values.
 
-## Calibration UI (Dash)
-The calibration console is a Dash + Dash Mantine Components UI that stitches the
-camera, detection, and robot flows together. It provides:
-- A tabbed layout for Calibration, Applications (workspace definition + per-app
-  panels like Pick & Place), and Monitoring.
-- A live camera view with overlays for ChArUco detection, workspace markers,
-  YOLO detections, drop marker, and an auto-planning overlay that shows the
-  next target/approach/drop intent during Auto Pick & Place.
-- A Monitoring dashboard with KPI cards and trend charts (detections + cycle
-  timing), plus a live auto-plan summary panel.
-- A guided robot calibration modal with a verification move; the calibration
-  points and safe Z floor are persisted in `data/robot_calibration.json` and
-  loaded on startup when available.
-- A program safety banner (warning border) that highlights when robot motion
-  sequences are running, plus pause/stop/reset controls and emergency stop /
-  overspeed acknowledgment modals that pause active programs.
-- If `data/calibration_bundle.npz` or `data/workspace_definition.npz` already
-  exist, the Calibration and Application workspace steps surface “Use saved …”
-  buttons to load them without recomputing.
-- A Setup drawer to verify camera connectivity and test the robot connection.
+## Operator UI (FastAPI)
+The operator console is a FastAPI + Jinja2 UI that stitches the camera,
+detection, and robot flows together without Dash, React, WebRTC, or an npm build.
+It provides:
+- Manual, Auto, Calibration, Setup, and Monitor tabs.
+- A live MJPEG camera view with overlay selection and snapshot fallback.
+- SSE-driven status badges for camera, robot, gripper, safety, detection,
+  operation, calibration, and monitoring state.
+- Command endpoints for jog, move, gripper open/close, auto start/stop,
+  calibration workflow steps, settings, model activation, and locale changes.
+- Bilingual EN/UK strings from vendored JSON catalogs.
 
 Run it locally with:
 ```bash
-python run_codroid_picker.py --debug
+uv run python run_codroid_picker.py --debug
 ```
 Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
-connectivity follow the `codroid-api` settings (env `CODROID_HOST` and
-`CODROID_ROBOT_PORT`, or the factory defaults).
-Note: the debug reloader is disabled to keep camera/robot streams in a single
-process. Restart the app manually to pick up code changes.
+connectivity follow `CODROID_ROBOT_HOST`, `CODROID_ROBOT_PORT`, and
+`CODROID_USER_PORT`. The debug reloader is disabled to keep camera/robot streams
+in a single process; restart the app manually to pick up code changes.
 
 ### Docker on Jetson Orin Nano
 Pull and run with:
@@ -209,7 +228,7 @@ Robot calibration points (rectangular groove centers, 20 x 33 mm):
 - Point 2: (230, 70)
 - Point 3: (230, 210)
 
-Robot 3-point calibration: teach the robot to the groove intersections for Points 1–3 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The edge markers are for camera tracking only. Calibration starts only when CoordinateId 0 (base) is active so posture telemetry is accurate, and the UI powers the robot on automatically when you begin the calibration flow.
+Robot 3-point calibration: teach the robot to the groove intersections for Points 1–3 in sequence. Point 1 is the start, Point 2 is +X relative to Point 1, and Point 3 is +X/+Y relative to Point 1. The edge markers are for camera tracking only. The FastAPI UI switches the robot to CoordinateId 0 before capturing taught poses, then **Apply calibration** sends `CoordinateCalibration` through `codroid-api`, persists the returned frame with `ChangeCoordinateParameter`, and selects the configured user coordinate slot (`CODROID_ROBOT_COORDINATE_ID`, default `5`) for verification and pick-place moves.
 
 The script will:
 1. Load calibration (or raise if missing),

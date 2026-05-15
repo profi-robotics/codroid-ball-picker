@@ -4,6 +4,7 @@
 - Follow PEP 8 style for Python code and keep functions small with descriptive names.
 - When altering Python sources, run `python -m compileall .` to ensure files compile.
 - Update relevant documentation when behavior or setup steps change.
+- Before declaring FastAPI migration parity complete or removing legacy Dash/WebRTC code, check `docs/real_cell_test_items.md` and keep any robot/gripper/camera-only validation items there current.
 
 ## Marker assets
 

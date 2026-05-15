@@ -39,7 +39,7 @@ class HostCameraFrameStream:
     def __init__(
         self,
         config: StreamConfig,
-        frame_hook: Optional[Callable[[np.ndarray], None]] = None,
+        frame_hook: Optional[Callable[..., None]] = None,
         *,
         camera_index: int = 0,
     ) -> None:
@@ -122,7 +122,7 @@ class HostCameraFrameStream:
     def get_fps(self) -> float:
         return self._fps
 
-    def set_frame_hook(self, hook: Optional[Callable[[np.ndarray], None]]) -> None:
+    def set_frame_hook(self, hook: Optional[Callable[..., None]]) -> None:
         self._frame_hook = hook
 
     def set_focus_lock(self, lock: bool, lens_position: Optional[int] = None) -> None:
@@ -155,7 +155,10 @@ class HostCameraFrameStream:
                 self._retry_attempt = 0
                 if self._frame_hook is not None:
                     with suppress(Exception):
-                        self._frame_hook(frame)
+                        try:
+                            self._frame_hook(frame, None)
+                        except TypeError:
+                            self._frame_hook(frame)
             except Exception as exc:  # noqa: BLE001
                 self._last_error_message = str(exc)
                 self._status = "retrying"
@@ -251,7 +254,7 @@ def _host_camera_backend() -> int:
 class DepthAIFrameStream:
     """Background reader that stores the latest RGB/depth frames and can publish frames via a hook."""
 
-    def __init__(self, config: StreamConfig, frame_hook: Optional[Callable[[np.ndarray], None]] = None) -> None:
+    def __init__(self, config: StreamConfig, frame_hook: Optional[Callable[..., None]] = None) -> None:
         self.config = config
         self._stack: Optional[ExitStack] = None
         self._pipeline: Optional[dai.Pipeline] = None
@@ -332,7 +335,7 @@ class DepthAIFrameStream:
     def get_fps(self) -> float:
         return self._fps
 
-    def set_frame_hook(self, hook: Optional[Callable[[np.ndarray], None]]) -> None:
+    def set_frame_hook(self, hook: Optional[Callable[..., None]]) -> None:
         self._frame_hook = hook
 
     def _reader_loop(self) -> None:
@@ -394,7 +397,10 @@ class DepthAIFrameStream:
                 self._retry_attempt = 0
                 if self._frame_hook is not None:
                     with suppress(Exception):
-                        self._frame_hook(frame)
+                        try:
+                            self._frame_hook(frame, self._last_depth)
+                        except TypeError:
+                            self._frame_hook(frame)
             except Exception as exc:  # noqa: BLE001
                 self._last_error_message = str(exc)
                 logging.error(
