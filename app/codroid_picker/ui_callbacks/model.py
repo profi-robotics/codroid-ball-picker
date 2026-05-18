@@ -60,8 +60,49 @@ def register_model_callbacks(app: Dash) -> None:
         return no_update, options, no_update
 
     @app.callback(
+        Output("model-load-state", "data"),
+        Input("hardware-init", "n_intervals"),
+        prevent_initial_call=False,
+    )
+    def _auto_load_model_after_first_paint(_n: int) -> dict:
+        """Auto-load the configured model after the first visible UI paint."""
+        if (_n or 0) <= 0:
+            return no_update
+        import app.codroid_picker as codroid_picker_module
+
+        return codroid_picker_module.auto_load_configured_model()
+
+    @app.callback(
+        Output("model-status", "children", allow_duplicate=True),
+        Output("model-select", "data", allow_duplicate=True),
+        Output("model-select", "value", allow_duplicate=True),
+        Input("application-ui-interval", "n_intervals"),
+        State("model-load-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _refresh_model_status(
+        n_intervals: int,
+        _model_load_state: Optional[dict],
+    ) -> Tuple[str, list, Optional[str]]:
+        """Reflect post-paint model auto-load in the lazy application tab."""
+        if (n_intervals or 0) <= 0:
+            return no_update, no_update, no_update
+        import app.codroid_picker as codroid_picker_module
+
+        options = codroid_picker_module._model_options()
+        active_path = codroid_picker_module.SESSION.active_model_path
+        if codroid_picker_module.SESSION.model_loaded and active_path:
+            return f"Model loaded: {active_path.name}.", options, str(active_path)
+        if active_path:
+            error = codroid_picker_module.SESSION.last_detection_error
+            if error:
+                return f"Model ready but not loaded: {error}", options, str(active_path)
+            return f"Model selected: {active_path.name}.", options, str(active_path)
+        return "No model selected.", options, None
+
+    @app.callback(
         Output("gpu-status-display", "children"),
-        Input("monitor-interval", "n_intervals"),
+        Input("application-ui-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _update_gpu_status(_n: int) -> list:

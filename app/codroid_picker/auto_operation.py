@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from typing import Callable, Optional, Tuple
@@ -28,9 +29,48 @@ from app.codroid_picker.exceptions import OperationAbort, OperationPaused
 
 LOGGER = logging.getLogger(__name__)
 _DETECTION_LOCK = threading.Lock()
+_LOG_DETECTION_THROUGHPUT = os.getenv(
+    "CODROID_LOG_DETECTION_THROUGHPUT", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 SETTINGS = app_settings.SETTINGS
 ROBOT_COORDINATE_ID = SETTINGS.robot_coordinate_id
+
+
+def _normalize_unit_interval(value: float, fallback: float) -> float:
+    """Return a finite value clamped to the unit interval."""
+    try:
+        fallback_value = float(fallback)
+    except (TypeError, ValueError):
+        fallback_value = 0.0
+    if not np.isfinite(fallback_value):
+        fallback_value = 0.0
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        normalized = fallback_value
+    if not np.isfinite(normalized):
+        normalized = fallback_value
+    return float(np.clip(normalized, 0.0, 1.0))
+
+
+def _normalize_detection_confidence(value: float, fallback: float = 0.4) -> float:
+    """Normalize YOLO confidence to the range accepted by Ultralytics."""
+    return _normalize_unit_interval(value, fallback)
+
+
+def _normalize_detection_iou(value: float, fallback: float = 0.45) -> float:
+    """Normalize YOLO IoU to the range accepted by Ultralytics."""
+    return _normalize_unit_interval(value, fallback)
+
+
+def _normalize_max_detections(value: int, fallback: int = 10) -> int:
+    """Normalize max detection count to a positive integer."""
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = int(fallback)
+    return max(1, normalized)
 
 
 
@@ -133,6 +173,9 @@ def _run_detection(
     if SESSION.yolo_model is None:
         raise RuntimeError(
             "No YOLO model loaded. Upload a model or install ultralytics.")
+    confidence = _normalize_detection_confidence(confidence)
+    iou = _normalize_detection_iou(iou)
+    max_detections = _normalize_max_detections(max_detections)
     classes = None
     if class_filter:
         classes = [int(val.strip())
@@ -243,7 +286,10 @@ def _run_detection_serialized(
         )
         SESSION.detection_inference_total += 1
         now = time.monotonic()
-        if now - float(SESSION.detection_inference_last_log_ts) >= 5.0:
+        if (
+            _LOG_DETECTION_THROUGHPUT
+            and now - float(SESSION.detection_inference_last_log_ts) >= 30.0
+        ):
             LOGGER.debug(
                 "Detection throughput: total_inference=%d stale_age=%.3fs",
                 SESSION.detection_inference_total,

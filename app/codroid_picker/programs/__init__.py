@@ -24,6 +24,7 @@ from app.codroid_picker.programs.registry import (
 from app.codroid_picker.programs.verification import VerificationProgram
 from app.codroid_picker.programs.manual_pick_place import ManualPickPlaceProgram
 from app.codroid_picker.programs.auto_pick_place import AutoPickPlaceProgram
+from app.codroid_picker.programs.auto_motion_test import AutoMotionTestProgram
 from app.codroid_picker.programs.plate_test import PlateTestProgram, PlateTestConfig
 from app.codroid_picker.programs.robot_calibration import (
     RobotCalibrationProgram,
@@ -38,6 +39,7 @@ def register_all_programs() -> None:
     registry.register(VerificationProgram)
     registry.register(ManualPickPlaceProgram)
     registry.register(AutoPickPlaceProgram)
+    registry.register(AutoMotionTestProgram)
     registry.register(PlateTestProgram)
 
 
@@ -62,6 +64,7 @@ __all__ = [
     "VerificationProgram",
     "ManualPickPlaceProgram",
     "AutoPickPlaceProgram",
+    "AutoMotionTestProgram",
     "PlateTestProgram",
     "PlateTestConfig",
     "RobotCalibrationProgram",

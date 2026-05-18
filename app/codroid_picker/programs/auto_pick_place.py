@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -32,6 +33,7 @@ from app.codroid_picker.robot_motion import (
     command_gripper,
     ensure_coordinate_active,
     log_move_target,
+    resolve_gripper_close_width,
     resolve_gripper_limits,
 )
 from app.codroid_picker.pick_place_helpers import (
@@ -74,6 +76,19 @@ def _record_cycle_metrics_safe(success: bool, cycle_started_at: Optional[float])
             SESSION.pick_successes += 1
         else:
             SESSION.pick_failures += 1
+
+
+def _resolve_local_socket_host(robot_api: "CodroidAPI") -> str | None:
+    """Resolve the app host IP the robot controller should connect back to."""
+    config = getattr(robot_api, "config", None)
+    robot_host = getattr(config, "host", None)
+    resolver = getattr(robot_api, "_local_source_ip_for", None)
+    if callable(resolver) and robot_host:
+        try:
+            return str(resolver(str(robot_host)))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Auto: failed to resolve local socket host: %s", exc)
+    return None
 
 
 class AutoPickPlaceProgram(RobotProgram):
@@ -229,6 +244,128 @@ class AutoPickPlaceProgram(RobotProgram):
                 f"Auto: Coordinate system setup failed: {exc}, continuing anyway")
             sys.stdout.flush()
 
+        try:
+            self.update_message("Switching controller to Auto mode...")
+            await robot_api.set_auto_mode()
+            await robot_api.set_current_coordinate_id(coordinate_id)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Auto: failed to switch controller to Auto mode")
+            message = f"Auto mode setup failed: {exc}"
+            update_auto_plan_snapshot(stage="error", message=message)
+            await self._restore_manual_mode(robot_api)
+            return ProgramResult(status=ProgramStatus.ERROR, message=message)
+
+        auto_socket_config = self._build_auto_socket_config(settings, robot_api)
+        try:
+            try:
+                await robot_api.stop_project()
+                await asyncio.sleep(0.3)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Auto: no active project stopped before socket start: %s", exc)
+            auto_socket_context = robot_api.auto_socket_mode(auto_socket_config)
+            backend = await auto_socket_context.__aenter__()
+            await robot_api.set_current_coordinate_id(coordinate_id)
+            project_info = getattr(backend, "project_info", None)
+            LOGGER.info(
+                "Auto: auto-socket project=%s task=%s run_label=%s socket=%s:%s",
+                getattr(project_info, "project_id", None),
+                getattr(project_info, "task_id", None),
+                getattr(project_info, "run_label_id", None),
+                getattr(project_info, "socket_host", None),
+                getattr(project_info, "socket_port", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Auto: failed to activate auto-socket motion")
+            message = f"Auto socket motion setup failed: {exc}"
+            update_auto_plan_snapshot(stage="error", message=message)
+            await self._cleanup_failed_auto_socket_start(robot_api)
+            return ProgramResult(status=ProgramStatus.ERROR, message=message)
+
+        try:
+            try:
+                self.update_message("Auto socket motion active.")
+                LOGGER.info(
+                    "Auto: auto-socket motion active on port %s",
+                    auto_socket_config.socket_port,
+                )
+                result = await self._run_auto_loop(
+                    robot_api,
+                    settings=settings,
+                    coordinate_id=coordinate_id,
+                    workspace_def=workspace_def,
+                )
+            except BaseException as exc:
+                suppress = await auto_socket_context.__aexit__(
+                    type(exc), exc, exc.__traceback__
+                )
+                if not suppress:
+                    raise
+                return ProgramResult(
+                    status=ProgramStatus.STOPPED,
+                    message="Auto socket motion context stopped execution.",
+                )
+            else:
+                await auto_socket_context.__aexit__(None, None, None)
+                return result
+        finally:
+            await self._restore_manual_mode(robot_api)
+
+    @staticmethod
+    def _build_auto_socket_config(settings, robot_api: "CodroidAPI"):
+        """Build the codroid-api auto-socket config for Auto Pick & Place."""
+        from codroid_api import AutoSocketConfig
+
+        port = int(getattr(settings, "auto_socket_port", 19093) or 19093)
+        return AutoSocketConfig(
+            socket_role="server",
+            socket_bind_host="0.0.0.0",
+            socket_port=port,
+            project_socket_host=_resolve_local_socket_host(robot_api),
+            project_socket_port=port,
+            install_project=True,
+            start_project=True,
+            stop_project_on_exit=True,
+            connect_on_enter=True,
+            accept_timeout_s=25.0,
+            read_timeout_ms=int(
+                getattr(settings, "auto_socket_read_timeout_ms", 120000)
+                or 120000
+            ),
+            move_speed="V100",
+            move_acc="ACC100",
+        )
+
+    @staticmethod
+    async def _cleanup_failed_auto_socket_start(robot_api: "CodroidAPI") -> None:
+        """Best-effort cleanup after socket project startup fails."""
+        try:
+            await robot_api.stop_auto_socket_project()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Auto: failed to stop auto-socket project after setup error: %s",
+                exc,
+            )
+        await AutoPickPlaceProgram._restore_manual_mode(robot_api)
+
+    @staticmethod
+    async def _restore_manual_mode(robot_api: "CodroidAPI") -> None:
+        """Best-effort return from controller Auto mode after auto operation."""
+        try:
+            await robot_api.set_manual_mode()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Auto: failed to switch controller to Manual mode: %s", exc)
+
+    async def _run_auto_loop(
+        self,
+        robot_api: "CodroidAPI",
+        *,
+        settings,
+        coordinate_id: int,
+        workspace_def,
+    ) -> ProgramResult:
+        """Run the auto pick/place loop after auto-socket motion is active."""
+        from app.codroid_picker.session import SESSION
+
         SESSION.auto_waiting_at_drop = False
         cycles_completed = 0
         cycles_failed = 0
@@ -333,10 +470,13 @@ class AutoPickPlaceProgram(RobotProgram):
                 )
 
                 if not targets:
-                    # No targets - wait at drop position
+                    # No targets - wait at drop approach without descending.
                     publish_auto_plan_snapshot(
                         stage="waiting_for_targets",
-                        message="No targets detected. Waiting at drop.",
+                        message=(
+                            "No targets detected. No object gripped; "
+                            "waiting at drop approach."
+                        ),
                         ranked_candidates=[],
                         selected_candidate=None,
                         approach_mm=approach_mm,
@@ -348,7 +488,8 @@ class AutoPickPlaceProgram(RobotProgram):
                     )
                     if not SESSION.auto_waiting_at_drop:
                         self.update_message(
-                            "No targets, moving to drop position...")
+                            "No targets. No object gripped; moving to drop approach."
+                        )
                         await self._move_to_drop(
                             robot_api,
                             approach_mm=approach_mm,
@@ -588,6 +729,10 @@ class AutoPickPlaceProgram(RobotProgram):
             message=message,
             meta={"cycles_completed": cycles_completed, "cycles_failed": cycles_failed},
         )
+        with suppress(Exception):
+            from app.codroid_picker.streaming import set_active_overlay_task
+
+            set_active_overlay_task(None)
         self.finish(status="idle", message=message)
         return ProgramResult(
             status=ProgramStatus.COMPLETED,
@@ -595,6 +740,7 @@ class AutoPickPlaceProgram(RobotProgram):
             data={"cycles_completed": cycles_completed,
                   "cycles_failed": cycles_failed},
         )
+
 
     async def _execute_pick(
         self,
@@ -619,15 +765,16 @@ class AutoPickPlaceProgram(RobotProgram):
         coordinate_id = registry().robot_coordinate_id
         use_segment_tracking = tracking_mode == "segment"
 
-        # Determine gripper width
-        gripper_close = settings.gripper_profile.close_width_default
+        # Determine gripper width. Pick closes target the mechanical minimum so
+        # OnRobot can set the grip-detected bit when the object blocks travel.
+        gripper_close = resolve_gripper_close_width()
+        estimated_width_mm: Optional[float] = None
         if estimate_width and "bbox" in target:
             # Estimate width from bounding box
             bbox = target["bbox"]
             width_px = bbox[2] - bbox[0]
             # Simple estimation - would need calibration for accuracy
-            width_mm = width_px * 0.2  # rough estimate
-            gripper_close = max(gripper_close, width_mm * 0.9)
+            estimated_width_mm = width_px * 0.2  # rough estimate
 
         publish_auto_plan_snapshot(
             stage="executing_pick",
@@ -639,6 +786,9 @@ class AutoPickPlaceProgram(RobotProgram):
             orientation=(orientation[0], orientation[1], final_c),
             gripper_close_mm=gripper_close,
             gripper_open_mm=settings.gripper_profile.open_width_default,
+            meta={
+                "estimated_object_width_mm": estimated_width_mm,
+            },
         )
 
         transit_z = compute_safe_transit_z(
@@ -970,7 +1120,7 @@ class AutoPickPlaceProgram(RobotProgram):
         # Open gripper
         await wait_for_operation_resume(self._run_id)
         open_width = settings.gripper_profile.open_width_default
-        gripper_close = settings.gripper_profile.close_width_default
+        gripper_close = resolve_gripper_close_width()
         if open_width <= gripper_close:
             gripper = registry().gripper
             if gripper is not None:
@@ -1077,7 +1227,7 @@ class AutoPickPlaceProgram(RobotProgram):
         if not should_release and at_drop_approach:
             update_auto_plan_snapshot(
                 stage="waiting_at_drop",
-                message="Robot is waiting at drop approach.",
+                message="No object gripped; waiting at drop approach.",
                 approach_mm=approach_mm,
                 drop_mm=drop_mm,
                 orientation=orientation,
@@ -1093,6 +1243,9 @@ class AutoPickPlaceProgram(RobotProgram):
                 lift_pose["y"] = float(posture.y)
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("Auto: failed to read posture for move-to-drop lift pose: %s", exc)
+
+        if not should_release:
+            LOGGER.info("Auto: no object gripped; moving to drop approach only.")
 
         if not at_drop_xy:
             await wait_for_operation_resume(self._run_id)
@@ -1149,10 +1302,52 @@ class AutoPickPlaceProgram(RobotProgram):
             )
         update_auto_plan_snapshot(
             stage="waiting_at_drop",
-            message="Robot is waiting at drop approach.",
+            message=(
+                "Object dropped; waiting at drop approach."
+                if should_release
+                else "No object gripped; waiting at drop approach."
+            ),
             approach_mm=approach_mm,
             drop_mm=drop_mm,
             orientation=orientation,
+        )
+
+    @staticmethod
+    def _auto_socket_backend(robot_api: "CodroidAPI"):
+        """Return the active codroid-api auto-socket backend, if any."""
+        return getattr(robot_api, "_auto_socket_backend", None)
+
+    @staticmethod
+    def _require_auto_socket_connected(
+        robot_api: "CodroidAPI",
+        *,
+        label: str,
+    ) -> None:
+        """Fail fast when auto-socket mode lost its controller TCP client."""
+        backend = AutoPickPlaceProgram._auto_socket_backend(robot_api)
+        if backend is None:
+            return
+        is_connected = getattr(backend, "is_connected", None)
+        if callable(is_connected):
+            connected = bool(is_connected())
+        else:
+            writer = getattr(backend, "_writer", None)
+            connected = writer is not None and not writer.is_closing()
+        if not connected:
+            raise RuntimeError(
+                "Auto socket disconnected before "
+                f"{label}: controller TCP client is missing. "
+                "The controller project may have stopped or SocketReadStr "
+                "may have timed out."
+            )
+
+    @staticmethod
+    def _socket_move_error(exc: BaseException, *, label: str) -> RuntimeError:
+        """Build a clear operator-facing error for socket move failures."""
+        return RuntimeError(
+            "Auto socket move failed during "
+            f"{label}: controller TCP client is missing, the project stopped, "
+            f"or SocketReadStr timed out ({exc})."
         )
 
     async def _move_linear_with_hold(
@@ -1177,6 +1372,7 @@ class AutoPickPlaceProgram(RobotProgram):
         await self.wait_for_resume()
 
         log_move_target(label, target_pose, coordinate_id=coordinate_id)
+        self._require_auto_socket_connected(robot_api, label=label)
 
         await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
         await robot_api.set_target_cpos(
@@ -1185,7 +1381,10 @@ class AutoPickPlaceProgram(RobotProgram):
                 coordinate_id=coordinate_id,
             )
         )
-        await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+        try:
+            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
+        except (TimeoutError, ConnectionError, OSError, RuntimeError) as exc:
+            raise self._socket_move_error(exc, label=label) from exc
 
         # Wait for motion to settle - use auto-specific faster settings
         timeout_s = getattr(settings, 'auto_move_timeout_s', 15.0)

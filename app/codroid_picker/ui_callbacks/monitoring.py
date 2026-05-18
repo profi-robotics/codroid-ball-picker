@@ -53,9 +53,16 @@ def _empty_trend_figure(title: str, yaxis_title: str) -> go.Figure:
         template="plotly_white",
         title={"text": title, "x": 0.02, "xanchor": "left", "font": {"size": 12}},
         margin={"l": 36, "r": 20, "t": 38, "b": 32},
-        xaxis={"title": "Samples", "showgrid": False},
-        yaxis={"title": yaxis_title, "rangemode": "tozero", "showgrid": True},
+        xaxis={"title": "Samples", "showgrid": False, "fixedrange": True},
+        yaxis={
+            "title": yaxis_title,
+            "rangemode": "tozero",
+            "showgrid": True,
+            "fixedrange": True,
+        },
         showlegend=False,
+        uirevision="monitoring-trends",
+        transition={"duration": 0},
     )
     return figure
 
@@ -72,11 +79,8 @@ def _build_detection_trend_figure(history: Sequence[dict]) -> go.Figure:
         go.Scatter(
             x=x_vals,
             y=y_vals,
-            mode="lines+markers",
+            mode="lines",
             line={"color": "#f15b5f", "width": 2},
-            marker={"size": 5},
-            fill="tozeroy",
-            fillcolor="rgba(241, 91, 95, 0.12)",
         )
     )
     return figure
@@ -94,14 +98,32 @@ def _build_cycle_trend_figure(cycle_times: Sequence[float]) -> go.Figure:
         go.Scatter(
             x=x_vals,
             y=y_vals,
-            mode="lines+markers",
+            mode="lines",
             line={"color": "#1f8f4f", "width": 2},
-            marker={"size": 5},
-            fill="tozeroy",
-            fillcolor="rgba(31, 143, 79, 0.10)",
         )
     )
     return figure
+
+
+def _build_monitoring_trend_outputs(
+    active_tab: Optional[str],
+    session: object,
+    detection_count: int,
+    *,
+    now_ts: float,
+):
+    """Return trend figures only while the monitoring tab is active."""
+    if active_tab != "monitoring":
+        return no_update, no_update
+    detection_history = _append_detection_history(
+        session,
+        detection_count,
+        now_ts=now_ts,
+    )
+    return (
+        _build_detection_trend_figure(detection_history),
+        _build_cycle_trend_figure(list(getattr(session, "cycle_times", []))),
+    )
 
 
 def _fmt_pair(value: Optional[Sequence[float]], *, precision: int = 1, suffix: str = "") -> str:
@@ -271,7 +293,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
             Output("manual-pick-place-target", "disabled"),
             Output("reset-operation-lock", "disabled"),
         ],
-        Input("monitor-interval", "n_intervals"),
+        Input("application-ui-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _update_button_states(_n: int) -> Tuple[bool, bool, bool, bool]:
@@ -310,7 +332,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("plate-test-status", "children", allow_duplicate=True),
-        Input("monitor-interval", "n_intervals"),
+        Input("application-ui-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _refresh_plate_test_status(_ticks: int) -> str:
@@ -327,20 +349,12 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Output("monitor-detection-summary", "children"),
         Output("monitor-pick-summary", "children"),
         Output("monitor-auto-plan-summary", "children"),
-        Output("monitor-detection-trend", "figure"),
-        Output("monitor-cycle-trend", "figure"),
-        Output("use-existing-calibration", "style"),
-        Output("use-existing-workspace", "style"),
-        Output("use-existing-calibration", "disabled"),
-        Output("use-existing-robot-calibration", "disabled"),
-        Input("monitor-interval", "n_intervals"),
+        Input("monitoring-graph-interval", "n_intervals"),
         State("camera-connection-state", "data"),
         State("robot-connection-state", "data"),
         State("gripper-connection-state", "data"),
         State("robot-power-state", "data"),
         State("robot-speed-state", "data"),
-        State("settings-calib-path", "value"),
-        State("settings-robot-calib-path", "value"),
         prevent_initial_call=True,
     )
     def _update_monitoring_summary(
@@ -350,10 +364,8 @@ def register_monitoring_callbacks(app: Dash) -> None:
         gripper_state: Optional[dict],
         robot_power: Optional[dict],
         robot_speed: Optional[dict],
-        bundle_path_value: Optional[str],
-        robot_calib_path_value: Optional[str],
-    ) -> Tuple[list, list, list, list, go.Figure, go.Figure, dict, dict, bool, bool]:
-        """Update monitoring panels, trends, and utility button states."""
+    ) -> Tuple[list, list, list, list]:
+        """Update monitoring panels while the monitoring tab is mounted."""
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.session import SESSION
 
@@ -366,11 +378,6 @@ def register_monitoring_callbacks(app: Dash) -> None:
         plate_state = "ready" if SESSION.plate_calibration is not None else "pending"
         model_state = SESSION.active_model_path.name if SESSION.active_model_path else "none"
         detection_count = len(SESSION.detections)
-
-        now_ts = time.time()
-        detection_history = _append_detection_history(SESSION, detection_count, now_ts=now_ts)
-        detection_trend_figure = _build_detection_trend_figure(detection_history)
-        cycle_trend_figure = _build_cycle_trend_figure(list(SESSION.cycle_times))
 
         stream = SESSION.camera_stream
         stream_fps = stream.get_fps() if stream else 0.0
@@ -476,26 +483,78 @@ def register_monitoring_callbacks(app: Dash) -> None:
         plan_snapshot = get_auto_plan_snapshot(stale_after_s=DEFAULT_PLAN_STALE_S)
         auto_plan_items = _build_auto_plan_items(plan_snapshot)
 
-        bundle_path = codroid_picker_module._safe_path(bundle_path_value, codroid_picker_module.DEFAULT_BUNDLE_PATH)
-        bundle_style = {}
-        workspace_style = {} if codroid_picker_module.DEFAULT_WORKSPACE_PATH.exists() else {"display": "none"}
-        bundle_disabled = not bundle_path.exists()
-        robot_path = codroid_picker_module._safe_path(
-            robot_calib_path_value, codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH
-        )
-        robot_disabled = not robot_path.exists()
-
         return (
             system_items,
             detection_items,
             pick_items,
             auto_plan_items,
-            detection_trend_figure,
-            cycle_trend_figure,
-            bundle_style,
-            workspace_style,
-            bundle_disabled,
-            robot_disabled,
+        )
+
+    @app.callback(
+        Output("monitor-detection-trend", "figure"),
+        Output("monitor-cycle-trend", "figure"),
+        Input("monitoring-graph-interval", "n_intervals"),
+        State("main-tabs", "value"),
+        prevent_initial_call=True,
+    )
+    def _update_monitoring_trends(
+        _monitor_ticks: int,
+        active_tab: Optional[str],
+    ):
+        """Update Plotly charts only while the monitoring tab is active."""
+        from app.codroid_picker.session import SESSION
+
+        return _build_monitoring_trend_outputs(
+            active_tab,
+            SESSION,
+            len(SESSION.detections),
+            now_ts=time.time(),
+        )
+
+    @app.callback(
+        Output("use-existing-calibration", "style"),
+        Output("use-existing-calibration", "disabled"),
+        Output("use-existing-robot-calibration", "disabled"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("settings-calib-path", "value"),
+        State("settings-robot-calib-path", "value"),
+        prevent_initial_call=True,
+    )
+    def _update_saved_calibration_actions(
+        _monitor_ticks: int,
+        bundle_path_value: Optional[str],
+        robot_calib_path_value: Optional[str],
+    ) -> Tuple[dict, bool, bool]:
+        """Update saved calibration action state while calibration UI is mounted."""
+        import app.codroid_picker as codroid_picker_module
+
+        bundle_path = codroid_picker_module._safe_path(
+            bundle_path_value,
+            codroid_picker_module.DEFAULT_BUNDLE_PATH,
+        )
+        robot_path = codroid_picker_module._safe_path(
+            robot_calib_path_value,
+            codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH,
+        )
+        return (
+            {},
+            not bundle_path.exists(),
+            not robot_path.exists(),
+        )
+
+    @app.callback(
+        Output("use-existing-workspace", "style"),
+        Input("application-ui-interval", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def _update_saved_workspace_action(_monitor_ticks: int) -> dict:
+        """Update saved workspace action state while application UI is mounted."""
+        import app.codroid_picker as codroid_picker_module
+
+        return (
+            {}
+            if codroid_picker_module.DEFAULT_WORKSPACE_PATH.exists()
+            else {"display": "none"}
         )
 
     @app.callback(
@@ -503,11 +562,13 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Output("plate-detection-summary", "color"),
         Output("start-robot-calibration", "disabled"),
         Output("start-robot-calibration", "variant"),
-        Input("plate-detection-state", "data"),
-        Input("robot-connection-state", "data"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("plate-detection-state", "data"),
+        State("robot-connection-state", "data"),
         State("robot-calibration-state", "data"),
     )
     def _update_plate_summary(
+        _ticks: int,
         plate_state: Optional[dict],
         robot_conn_state: Optional[dict],
         calib_state: Optional[dict],
@@ -566,11 +627,13 @@ def register_monitoring_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("run-verification-inline", "disabled"),
-        Input("plate-detection-state", "data"),
-        Input("robot-calibration-state", "data"),
-        Input("robot-connection-state", "data"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("plate-detection-state", "data"),
+        State("robot-calibration-state", "data"),
+        State("robot-connection-state", "data"),
     )
     def _sync_verification_inline_button(
+        _ticks: int,
         plate_state: Optional[dict],
         calibration_state: Optional[dict],
         robot_state: Optional[dict],

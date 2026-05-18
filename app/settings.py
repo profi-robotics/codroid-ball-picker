@@ -32,8 +32,12 @@ _BASE_PLATE_LAYOUT_PATH = Path(
 _BASE_CAPTURE_DIR = Path("data/calibration")
 _BASE_CAMERA_RESOLUTION: Tuple[int, int] = (1920, 1080)
 _BASE_CAMERA_FPS = 30.0
-_BASE_CAMERA_ENABLE_DEPTH = False
+_BASE_CAMERA_ENABLE_DEPTH = True
 _BASE_CAMERA_FAST_DEPTH = True
+_BASE_CAMERA_AUTO_START = True
+_BASE_MODEL_AUTO_LOAD = True
+_BASE_ROBOT_AUTO_CONNECT_AFTER_FIRST_PAINT = True
+_BASE_GRIPPER_AUTO_CONNECT_AFTER_FIRST_PAINT = True
 _BASE_MODEL_DIR = Path("data/models")
 _BASE_DROP_MARKER_ID = 30
 _BASE_CAMERA_CALIBRATION_FRAMES = 30
@@ -65,6 +69,8 @@ _BASE_AUTO_SEPARATION_PUSH_MM = 28.0
 _BASE_AUTO_SEPARATION_ENTRY_MM = 10.0
 _BASE_AUTO_SEPARATION_MAX_ATTEMPTS = 2
 _BASE_AUTO_RESCAN_DELAY_S = 0.25
+_BASE_AUTO_SOCKET_PORT = 19093
+_BASE_AUTO_SOCKET_READ_TIMEOUT_MS = 120000
 _BASE_PICK_FOLLOW_TIMEOUT_S = 15.0
 _BASE_PICK_FOLLOW_UPDATE_S = 0.05
 _BASE_PICK_FOLLOW_SEGMENT_S = 0.1
@@ -106,6 +112,14 @@ _BASE_PLATE_TEST_MOTION_EPS_MM = 0.5
 _BASE_PLATE_TEST_FOLLOW_UPDATE_S = 0.05
 _BASE_PLATE_TEST_FOLLOW_SEGMENT_S = 0.1
 _BASE_PLATE_TEST_USE_BASE_COORDINATES = False
+_BASE_CODROID_HOST = "192.168.101.100"
+_BASE_CODROID_WS_PORT = 9098
+_BASE_CODROID_ROBOT_PORT = 9000
+_BASE_CODROID_USERNAME = "admin"
+_BASE_CODROID_USER_PASSWORD = "123456"
+_BASE_CODROID_ROBOT_LOGIN_NAME = "web"
+_PLACEHOLDER_CODROID_HOST = "codroid-controller.local"
+_PLACEHOLDER_CODROID_USERNAME = "YOUR_USERNAME"
 
 DEFAULT_PLATE_PATH = _BASE_PLATE_LAYOUT_PATH
 DEFAULT_CAPTURE_DIR = _BASE_CAPTURE_DIR
@@ -126,6 +140,8 @@ class AppSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         env_prefix="CODROID_",
+        env_ignore_empty=True,
+        extra="ignore",
     )
 
     # Robot connection settings (host + ports)
@@ -156,6 +172,14 @@ class AppSettings(BaseSettings):
     camera_fps: float = _BASE_CAMERA_FPS
     camera_enable_depth: bool = _BASE_CAMERA_ENABLE_DEPTH
     camera_fast_depth: bool = _BASE_CAMERA_FAST_DEPTH
+    camera_auto_start: bool = _BASE_CAMERA_AUTO_START
+    model_auto_load: bool = _BASE_MODEL_AUTO_LOAD
+    robot_auto_connect_after_first_paint: bool = (
+        _BASE_ROBOT_AUTO_CONNECT_AFTER_FIRST_PAINT
+    )
+    gripper_auto_connect_after_first_paint: bool = (
+        _BASE_GRIPPER_AUTO_CONNECT_AFTER_FIRST_PAINT
+    )
     model_dir: Path = _BASE_MODEL_DIR
     drop_marker_id: int = _BASE_DROP_MARKER_ID
     plate_test_capture_dir: Path = _BASE_PLATE_TEST_CAPTURE_DIR
@@ -243,6 +267,8 @@ class AppSettings(BaseSettings):
     auto_separation_entry_mm: float = _BASE_AUTO_SEPARATION_ENTRY_MM
     auto_separation_max_attempts: int = _BASE_AUTO_SEPARATION_MAX_ATTEMPTS
     auto_rescan_delay_s: float = _BASE_AUTO_RESCAN_DELAY_S
+    auto_socket_port: int = _BASE_AUTO_SOCKET_PORT
+    auto_socket_read_timeout_ms: int = _BASE_AUTO_SOCKET_READ_TIMEOUT_MS
 
     @property
     def gripper_profile(self) -> GripperProfile:
@@ -302,19 +328,85 @@ def _commit_settings(**updates) -> None:
     _save_settings(SETTINGS)
 
 
+def _is_placeholder(value: Optional[str], *placeholders: str) -> bool:
+    """Return whether a Codroid API setting is unset or a public placeholder."""
+    return value is None or str(value).strip() in {"", *placeholders}
+
+
+def _env_or_default(name: str, default: str) -> str:
+    """Read an environment override, treating blank values as missing."""
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value
+
+
+def _env_int_or_default(name: str, default: int) -> int:
+    """Read an integer environment override, treating blank values as missing."""
+    return int(_env_or_default(name, str(default)))
+
+
+def build_codroid_settings() -> CodroidSettings:
+    """Build Codroid settings with this app's robot defaults applied.
+
+    The editable ``codroid-api`` package intentionally uses public placeholder
+    defaults. This app targets the lab robot, so keep the previous factory
+    values here while still allowing environment variables and persisted UI
+    settings to override them.
+    """
+    settings = CodroidSettings(_env_ignore_empty=True)
+    settings.keep_user_web_session = False
+
+    if SETTINGS.robot_host:
+        settings.host = SETTINGS.robot_host
+    elif _is_placeholder(settings.host, _PLACEHOLDER_CODROID_HOST):
+        settings.host = _env_or_default("CODROID_HOST", _BASE_CODROID_HOST)
+
+    if SETTINGS.robot_port:
+        settings.robot_port = int(SETTINGS.robot_port)
+    if SETTINGS.user_port:
+        settings.ws_port = int(SETTINGS.user_port)
+
+    placeholder_origin = f"http://{_PLACEHOLDER_CODROID_HOST}:9098"
+    if _is_placeholder(settings.origin, placeholder_origin):
+        settings.origin = f"http://{settings.host}:{settings.ws_port}"
+
+    if _is_placeholder(settings.username, _PLACEHOLDER_CODROID_USERNAME):
+        settings.username = _env_or_default(
+            "CODROID_USERNAME", _BASE_CODROID_USERNAME
+        )
+    if _is_placeholder(settings.token, f"user:{_PLACEHOLDER_CODROID_USERNAME}"):
+        settings.token = _env_or_default("CODROID_TOKEN", f"user:{settings.username}")
+    if _is_placeholder(settings.user_password):
+        settings.user_password = _env_or_default(
+            "CODROID_USER_PASSWORD", _BASE_CODROID_USER_PASSWORD
+        )
+    if _is_placeholder(settings.robot_login_name):
+        settings.robot_login_name = _env_or_default(
+            "CODROID_ROBOT_LOGIN_NAME", _BASE_CODROID_ROBOT_LOGIN_NAME
+        )
+
+    return settings
+
+
 def _load_codroid_defaults() -> dict:
     try:
-        settings = CodroidSettings()
+        settings = build_codroid_settings()
         host = settings.host
         robot_port = settings.robot_port
         ws_port = settings.ws_port
     except Exception:
-        host = SETTINGS.robot_host or os.getenv(
-            "CODROID_HOST", "192.168.101.100")
-        robot_port = int(SETTINGS.robot_port or os.getenv(
-            "CODROID_ROBOT_PORT", "9000"))
-        ws_port = int(SETTINGS.user_port or os.getenv(
-            "CODROID_WS_PORT", "9098"))
+        host = SETTINGS.robot_host or _env_or_default(
+            "CODROID_HOST", _BASE_CODROID_HOST
+        )
+        robot_port = int(
+            SETTINGS.robot_port
+            or _env_int_or_default("CODROID_ROBOT_PORT", _BASE_CODROID_ROBOT_PORT)
+        )
+        ws_port = int(
+            SETTINGS.user_port
+            or _env_int_or_default("CODROID_WS_PORT", _BASE_CODROID_WS_PORT)
+        )
     robot_ws_url = f"ws://{host}:{robot_port}/"
     user_ws_url = f"ws://{host}:{ws_port}/"
     return {

@@ -21,6 +21,14 @@ import numpy as np
 from .capture import build_pipeline, resolve_camera_sockets
 
 
+def _configure_depthai_logging(device: dai.Device) -> None:
+    """Reduce native DepthAI stderr noise while preserving app-level failures."""
+    with suppress(Exception):
+        device.setLogLevel(dai.LogLevel.WARN)
+    with suppress(Exception):
+        device.setLogOutputLevel(dai.LogLevel.CRITICAL)
+
+
 @dataclass
 class StreamConfig:
     resolution: tuple[int, int] = (1280, 720)
@@ -208,6 +216,7 @@ class DepthAIFrameStream:
             if device is None:
                 raise RuntimeError(
                     "getDefaultDevice() returned None; no camera connected")
+            _configure_depthai_logging(device)
             usb_speed_fn = getattr(device, "getUsbSpeed", None)
             if callable(usb_speed_fn):
                 with suppress(Exception):

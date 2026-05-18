@@ -23,9 +23,6 @@ from app.codroid_picker.state import _operation_snapshot, get_error_snapshot
 from app.codroid_picker.components import (
     build_header,
     build_footer,
-    build_application_tab,
-    build_monitoring_tab,
-    build_calibration_tab,
     build_camera_panel,
 )
 from app.codroid_picker.modals import (
@@ -74,7 +71,7 @@ def build_setup_drawer() -> dmc.Drawer:
                         dmc.Switch(
                             id="camera-enable",
                             label=t("Enable live camera stream"),
-                            checked=True,
+                            checked=SETTINGS.camera_auto_start,
                             color="teal",
                         ),
                     ],
@@ -604,6 +601,9 @@ def build_setup_drawer() -> dmc.Drawer:
 
 def build_layout() -> dmc.MantineProvider:
     """Build the complete application layout."""
+    font_family = (
+        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    )
     brand_palette = [
         "#ffe8de",
         "#ffcdbd",
@@ -617,8 +617,8 @@ def build_layout() -> dmc.MantineProvider:
         "#611a00",
     ]
     theme = {
-        "fontFamily": "Space Grotesk, IBM Plex Sans, sans-serif",
-        "headings": {"fontFamily": "Space Grotesk, IBM Plex Sans, sans-serif"},
+        "fontFamily": font_family,
+        "headings": {"fontFamily": font_family},
         "primaryColor": "brand",
         "colors": {"brand": brand_palette},
     }
@@ -653,6 +653,33 @@ def build_layout() -> dmc.MantineProvider:
                     data=SESSION.calibration_menu_open,
                 ),
                 dcc.Store(
+                    id="application-tab-state",
+                    data={"value": "pick-place"},
+                ),
+                dcc.Store(
+                    id="calibration-step-state",
+                    data={"active": 0},
+                ),
+                dcc.Store(
+                    id="camera-ui-metrics-state",
+                    data={
+                        "camera_calibration_metrics": "",
+                        "workspace_metrics": "",
+                        "plate_metrics": "",
+                        "detection_metrics": "",
+                        "calibrate_camera_disabled": True,
+                        "markers_detected_color": "gray",
+                    },
+                ),
+                dcc.Store(
+                    id="model-load-state",
+                    data={"status": "idle", "message": "", "model": None},
+                ),
+                dcc.Store(
+                    id="sidebar-visibility",
+                    data={"collapsed": False},
+                ),
+                dcc.Store(
                     id="plate-detection-state",
                     data={
                         "count": 0,
@@ -674,6 +701,7 @@ def build_layout() -> dmc.MantineProvider:
                         "accuracy": None,
                         "accuracy_ready": False,
                         "accuracy_passed": False,
+                        "modal_suppressed": False,
                     },
                 ),
                 dcc.Store(
@@ -722,7 +750,7 @@ def build_layout() -> dmc.MantineProvider:
                 ),
                 dcc.Store(
                     id="footer-visibility",
-                    data={"collapsed": False},
+                    data={"collapsed": True},
                 ),
                 dcc.Store(
                     id="robot-speed-state",
@@ -736,35 +764,47 @@ def build_layout() -> dmc.MantineProvider:
                     id="camera-safety-state",
                     data={"blocked": False, "matches": 0, "action": "none", "active": False},
                 ),
-                dcc.Interval(id="auto-init", interval=400,
+                dcc.Interval(id="ui-ready", interval=150,
+                             n_intervals=0, max_intervals=1),
+                dcc.Interval(id="hardware-init", interval=900,
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
                              interval=1000, n_intervals=0),
                 dcc.Interval(
                     id="monitor-interval",
-                    interval=2000,
+                    interval=3000,
                     n_intervals=0,
                 ),
                 dcc.Interval(
-                    id="camera-interval",
-                    interval=33,  # ~30 FPS UI poll; stream push happens each tick
+                    id="application-ui-interval",
+                    interval=2500,
+                    n_intervals=0,
+                    disabled=True,
+                ),
+                dcc.Interval(
+                    id="calibration-ui-interval",
+                    interval=1000,
+                    n_intervals=0,
+                    disabled=True,
+                ),
+                dcc.Interval(
+                    id="monitoring-graph-interval",
+                    interval=5000,
                     n_intervals=0,
                     disabled=True,
                 ),
                 dcc.Interval(
                     id="metrics-interval",
                     # Keep UI metrics updates light for embedded devices (Jetson Nano).
-                    interval=500,
+                    interval=1000,
                     n_intervals=0,
                     disabled=True,
                 ),
-                dcc.Interval(id="calibration-progress-interval",
-                             interval=500, n_intervals=0),
                 dcc.Interval(
                     id="camera-safety-interval",
                     interval=SETTINGS.camera_safety_check_interval_ms,
                     n_intervals=0,
-                    disabled=getattr(SETTINGS, "camera_safety_mode", "model") == "off",
+                    disabled=True,
                 ),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),
@@ -776,76 +816,102 @@ def build_layout() -> dmc.MantineProvider:
                 build_wrong_tool_modal(),
                 build_drag_not_allowed_modal(),
                 dmc.AppShell(
-                    padding="md",
+                    id="app-shell",
+                    padding="xs",
                     className="app-shell",
-                    header={"height": 90},
-                    footer={"height": 340},
+                    header={"height": 64},
+                    footer={"height": 132},
                     children=[
                         build_header(),
                         dmc.AppShellMain(
                             dmc.Container(
-                                dmc.Grid(
-                                    [
-                                        dmc.GridCol(
-                                            html.Div(
-                                                dmc.Tabs(
+                                [
+                                    dmc.Group(
+                                        [
+                                            dmc.Button(
+                                                t("Hide controls"),
+                                                id="sidebar-toggle",
+                                                variant="light",
+                                                color="gray",
+                                                size="xs",
+                                                radius="md",
+                                            ),
+                                        ],
+                                        justify="flex-start",
+                                        align="center",
+                                        className="sidebar-toolbar",
+                                    ),
+                                    dmc.Grid(
+                                        [
+                                            dmc.GridCol(
+                                                html.Div(
                                                     [
-                                                        dmc.TabsList(
+                                                        dmc.Tabs(
                                                             [
-                                                                dmc.TabsTab(
-                                                                    t("tabs.applications"), value="applications"),
-                                                                dmc.TabsTab(
-                                                                    t("tabs.monitoring"), value="monitoring"),
-                                                                dmc.TabsTab(
-                                                                    t("tabs.calibration"), value="calibration"),
+                                                                dmc.TabsList(
+                                                                    [
+                                                                        dmc.TabsTab(
+                                                                            t("tabs.applications"),
+                                                                            value="applications",
+                                                                        ),
+                                                                        dmc.TabsTab(
+                                                                            t("tabs.monitoring"),
+                                                                            value="monitoring",
+                                                                        ),
+                                                                        dmc.TabsTab(
+                                                                            t("tabs.calibration"),
+                                                                            value="calibration",
+                                                                        ),
+                                                                    ],
+                                                                    style={
+                                                                        "width": "100%",
+                                                                        "justifyContent": "flex-start",
+                                                                        "marginTop": "0px",
+                                                                        "marginBottom": "8px",
+                                                                    },
+                                                                ),
                                                             ],
+                                                            id="main-tabs",
+                                                            value="applications",
+                                                            variant="pills",
+                                                            color="brand",
+                                                            className="main-tabs",
                                                             style={
                                                                 "width": "100%",
-                                                                "justifyContent": "flex-start",
-                                                                "marginTop": "0px",
-                                                                "marginBottom": "12px",
+                                                                "marginBottom": "4px",
                                                             },
                                                         ),
-                                                        dmc.TabsPanel(
-                                                            build_application_tab(), value="applications"),
-                                                        dmc.TabsPanel(
-                                                            build_monitoring_tab(), value="monitoring"),
-                                                        dmc.TabsPanel(
-                                                            build_calibration_tab(), value="calibration"),
+                                                        html.Div(id="main-tab-content"),
                                                     ],
-                                                    id="main-tabs",
-                                                    value="applications",
-                                                    variant="pills",
-                                                    color="brand",
-                                                    className="main-tabs",
-                                                    style={
-                                                        "width": "100%",
-                                                        "marginBottom": "6px",
-                                                    },
+                                                    className="tabs-scroll-area",
                                                 ),
-                                                className="tabs-scroll-area",
+                                                id="tabs-sidebar",
+                                                span={"base": 12, "md": 4, "lg": 3},
+                                                className="tabs-column",
                                             ),
-                                            span={"base": 12, "md": 4},
-                                            className="tabs-column",
-                                        ),
-                                        dmc.GridCol(
-                                            dmc.Stack(
-                                                [build_camera_panel()], gap="md"),
-                                            span={"base": 12, "md": 8},
-                                            className="camera-column",
-                                        ),
-                                    ],
-                                    gutter="md",
-                                    className="layout-grid",
-                                ),
+                                            dmc.GridCol(
+                                                dmc.Stack(
+                                                    [build_camera_panel()],
+                                                    gap="xs",
+                                                    className="camera-stack",
+                                                ),
+                                                id="camera-grid-column",
+                                                span={"base": 12, "md": 8, "lg": 9},
+                                                className="camera-column",
+                                            ),
+                                        ],
+                                        gutter="xs",
+                                        className="layout-grid",
+                                    ),
+                                ],
                                 fluid=True,
                                 px=0,
                                 mx=0,
-                                mt="sm",
+                                mt=0,
                                 className="main-panel",
                             ),
                             id="app-main",
-                            className="app-main footer-expanded",
+                            className="app-main footer-collapsed",
                             style={"overflow": "hidden"},
                         ),
                         build_footer(),

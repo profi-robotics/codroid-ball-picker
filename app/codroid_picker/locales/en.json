@@ -17,6 +17,10 @@
   "Robot calibration idle. Click 'Begin calibrating robot' to start.": "Robot calibration idle. Click 'Begin calibrating robot' to start.",
   "Hide footer": "Hide footer",
   "Show footer": "Show footer",
+  "Hide details": "Hide details",
+  "Show details": "Show details",
+  "Hide controls": "Hide controls",
+  "Show controls": "Show controls",
   "No detections yet.": "No detections yet.",
   "Memory": "Memory",
   "RAM (shared)": "RAM (shared)",
@@ -103,6 +107,8 @@
   ,"Drop target: {coord}": "Drop target: {coord}"
   ,"#{rank} {label} · neighbors={neighbors} · nearest={nearest}mm": "#{rank} {label} · neighbors={neighbors} · nearest={nearest}mm"
   ,"Robot speed: {speed}%": "Robot speed: {speed}%"
+  ,"Motion Test": "Motion Test"
+  ,"Auto operation stopped": "Auto operation stopped"
   ,"target": "target"
   ,"n/a": "n/a"
 }

@@ -30,7 +30,7 @@ class CameraCalibrationFlowTests(unittest.TestCase):
         SESSION.camera_last_error_params = self._snapshot["camera_last_error_params"]
         SESSION.camera_last_error_status = self._snapshot["camera_last_error_status"]
 
-    def test_rgb_only_uses_isolated_capture_and_pauses_stream(self) -> None:
+    def test_depth_capture_uses_live_stream_without_pausing(self) -> None:
         stream = SimpleNamespace(
             config=SimpleNamespace(
                 enable_depth=False,
@@ -42,12 +42,13 @@ class CameraCalibrationFlowTests(unittest.TestCase):
         )
         SESSION.camera_stream = stream
 
-        isolated_calls: list[tuple] = []
+        in_stream_calls: list[Path] = []
         fake_module = SimpleNamespace(
-            capture_depth_snapshot=lambda _output: Path("unused.npz"),
-            capture_depth_snapshot_isolated=lambda output, res, fps, lock_af: (
-                isolated_calls.append((output, res, fps, lock_af))
-                or Path("isolated_depth.npz")
+            capture_depth_snapshot=lambda output: (
+                in_stream_calls.append(output) or Path("direct_depth.npz")
+            ),
+            capture_depth_snapshot_isolated=lambda *_args, **_kwargs: Path(
+                "should_not_happen.npz"
             ),
         )
 
@@ -57,10 +58,10 @@ class CameraCalibrationFlowTests(unittest.TestCase):
                 Path("data/calibration"),
             )
 
-        self.assertEqual(depth_path, Path("isolated_depth.npz"))
-        self.assertTrue(paused)
-        stop_mock.assert_called_once_with(wait_for_release=True)
-        self.assertEqual(len(isolated_calls), 1)
+        self.assertEqual(depth_path, Path("direct_depth.npz"))
+        self.assertFalse(paused)
+        stop_mock.assert_not_called()
+        self.assertEqual(in_stream_calls, [Path("data/calibration")])
 
     def test_depth_enabled_uses_in_stream_capture(self) -> None:
         stream = SimpleNamespace(
@@ -79,7 +80,9 @@ class CameraCalibrationFlowTests(unittest.TestCase):
             capture_depth_snapshot=lambda output: (
                 in_stream_calls.append(output) or Path("direct_depth.npz")
             ),
-            capture_depth_snapshot_isolated=lambda *_args, **_kwargs: Path("should_not_happen.npz"),
+            capture_depth_snapshot_isolated=lambda *_args, **_kwargs: Path(
+                "should_not_happen.npz"
+            ),
         )
 
         with patch("app.codroid_picker.camera_callbacks.stop_camera_stream") as stop_mock:

@@ -9,10 +9,11 @@ This module contains component builders for the calibration workflow:
 
 from __future__ import annotations
 
-import dash_mantine_components as dmc
-from dash import html
+import time
 
-from app.codroid_picker.components.common import _encode_frame, placeholder_frame
+import dash_mantine_components as dmc
+from dash import dcc, html
+
 from app.codroid_picker.i18n import t
 from app.codroid_picker.session import SESSION
 from app.settings import (
@@ -32,11 +33,11 @@ __all__ = [
 ]
 
 
-def _calibration_stepper_stack() -> dmc.Stepper:
+def _calibration_stepper_stack(active_step: int = 0) -> dmc.Stepper:
     """Build the calibration wizard stepper stack."""
     return dmc.Stepper(
         id="calibration-stepper",
-        active=0,
+        active=max(0, min(1, int(active_step or 0))),
         orientation="vertical",
         mt="sm",
         children=[
@@ -202,7 +203,7 @@ def _calibration_loaded_body() -> dmc.Stack:
     )
 
 
-def build_stepper_card() -> dmc.Card:
+def build_stepper_card(active_step: int = 0) -> dmc.Card:
     """Build the calibration stepper/wizard card."""
     stepper_visible = SESSION.calibration_menu_open
     stepper_style = {} if stepper_visible else {"display": "none"}
@@ -231,7 +232,7 @@ def build_stepper_card() -> dmc.Card:
             dmc.Divider(),
             html.Div(
                 id="calibration-stepper-body",
-                children=_calibration_stepper_stack(),
+                children=_calibration_stepper_stack(active_step),
                 style=stepper_style,
             ),
             html.Div(
@@ -279,14 +280,12 @@ def build_workspace_step_content() -> dmc.Stack:
 
 def build_camera_panel(title: str | None = None) -> dmc.Card:
     """Build the camera feed panel with overlay controls."""
-    placeholder_src = _encode_frame(
-        placeholder_frame(t("Camera stream offline")))
     panel_title = title or t("Camera View")
     return dmc.Card(
         [
             dmc.Group(
                 [
-                    dmc.Text(panel_title, fw=600, size="lg"),
+                    dmc.Text(panel_title, fw=600, size="sm"),
                     dmc.Group(
                         [
                             dmc.SegmentedControl(
@@ -307,40 +306,48 @@ def build_camera_panel(title: str | None = None) -> dmc.Card:
                             ),
                             dmc.ActionIcon(
                                 html.Span(
-                                    "⛶", style={"fontSize": "1.2rem"}, title=t("Fullscreen")),
+                                    "⛶", title=t("Fullscreen")),
                                 id="fullscreen-btn",
                                 variant="light",
+                                size="sm",
                             ),
                         ],
-                        gap="sm",
+                        gap="xs",
                     ),
                 ],
                 justify="space-between",
                 align="center",
+                className="camera-toolbar",
             ),
-            dmc.Text(
-                t("Overlay: waiting for camera frames..."),
-                id="overlay-status",
-                size="sm",
-                c="dimmed",
-            ),
-            dmc.Text(
-                t("Camera: -- FPS · Stream: -- FPS"),
-                id="camera-fps",
-                size="sm",
-                c="dark",
-                fw=500,
+            dmc.Group(
+                [
+                    dmc.Text(
+                        t("Overlay: waiting for camera frames..."),
+                        id="overlay-status",
+                        size="xs",
+                        c="dimmed",
+                    ),
+                    dmc.Text(
+                        t("Camera: -- FPS · Stream: -- FPS"),
+                        id="camera-fps",
+                        size="xs",
+                        c="dark",
+                        fw=500,
+                    ),
+                ],
+                justify="space-between",
+                align="center",
+                className="camera-status-row",
             ),
             html.Div(
                 id="camera-feed-container",
                 children=[],  # Will be populated by callback based on camera connection state
-                style={"position": "relative",
-                       "height": "100%", "overflow": "hidden"}
+                className="camera-feed-container",
             ),
         ],
         withBorder=True,
-        radius="lg",
-        padding="sm",
+        radius="md",
+        padding="xs",
         className="panel-card camera-panel",
     )
 
@@ -529,6 +536,15 @@ def build_settings_card() -> dmc.Card:
     )
 
 
-def build_calibration_tab() -> dmc.Stack:
+def build_calibration_tab(active_step: int = 0) -> dmc.Stack:
     """Build the calibration tab content."""
-    return dmc.Stack([build_stepper_card()], gap="md")
+    return dmc.Stack(
+        [
+            dcc.Store(
+                id="calibration-tab-mounted-at",
+                data={"monotonic_s": time.monotonic()},
+            ),
+            build_stepper_card(active_step),
+        ],
+        gap="md",
+    )

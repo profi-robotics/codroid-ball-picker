@@ -45,6 +45,8 @@ class _FakeRegistry:
             auto_rescan_delay_s=0.0,
             auto_idle_sleep_s=0.0,
             auto_hold_s=0.0,
+            auto_transit_clearance_mm=10.0,
+            auto_socket_port=19093,
             plate_test_grip_timeout_s=1.0,
             gripper_profile=types.SimpleNamespace(
                 force_default=20,
@@ -61,8 +63,51 @@ class _FakeRegistry:
 
 
 class _FakeRobotAPI:
+    def __init__(self) -> None:
+        self.auto_socket_contexts: list[_FakeAutoSocketContext] = []
+        self.calls: list[str] = []
+        self.config = types.SimpleNamespace(host="192.168.101.100")
+
+    def _local_source_ip_for(self, host: str) -> str:
+        self.calls.append(f"_local_source_ip_for:{host}")
+        return "192.168.101.110"
+
     async def power_on(self) -> None:
+        self.calls.append("power_on")
         return None
+
+    async def set_auto_mode(self) -> None:
+        self.calls.append("set_auto_mode")
+
+    async def set_manual_mode(self) -> None:
+        self.calls.append("set_manual_mode")
+
+    async def set_current_coordinate_id(self, coordinate_id: int) -> None:
+        self.calls.append(f"set_current_coordinate_id:{coordinate_id}")
+
+    async def stop_auto_socket_project(self) -> None:
+        self.calls.append("stop_auto_socket_project")
+
+    def auto_socket_mode(self, config):
+        self.calls.append("auto_socket_mode")
+        context = _FakeAutoSocketContext(config)
+        self.auto_socket_contexts.append(context)
+        return context
+
+
+class _FakeAutoSocketContext:
+    def __init__(self, config) -> None:
+        self.config = config
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.exited = True
+        return False
 
 
 class PickGripVerificationTests(unittest.IsolatedAsyncioTestCase):
@@ -165,6 +210,53 @@ class PickGripVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.data["cycles_failed"], 0)
         drop_mock.assert_called_once()
 
+    async def test_auto_pick_closes_to_resolved_narrowest_width(self) -> None:
+        program = AutoPickPlaceProgram()
+        fake_registry = _FakeRegistry()
+
+        with (
+            patch("app.codroid_picker.programs.auto_pick_place.registry", return_value=fake_registry),
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.wait_for_operation_resume",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(program, "_move_linear_with_hold", new=AsyncMock(return_value=None)),
+            patch("app.codroid_picker.programs.auto_pick_place.log_move_target"),
+            patch("app.codroid_picker.programs.auto_pick_place.publish_auto_plan_snapshot"),
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.resolve_gripper_close_width",
+                return_value=0.0,
+            ) as close_width_mock,
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.command_gripper",
+                return_value="ok",
+            ) as command_mock,
+            patch(
+                "app.codroid_picker.programs.auto_pick_place.await_grip_status",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await program._execute_pick(
+                _FakeRobotAPI(),
+                target_coord5=(12.0, 22.0),
+                approach_mm=-30.0,
+                drop_mm=0.0,
+                pick_mm=0.0,
+                estimate_width=True,
+                target={
+                    "label": "orange",
+                    "workspace_mm": (12.0, 22.0),
+                    "bbox": (0.0, 0.0, 100.0, 80.0),
+                },
+                target_labels=["orange"],
+                tracking_mode="move",
+                orientation=(0.0, 0.0, 0.0),
+                final_c=0.0,
+            )
+
+        close_width_mock.assert_called_once_with()
+        command_mock.assert_any_call(0.0, "closed", force=40)
+
     async def test_manual_pick_drop_returns_error_on_empty_grip(self) -> None:
         fake_registry = _FakeRegistry()
         program = ManualPickPlaceProgram(
@@ -190,6 +282,10 @@ class PickGripVerificationTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "app.codroid_picker.programs.manual_pick_place.await_grip_status",
                 new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.codroid_picker.programs.manual_pick_place.resolve_gripper_close_width",
+                return_value=10.0,
             ),
             patch(
                 "app.codroid_picker.programs.manual_pick_place.command_gripper",
@@ -229,6 +325,10 @@ class PickGripVerificationTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=True),
             ),
             patch(
+                "app.codroid_picker.programs.manual_pick_place.resolve_gripper_close_width",
+                return_value=10.0,
+            ),
+            patch(
                 "app.codroid_picker.programs.manual_pick_place.command_gripper",
                 return_value="ok",
             ),
@@ -237,6 +337,7 @@ class PickGripVerificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, ProgramStatus.COMPLETED)
         self.assertTrue(SESSION.robot_has_object)
+        self.assertEqual(robot_api.auto_socket_contexts, [])
 
 
 if __name__ == "__main__":

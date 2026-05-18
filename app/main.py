@@ -22,6 +22,7 @@ from app.codroid_picker.layout import build_layout
 from app.codroid_picker.models import (
     _model_options,
     activate_model,
+    auto_load_configured_model,
 )
 from app.codroid_picker.persistence import (
     _restore_persisted_state,
@@ -304,7 +305,8 @@ globals_to_expose = [
     '_operation_snapshot', '_robot_posture_ready',
 
     # Model and GPU functions
-    'activate_model', 'save_uploaded_model', 'format_gpu_status',
+    'activate_model', 'auto_load_configured_model', 'save_uploaded_model',
+    'format_gpu_status',
 
     # Workspace functions
     'load_calibration_bundle', 'load_workspace_definition',

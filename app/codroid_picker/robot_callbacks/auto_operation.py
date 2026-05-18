@@ -17,10 +17,13 @@ from app.codroid_picker.i18n import t
 
 from app.codroid_picker.programs import (
     get_registry,
+    AutoMotionTestProgram,
     AutoPickPlaceProgram,
 )
 from app.codroid_picker.programs.base import ProgramStatus
 from app.codroid_picker.app_instance import registry
+
+AUTO_CONTROL_PROGRAMS = {"auto_pick_place", "auto_motion_test"}
 
 
 def register_auto_operation_callbacks(app: Dash) -> None:
@@ -49,22 +52,19 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("auto-start", "disabled"),
+        Output("auto-motion-test-start", "disabled"),
         Output("auto-stop", "disabled"),
         Output("auto-prereq-badges", "children"),
         Input("prerequisites-state", "data"),
         Input("auto-operation-state", "data"),
-        Input("model-status", "children"),
-        Input("workspace-action-status", "children"),
         Input("camera-connection-state", "data"),
         prevent_initial_call=False,
     )
     def _update_auto_buttons(
         prerequisites: Optional[dict],
         auto_state: Optional[dict],
-        _model_status: Optional[str],
-        _workspace_status: Optional[str],
         camera_state: Optional[dict],
-    ) -> Tuple[bool, bool, list]:
+    ) -> Tuple[bool, bool, bool, list]:
         """Enable/disable auto operation buttons and surface unmet prerequisites."""
         session = registry().session
 
@@ -104,11 +104,25 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         state_data = auto_state or {}
         running = state_data.get("running", False)
+        program_registry = get_registry()
+        active_program = program_registry.active_program
+        auto_control_running = bool(
+            running
+            or (
+                active_program is not None
+                and active_program.name in AUTO_CONTROL_PROGRAMS
+                and active_program.is_running
+            )
+        )
+        registry_running = program_registry.is_program_running
+        any_running = running or registry_running
 
         # Start button: enabled only when all prerequisites met and not running
-        start_disabled = not all_ready or running
+        start_disabled = not all_ready or any_running
+        motion_test_ready = prereqs.get("robot_connected", False)
+        motion_test_disabled = not motion_test_ready or any_running
         # Stop button: enabled only when running
-        stop_disabled = not running
+        stop_disabled = not auto_control_running
 
         prereq_children = [
             dmc.Group(
@@ -120,12 +134,13 @@ def register_auto_operation_callbacks(app: Dash) -> None:
             ),
         ]
 
-        return start_disabled, stop_disabled, prereq_children
+        return start_disabled, motion_test_disabled, stop_disabled, prereq_children
 
     @app.callback(
         Output("auto-operation-state", "data"),
         Output("app-notifications", "children", allow_duplicate=True),
         Input("auto-start", "n_clicks"),
+        Input("auto-motion-test-start", "n_clicks"),
         Input("auto-stop", "n_clicks"),
         State("auto-operation-state", "data"),
         State("robot-uri", "value"),
@@ -134,6 +149,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
     )
     async def _handle_auto_operation(
         start_clicks: int,
+        motion_test_clicks: int,
         stop_clicks: int,
         current_state: Optional[dict],
         robot_uri: Optional[str],
@@ -151,7 +167,6 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
         registry = get_registry()
-        SESSION = codroid_picker_module.SESSION
         LOGGER = codroid_picker_module.LOGGER
         DEFAULT_ROBOT_URI = codroid_picker_module.DEFAULT_ROBOT_URI
 
@@ -166,7 +181,7 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                 ),
             )
 
-        if trigger_id == "auto-start":
+        if trigger_id in {"auto-start", "auto-motion-test-start"}:
             # Check if already running
             if registry.is_program_running:
                 return (
@@ -174,14 +189,20 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                         "message": t("Program already running")},
                     dmc.Notification(
                         title=t("Auto Operation"),
-                        message=t("A program is already running: {name}", name=registry.active_program_name),
+                        message=t(
+                            "A program is already running: {name}",
+                            name=registry.active_program_name,
+                        ),
                         color="yellow",
                         action="show",
                     ),
                 )
 
             # Create program instance
-            program = AutoPickPlaceProgram()
+            if trigger_id == "auto-motion-test-start":
+                program = AutoMotionTestProgram()
+            else:
+                program = AutoPickPlaceProgram()
 
             # Check prerequisites
             ok, message = program.check_prerequisites()
@@ -206,20 +227,28 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                 # The callback will block until the program completes or is stopped
                 # This is the pattern that works reliably
                 result = await registry.start_instance(program, robot_api)
-                LOGGER.info("Auto operation completed: %s", result.message)
+                LOGGER.info("%s completed: %s", program.label, result.message)
 
                 return (
-                    {"running": False, "paused": False,
-                        "message": result.message},
+                    {
+                        "running": False,
+                        "paused": False,
+                        "program": program.name,
+                        "message": result.message,
+                    },
                     dmc.Notification(
                         title=t("Auto Operation"),
                         message=result.message,
-                        color="green" if result.status == ProgramStatus.COMPLETED else "orange",
+                        color=(
+                            "green"
+                            if result.status == ProgramStatus.COMPLETED
+                            else "orange"
+                        ),
                         action="show",
                     ),
                 )
             except Exception as exc:
-                LOGGER.exception("Failed to start auto operation")
+                LOGGER.exception("Failed to start %s", program.label)
                 return (
                     no_update,
                     dmc.Notification(
@@ -232,12 +261,17 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         elif trigger_id == "auto-stop":
             if registry.stop():
+                active_name = registry.active_program_name or "auto"
                 return (
-                    {"running": False, "paused": False,
-                        "message": t("Auto operation stopped")},
+                    {
+                        "running": False,
+                        "paused": False,
+                        "program": active_name,
+                        "message": t("Auto operation stopped"),
+                    },
                     dmc.Notification(
                         title=t("Auto Operation"),
-                        message=t("Auto pick & place operation stopped"),
+                        message=t("Auto operation stopped"),
                         color="orange",
                         action="show",
                     ),
@@ -261,12 +295,13 @@ def register_auto_operation_callbacks(app: Dash) -> None:
 
         # Build state from registry
         active = registry.active_program
-        if active is None or active.name != "auto_pick_place":
+        if active is None or active.name not in AUTO_CONTROL_PROGRAMS:
             snapshot = {"running": False, "paused": False}
         else:
             snapshot = {
                 "running": active.is_running,
                 "paused": active.status == ProgramStatus.PAUSED,
+                "program": active.name,
             }
 
         if current_state == snapshot:

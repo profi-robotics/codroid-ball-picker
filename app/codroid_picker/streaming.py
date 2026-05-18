@@ -25,7 +25,7 @@ LOGGER = logging.getLogger(__name__)
 _CAMERA_START_MAX_ATTEMPTS = 8
 _CAMERA_START_RETRY_DELAY_S = 2.0
 _RGB_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS", "30"))
-_RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "30"))
+_RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "15"))
 _MJPEG_MAX_FPS = float(os.getenv("CODROID_MJPEG_MAX_FPS", "30"))
 _RETRYABLE_CAMERA_ERROR_SUBSTRINGS = (
     "no available devices",
@@ -72,9 +72,15 @@ class MotionJPEGStream:
 
     def add_frame(self, frame: np.ndarray) -> None:
         """Add a frame to the stream queue, dropping frames if pushing too fast."""
-        now = time.time()
-        if now - self._last_push_ts < self.min_push_interval_s:
-            return
+        now = time.monotonic()
+        with self.lock:
+            if now - self._last_push_ts < self.min_push_interval_s:
+                return
+            # Reserve the stream slot before JPEG encoding. Multiple producers
+            # can call add_frame concurrently, and checking this outside the
+            # lock lets them all pass the rate limit at once.
+            self._last_push_ts = now
+
         success, buffer = cv2.imencode(".jpg", frame)
         if not success:
             return
@@ -83,7 +89,6 @@ class MotionJPEGStream:
             self.frame_queue.append(buffer.tobytes())
             self.frame_count += 1
             self._frame_index += 1
-            self._last_push_ts = now
             if self._last_fps_ts > 0.0:
                 dt = now - self._last_fps_ts
                 if dt > 0:
@@ -242,6 +247,14 @@ def process_camera_frame(frame: np.ndarray) -> None:
         MJPEG_STREAM.add_frame(frame)
         return
     FRAME_PROCESSOR.submit(task, frame)
+    latest_overlay = FRAME_PROCESSOR.get_latest(task.key)
+    if latest_overlay is None:
+        MJPEG_STREAM.add_frame(frame)
+    else:
+        # Repeat the latest annotated frame while the worker computes the next
+        # overlay. This keeps stream cadence up without alternating raw/overlay
+        # frames, which looks like flashing in the browser.
+        MJPEG_STREAM.add_frame(latest_overlay.vis)
 
 
 def _is_retryable_camera_error(exc: Exception) -> bool:

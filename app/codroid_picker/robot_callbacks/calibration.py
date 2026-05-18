@@ -8,12 +8,45 @@ This module handles the complete robot calibration process:
 - Verification move sequence
 """
 
+import time
 from typing import Any, Optional, Tuple
 
 import dash_mantine_components as dmc
 import numpy as np
 from dash import callback_context, Dash, Input, no_update, Output, State
 from app.codroid_picker.i18n import t
+
+CALIBRATION_ACTION_MOUNT_GUARD_S = 0.75
+
+
+def calibration_tab_action_guard_active(mounted_at: Optional[dict]) -> bool:
+    """Return true while newly mounted calibration controls should ignore clicks."""
+    if not mounted_at:
+        return False
+    try:
+        age_s = time.monotonic() - float(mounted_at.get("monotonic_s", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return age_s < CALIBRATION_ACTION_MOUNT_GUARD_S
+
+
+def should_open_robot_calibration_modal(
+    calibration_state: Optional[dict],
+    trigger: Optional[str],
+) -> bool:
+    """Return whether the robot calibration guide should be open."""
+    state = calibration_state or {}
+    if trigger == "robot-calibration-modal-close":
+        return False
+    if bool(state.get("modal_suppressed")):
+        return False
+    status = state.get("status", "idle")
+    return status in {
+        "running",
+        "accuracy_ready",
+        "awaiting_verification",
+        "verifying",
+    }
 
 
 def register_calibration_callbacks(app: Dash) -> None:
@@ -23,7 +56,7 @@ def register_calibration_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("robot-calibration-status", "children"),
-        Input("robot-status-interval", "n_intervals"),
+        Input("calibration-ui-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def _update_robot_calibration_guidance(_intervals: int) -> str:
@@ -56,19 +89,8 @@ def register_calibration_callbacks(app: Dash) -> None:
         calibration_state: Optional[dict],
         _close_clicks: int,
     ) -> bool:
-        from app.codroid_picker import state
-
-        status = (calibration_state or {}).get("status", "idle")
         trigger = callback_context.triggered_id
-        guidance = state.get_calibration_guidance_snapshot()
-        should_show_modal = not guidance.get("modal_suppressed", False)
-        if status in {"running", "accuracy_ready", "awaiting_verification", "verifying"} and should_show_modal:
-            return True
-        if status in {"complete", "error", "canceled"}:
-            return trigger != "robot-calibration-modal-close"
-        if trigger == "robot-calibration-modal-close":
-            return False
-        return False
+        return should_open_robot_calibration_modal(calibration_state, trigger)
 
     @app.callback(
         Output("robot-calibration-modal-stepper", "active"),
@@ -276,14 +298,19 @@ def register_calibration_callbacks(app: Dash) -> None:
         Output("robot-calibration-state", "data", allow_duplicate=True),
         Input("use-existing-robot-calibration", "n_clicks"),
         State("settings-robot-calib-path", "value"),
+        State("calibration-tab-mounted-at", "data"),
         prevent_initial_call=True,
     )
     def _load_saved_robot_calibration(
         _clicks: int,
         robot_calib_path_value: Optional[str],
+        mounted_at: Optional[dict],
     ) -> dict:
         """Load persisted robot calibration data instead of running the guided flow."""
         import app.codroid_picker as codroid_picker_module
+
+        if not _clicks or calibration_tab_action_guard_active(mounted_at):
+            return no_update
 
         path = codroid_picker_module._safe_path(
             robot_calib_path_value, codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH
@@ -312,6 +339,7 @@ def register_calibration_callbacks(app: Dash) -> None:
                 "message": guidance,
                 "step": 5,
                 "verification_ready": True,
+                "modal_suppressed": True,
             }
         except Exception as exc:  # noqa: BLE001
             message = f"Failed to load saved robot calibration: {exc}"
@@ -332,6 +360,7 @@ def register_calibration_callbacks(app: Dash) -> None:
         State("robot-connection-state", "data"),
         State("robot-control-state", "data"),
         State("robot-uri", "value"),
+        State("calibration-tab-mounted-at", "data"),
         prevent_initial_call=True,
     )
     async def _start_robot_calibration(
@@ -340,8 +369,12 @@ def register_calibration_callbacks(app: Dash) -> None:
         robot_state: Optional[dict],
         control_state: Optional[dict],
         robot_uri: Optional[str],
+        mounted_at: Optional[dict],
     ) -> dict:
         import app.codroid_picker as codroid_picker_module
+
+        if not _clicks or calibration_tab_action_guard_active(mounted_at):
+            return no_update
 
         if codroid_picker_module._robot_control_released(control_state):
             message = "Robot control is released. Acquire control first."
@@ -349,8 +382,13 @@ def register_calibration_callbacks(app: Dash) -> None:
                 message,
                 status="error",
                 verification_ready=False,
+                modal_suppressed=False,
             )
-            return {"status": "error", "message": message}
+            return {
+                "status": "error",
+                "message": message,
+                "modal_suppressed": False,
+            }
 
         codroid_picker_module.LOGGER.info(
             "=== Robot calibration button clicked ===")
@@ -362,8 +400,13 @@ def register_calibration_callbacks(app: Dash) -> None:
                 "Robot not connected. Click 'Test robot connection' to establish connection.",
                 status="error",
                 verification_ready=False,
+                modal_suppressed=False,
             )
-            return {"status": "error", "message": "Robot not connected."}
+            return {
+                "status": "error",
+                "message": "Robot not connected.",
+                "modal_suppressed": False,
+            }
 
         plate_ok, plate_message = codroid_picker_module._plate_is_stable(
             require_baseline=False)
@@ -374,8 +417,13 @@ def register_calibration_callbacks(app: Dash) -> None:
                 plate_message,
                 status="error",
                 verification_ready=False,
+                modal_suppressed=False,
             )
-            return {"status": "error", "message": plate_message}
+            return {
+                "status": "error",
+                "message": plate_message,
+                "modal_suppressed": False,
+            }
 
         posture_ok, posture_message = codroid_picker_module._robot_posture_ready()
         if not posture_ok:
@@ -383,8 +431,13 @@ def register_calibration_callbacks(app: Dash) -> None:
                 posture_message,
                 status="error",
                 verification_ready=False,
+                modal_suppressed=False,
             )
-            return {"status": "error", "message": posture_message}
+            return {
+                "status": "error",
+                "message": posture_message,
+                "modal_suppressed": False,
+            }
 
         codroid_picker_module._prepare_gripper_for_calibration()
 
@@ -503,6 +556,7 @@ def register_calibration_callbacks(app: Dash) -> None:
                 "message": message,
                 "step": 4,
                 "verification_ready": False,
+                "modal_suppressed": False,
                 "accuracy": accuracy,
                 "accuracy_ready": True,
                 "accuracy_passed": passes_threshold,
@@ -516,22 +570,17 @@ def register_calibration_callbacks(app: Dash) -> None:
                 f"Robot calibration failed: {exc}",
                 status="error",
                 verification_ready=False,
+                modal_suppressed=False,
             )
-            return {"status": "error", "message": str(exc)}
+            return {
+                "status": "error",
+                "message": str(exc),
+                "modal_suppressed": False,
+            }
 
     # === Verification Move ===
 
-    @app.callback(
-        Output("robot-calibration-state", "data", allow_duplicate=True),
-        Input("robot-calibration-verify", "n_clicks"),
-        Input("run-verification-inline", "n_clicks"),
-        State("robot-control-state", "data"),
-        State("robot-uri", "value"),
-        prevent_initial_call=True,
-    )
-    async def _run_robot_calibration_verification(
-        _verify_clicks: int,
-        _inline_clicks: int,
+    async def _run_robot_calibration_verification_action(
         control_state: Optional[dict],
         robot_uri: Optional[str],
     ) -> dict:
@@ -638,3 +687,43 @@ def register_calibration_callbacks(app: Dash) -> None:
             )
             codroid_picker_module._restore_calibration_gripper_width()
             return {"status": "error", "message": message, "step": 5}
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("robot-calibration-verify", "n_clicks"),
+        State("robot-control-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _run_robot_calibration_verification_from_modal(
+        verify_clicks: Optional[int],
+        control_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> dict:
+        """Run verification from the always-mounted modal button."""
+        if not verify_clicks:
+            return no_update
+        return await _run_robot_calibration_verification_action(
+            control_state,
+            robot_uri,
+        )
+
+    @app.callback(
+        Output("robot-calibration-state", "data", allow_duplicate=True),
+        Input("run-verification-inline", "n_clicks"),
+        State("robot-control-state", "data"),
+        State("robot-uri", "value"),
+        prevent_initial_call=True,
+    )
+    async def _run_robot_calibration_verification_from_tab(
+        inline_clicks: Optional[int],
+        control_state: Optional[dict],
+        robot_uri: Optional[str],
+    ) -> dict:
+        """Run verification from the calibration tab inline button."""
+        if not inline_clicks:
+            return no_update
+        return await _run_robot_calibration_verification_action(
+            control_state,
+            robot_uri,
+        )

@@ -178,12 +178,28 @@ _LAZY_EXPORTS = {
     # Models + GPU helpers
     "_model_options": ("app.codroid_picker.models", "_model_options"),
     "activate_model": ("app.codroid_picker.models", "activate_model"),
+    "auto_load_configured_model": (
+        "app.codroid_picker.models",
+        "auto_load_configured_model",
+    ),
     "save_uploaded_model": ("app.codroid_picker.models", "save_uploaded_model"),
     "_list_capture_frames": ("app.codroid_picker.models", "_list_capture_frames"),
     "format_gpu_status": ("app.codroid_picker.gpu_utils", "format_gpu_status"),
     # Auto operation + overlays
     "_format_detection_list": ("app.codroid_picker.auto_operation", "_format_detection_list"),
     "_run_detection": ("app.codroid_picker.auto_operation", "_run_detection"),
+    "_normalize_detection_confidence": (
+        "app.codroid_picker.auto_operation",
+        "_normalize_detection_confidence",
+    ),
+    "_normalize_detection_iou": (
+        "app.codroid_picker.auto_operation",
+        "_normalize_detection_iou",
+    ),
+    "_normalize_max_detections": (
+        "app.codroid_picker.auto_operation",
+        "_normalize_max_detections",
+    ),
     "_detection_coord5_xy": ("app.codroid_picker.auto_operation", "_detection_coord5_mm"),
     "_select_overlay_task": (
         "app.codroid_picker.overlay_tasks",

@@ -8,11 +8,13 @@ This package contains UI-related Dash callbacks split into logical modules:
 - settings: Settings save/reset operations
 - monitoring: Monitoring summaries and operation state
 - prerequisites: System prerequisites state tracking
+- lazy_layout: Deferred rendering for heavy tab content
 """
 
 from dash import Dash
 
 from .footer import register_footer_callbacks
+from .lazy_layout import register_lazy_layout_callbacks
 from .model import register_model_callbacks
 from .localization import register_localization_callbacks
 from .monitoring import register_monitoring_callbacks
@@ -30,6 +32,7 @@ def register_ui_callbacks(app: Dash) -> None:
     app._ui_callbacks_registered = True
 
     register_footer_callbacks(app)
+    register_lazy_layout_callbacks(app)
     register_stepper_callbacks(app)
     register_model_callbacks(app)
     register_localization_callbacks(app)
@@ -42,6 +45,7 @@ def register_ui_callbacks(app: Dash) -> None:
 __all__ = [
     "register_ui_callbacks",
     "register_footer_callbacks",
+    "register_lazy_layout_callbacks",
     "register_stepper_callbacks",
     "register_model_callbacks",
     "register_localization_callbacks",

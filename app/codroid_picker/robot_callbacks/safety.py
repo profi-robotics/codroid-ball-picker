@@ -93,6 +93,22 @@ def register_safety_callbacks(app: Dash) -> None:
     """Register periodic camera safety callback."""
 
     @app.callback(
+        Output("camera-safety-interval", "disabled", allow_duplicate=True),
+        Input("camera-connection-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _toggle_camera_safety_interval(camera_state: Optional[dict]) -> bool:
+        import app.codroid_picker as codroid_picker_module
+
+        mode = normalize_safety_mode(
+            codroid_picker_module.SETTINGS.camera_safety_mode,
+            codroid_picker_module.SETTINGS.camera_safety_enabled,
+        )
+        if mode == "off":
+            return True
+        return (camera_state or {}).get("status") != "live"
+
+    @app.callback(
         Output("camera-safety-state", "data"),
         Input("camera-safety-interval", "n_intervals"),
         prevent_initial_call=True,
@@ -149,6 +165,16 @@ def register_safety_callbacks(app: Dash) -> None:
                     "active": True,
                     "mode": mode,
                 }
+            if SESSION.yolo_model is None:
+                runtime["clear_streak"] = 0
+                return {
+                    "blocked": False,
+                    "matches": 0,
+                    "action": "none",
+                    "active": False,
+                    "mode": mode,
+                    "reason": "model_not_loaded",
+                }
             detections = SESSION.detections or []
             stale_s = float(getattr(codroid_picker_module.SETTINGS, "auto_detection_stale_s", 0.3))
             detections_age_s = time.monotonic() - float(SESSION.auto_detection_updated_at or 0.0)
@@ -165,9 +191,8 @@ def register_safety_callbacks(app: Dash) -> None:
                     SESSION.detection_classes,
                     crop_to_workspace=(zone != "full_frame"),
                 )
-                if detections:
-                    SESSION.detections = detections
-                    SESSION.auto_detection_updated_at = time.monotonic()
+                SESSION.detections = detections
+                SESSION.auto_detection_updated_at = time.monotonic()
             blocked, matches = evaluate_safety_state(
                 detections,
                 enabled=True,

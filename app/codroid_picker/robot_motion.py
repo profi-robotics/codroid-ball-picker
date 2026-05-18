@@ -92,6 +92,64 @@ def resolve_gripper_limits(gripper: "TWOFG") -> Tuple[float, float]:
     return _resolve_gripper_limits(gripper)
 
 
+def resolve_gripper_close_width(preferred_width: Optional[float] = None) -> float:
+    """Resolve the close width used for picks.
+
+    When no explicit width is supplied, use the connected gripper's minimum
+    external width. OnRobot grip detection is edge-triggered by an obstructed
+    close command, so auto/manual picks should target the narrowest reachable
+    width and then verify the grip-detected bit separately.
+    """
+    from app.codroid_picker.session import SESSION
+
+    settings = registry().settings
+    fallback = settings.gripper_profile.close_width_default
+    if preferred_width is not None:
+        try:
+            fallback = float(preferred_width)
+        except (TypeError, ValueError):
+            fallback = settings.gripper_profile.close_width_default
+
+    gripper = registry().gripper or SESSION.gripper
+    if gripper is None:
+        return float(fallback)
+
+    try:
+        min_width, max_width = resolve_gripper_limits(gripper)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("Failed to resolve gripper close width: %s", exc)
+        return float(fallback)
+
+    if preferred_width is None:
+        return float(min_width)
+    return float(min(max(float(fallback), min_width), max_width))
+
+
+def _wait_for_gripper_motion(gripper: "TWOFG", t_index: int) -> bool:
+    """Wait until gripper motion finishes without requiring grip detection."""
+    policy = getattr(gripper, "_policy", None)
+    timeout_s = float(getattr(policy, "busy_timeout_s", 5.0) or 5.0)
+    deadline = time.monotonic() + max(timeout_s, 0.1)
+    while time.monotonic() < deadline:
+        try:
+            busy = gripper.isBusy(t_index=t_index)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to poll gripper busy state: %s", exc)
+            return False
+        if isinstance(busy, (int, float)) and busy < 0:
+            return False
+        if not bool(busy):
+            return True
+        time.sleep(0.05)
+    LOGGER.warning("Gripper motion timeout after %.1fs", timeout_s)
+    return False
+
+
+def _gripper_command_failed(result: object) -> bool:
+    """Return True when a legacy gripper command result is an error code."""
+    return isinstance(result, (int, float)) and result < 0
+
+
 def command_gripper(
     target_width: float,
     action_label: str,
@@ -152,13 +210,16 @@ def command_gripper(
         )
         applied_speed = speed if speed is not None else 80
 
-        gripper.grip(
+        command_result = gripper.grip(
             t_index=gripper_defaults["t_index"],
             t_width=safe_width,
             n_force=applied_force,
             p_speed=applied_speed,
-            f_wait=True,
+            f_wait=False,
         )
+        if _gripper_command_failed(command_result):
+            return f"Gripper action failed: command returned {command_result}."
+        _wait_for_gripper_motion(gripper, gripper_defaults["t_index"])
 
         message = (
             f"Gripper {action_label} to {safe_width:.1f} mm @ "

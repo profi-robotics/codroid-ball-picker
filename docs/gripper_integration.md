@@ -51,8 +51,8 @@ uv install
 2. Click **Setup** in the header
 3. Scroll to the **OnRobot 2FG7 Gripper** section
 4. Enter the Compute Box IP address
-5. Toggle **Enable gripper connection**
-6. Click **Test gripper** to verify connection
+5. Leave **Enable gripper connection** on; it is enabled by default and auto-starts.
+6. Click **Test gripper** to manually re-check the connection if needed.
 
 ## API Reference
 
@@ -158,8 +158,9 @@ payload (including `external_width`, `min_external_width`, `max_external_width`,
 
 #### Footer Status
 
-The calibration UI footer now tracks orientation, busy state, grip detected, and
-force to keep the operator informed while jogging.
+The calibration UI footer tracks orientation, busy state, grip detected, and
+force. Primary gripper width stays visible in the compact footer; force and
+speed controls are under **Show details**.
 
 ### Return Codes
 
@@ -181,7 +182,8 @@ The gripper is integrated into Applications > Pick & Place:
 
 3. **Automated Pick & Place:**
    - The gripper automatically opens/closes during pick-drop sequences
-   - Grip detection confirms successful object acquisition
+   - Pick close commands use the connected gripper's minimum external width by default so the gripper can report grip detection when the object blocks travel
+   - The close command waits for motion completion; grip detection is checked separately from the `Grip detected` status bit
    - Pick approach/pick motions continuously refresh the target from the latest camera detections while moving
 
 ## Authentication

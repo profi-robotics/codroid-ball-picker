@@ -11,7 +11,7 @@ import base64
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from app.settings import _commit_settings
 from app.codroid_picker.session import SESSION
@@ -188,11 +188,69 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.last_detection_error = None
         _commit_settings(last_model=str(model_path),
                          active_model=str(model_path))
-        LOGGER.info(
-            f"Model loaded and detection auto-started: {model_path.name}")
-        return f"Model loaded: {model_path.name}. Detection auto-started."
+        LOGGER.info("Model loaded: %s", model_path.name)
+        return f"Model loaded: {model_path.name}."
     except Exception as exc:
         SESSION.yolo_model = None
         SESSION.model_loaded = False
         SESSION.last_detection_error = str(exc)
         return f"Model ready but not loaded: {exc}"
+
+
+def auto_load_configured_model(
+    *,
+    settings: object | None = None,
+    session: object | None = None,
+    activate_fn: Callable[[Path], str] | None = None,
+) -> dict:
+    """Load the remembered model after the UI has reached first paint."""
+    settings = settings or app_settings.SETTINGS
+    session = session or SESSION
+    activate_fn = activate_fn or activate_model
+
+    active_path = getattr(session, "active_model_path", None)
+    model_setting = active_path or getattr(settings, "active_model", None)
+    model_setting = model_setting or getattr(settings, "last_model", None)
+
+    if not getattr(settings, "model_auto_load", False):
+        return {
+            "status": "disabled",
+            "message": "Model auto-load disabled.",
+            "model": str(model_setting) if model_setting else None,
+        }
+    if getattr(session, "model_loaded", False):
+        return {
+            "status": "loaded",
+            "message": "Model already loaded.",
+            "model": str(active_path) if active_path else None,
+        }
+    if not model_setting:
+        return {"status": "missing", "message": "No model configured.", "model": None}
+
+    model_path = Path(model_setting)
+    if not model_path.exists():
+        return {
+            "status": "missing",
+            "message": f"Configured model not found: {model_path}",
+            "model": str(model_path),
+        }
+
+    setattr(session, "active_model_path", model_path)
+    try:
+        message = activate_fn(model_path)
+    except Exception as exc:  # noqa: BLE001
+        setattr(session, "model_loaded", False)
+        setattr(session, "last_detection_error", str(exc))
+        LOGGER.warning("Failed to auto-load model %s: %s", model_path, exc)
+        return {
+            "status": "error",
+            "message": f"Model auto-load failed: {exc}",
+            "model": str(model_path),
+        }
+
+    loaded = bool(getattr(session, "model_loaded", False))
+    return {
+        "status": "loaded" if loaded else "ready",
+        "message": message,
+        "model": str(model_path),
+    }

@@ -26,8 +26,6 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         Input("gripper-connection-state", "data"),
         Input("robot-connection-state", "data"),
         Input("robot-control-state", "data"),
-        Input("model-status", "children"),
-        Input("workspace-action-status", "children"),
         prevent_initial_call=True,
     )
     def _update_prerequisites(
@@ -36,8 +34,6 @@ def register_prerequisites_callbacks(app: "Dash") -> None:
         gripper_state: Optional[dict],
         robot_state: Optional[dict],
         robot_control_state: Optional[dict],
-        _model_status: Optional[str],
-        _workspace_status: Optional[str],
     ) -> dict:
         """Update prerequisites state based on current system status.
 

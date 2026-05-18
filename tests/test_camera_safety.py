@@ -35,9 +35,11 @@ class _DummyModel:
     def __init__(self) -> None:
         self.names = {0: "person"}
         self.last_shape = None
+        self.last_kwargs = {}
 
-    def predict(self, frame, **_kwargs):
+    def predict(self, frame, **kwargs):
         self.last_shape = frame.shape
+        self.last_kwargs = kwargs
         return [_DummyResult()]
 
 
@@ -161,6 +163,28 @@ class CameraSafetyTests(unittest.TestCase):
             SESSION.yolo_model = prev_model
             SESSION.workspace_definition = prev_workspace
             SESSION.calibration_bundle = prev_calib
+
+    def test_run_detection_clamps_confidence_and_iou(self) -> None:
+        prev_model = SESSION.yolo_model
+
+        model = _DummyModel()
+        SESSION.yolo_model = model
+
+        try:
+            detections = _run_detection(
+                np.zeros((100, 200, 3), dtype=np.uint8),
+                confidence=4.0,
+                iou=-2.0,
+                max_detections=0,
+                class_filter=None,
+                crop_to_workspace=False,
+            )
+            self.assertEqual(len(detections), 1)
+            self.assertEqual(model.last_kwargs["conf"], 1.0)
+            self.assertEqual(model.last_kwargs["iou"], 0.0)
+            self.assertEqual(model.last_kwargs["max_det"], 1)
+        finally:
+            SESSION.yolo_model = prev_model
 
 
 if __name__ == "__main__":

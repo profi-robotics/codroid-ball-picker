@@ -44,9 +44,11 @@ def register_stepper_callbacks(app: Dash) -> None:
         Output("calibration-stepper-body", "style"),
         Output("calibration-loaded-body", "style"),
         Output("calibration-nav-actions", "style"),
-        Input("calibration-menu-open-store", "data"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("calibration-menu-open-store", "data"),
     )
     def _toggle_calibration_menu(
+        _ticks: int,
         opened: bool,
     ) -> Tuple[dict[str, str], dict[str, str], dict[str, str]]:
         """Toggle visibility of calibration stepper vs loaded summary."""
@@ -55,14 +57,13 @@ def register_stepper_callbacks(app: Dash) -> None:
         return stepper_style, loaded_style, stepper_style
 
     @app.callback(
-        Output("calibration-menu-open-store", "data"),
-        Input("calibration-reset-button", "n_clicks"),
+        Output("calibration-menu-open-store", "data", allow_duplicate=True),
         Input("calibration-progress-store", "data"),
         Input("robot-calibration-state", "data"),
         State("calibration-menu-open-store", "data"),
+        prevent_initial_call=True,
     )
     def _sync_calibration_menu_state(
-        reset_clicks: Optional[int],
         _progress: dict,
         _robot_state: dict,
         current_open: Optional[bool],
@@ -70,22 +71,34 @@ def register_stepper_callbacks(app: Dash) -> None:
         """Sync calibration menu open state based on calibration completeness."""
         import app.codroid_picker as codroid_picker_module
 
-        trigger = callback_context.triggered_id
-        if trigger == "calibration-reset-button" and reset_clicks:
-            codroid_picker_module._reset_calibration_assets()
-            return True
         desired = not codroid_picker_module._calibration_data_complete()
         if current_open is None or desired == current_open:
             return no_update
         return desired
 
     @app.callback(
+        Output("calibration-menu-open-store", "data", allow_duplicate=True),
+        Input("calibration-reset-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _reset_calibration_menu(_reset_clicks: Optional[int]) -> bool:
+        """Reset calibration assets and reopen the calibration menu."""
+        import app.codroid_picker as codroid_picker_module
+
+        if not _reset_clicks:
+            return no_update
+        codroid_picker_module._reset_calibration_assets()
+        return True
+
+    @app.callback(
         Output("calibration-metadata", "children"),
-        Input("calibration-menu-open-store", "data"),
-        Input("calibration-progress-store", "data"),
-        Input("robot-calibration-state", "data"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("calibration-menu-open-store", "data"),
+        State("calibration-progress-store", "data"),
+        State("robot-calibration-state", "data"),
     )
     def _update_calibration_metadata(
+        _ticks: int,
         opened: Optional[bool],
         _progress: dict,
         _robot_state: dict,

@@ -20,6 +20,20 @@ def _refresh_detections(frame: np.ndarray) -> None:
     """Refresh detections at a throttled cadence."""
     if not SESSION.model_loaded or SESSION.yolo_model is None:
         return
+    if SESSION.camera_calibration_in_progress:
+        return
+    try:
+        from app.codroid_picker import state
+
+        if state.get_calibration_guidance_snapshot().get("status") in {
+            "running",
+            "accuracy_ready",
+            "awaiting_verification",
+            "verifying",
+        }:
+            return
+    except Exception:  # noqa: BLE001
+        pass
 
     now = time.monotonic()
     if now - SESSION.auto_detection_updated_at < SETTINGS.auto_detection_stale_s:
@@ -35,9 +49,8 @@ def _refresh_detections(frame: np.ndarray) -> None:
             SESSION.detection_max,
             SESSION.detection_classes,
         )
-        if detections:
-            SESSION.detections = detections
-            SESSION.last_detection_error = None
+        SESSION.detections = detections
+        SESSION.last_detection_error = None
     except Exception as exc:  # noqa: BLE001
         SESSION.last_detection_error = str(exc)
         LOGGER.debug("Detection refresh failed: %s", exc)

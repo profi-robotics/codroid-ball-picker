@@ -134,7 +134,7 @@ def build_detection_tab() -> dmc.Stack:
         [
             dmc.Text(t("Model Loader"), fw=600, size="lg"),
             dmc.Text(
-                t("Upload a YOLO model (.pt/.onnx) to enable detection.") if not has_models else t("Detection starts automatically when a model is loaded."), size="sm", c="dimmed"),
+                t("Upload a YOLO model (.pt/.onnx) to enable detection.") if not has_models else t("Select a model, then load it when detection is needed."), size="sm", c="dimmed"),
             dcc.Upload(
                 id="model-upload",
                 children=dmc.Button(t("Upload YOLO model"),
@@ -164,7 +164,7 @@ def build_detection_tab() -> dmc.Stack:
     detection_card = dmc.Card(
         [
             dmc.Text(t("Detection Controls"), fw=600, size="lg"),
-            dmc.Text(t("Detection runs automatically when a model is loaded."),
+            dmc.Text(t("Detection runs after a model is loaded and this view is active."),
                      size="sm", c="dimmed", style={"marginBottom": "10px"}),
             dmc.Group(
                 [
@@ -203,6 +203,11 @@ def build_detection_tab() -> dmc.Stack:
                     ),
                 ],
                 grow=True,
+            ),
+            dmc.Button(
+                t("Run detection"),
+                id="run-detection",
+                variant="light",
             ),
             dmc.Text(id="detection-status", size="sm", c="dimmed"),
             dmc.Text(id="detection-metrics", size="sm"),
@@ -469,8 +474,9 @@ def build_pick_place_tab() -> dmc.Stack:
     )
 
 
-def build_application_tab() -> dmc.Stack:
+def build_application_tab(active_value: str = "pick-place") -> dmc.Stack:
     """Build the application/configuration tab."""
+    selected = active_value if active_value in {"pick-place", "workspace"} else "pick-place"
     return dmc.Stack(
         [
             dmc.Tabs(
@@ -494,7 +500,7 @@ def build_application_tab() -> dmc.Stack:
                     ),
                 ],
                 id="application-tabs",
-                value="pick-place",
+                value=selected,
                 variant="pills",
                 color="brand",
                 style={"width": "100%"},
@@ -554,7 +560,11 @@ def build_monitoring_tab() -> dmc.Stack:
             dmc.Text(t("Detection Trend"), fw=700, size="lg"),
             dcc.Graph(
                 id="monitor-detection-trend",
-                config={"displayModeBar": False},
+                config={
+                    "displayModeBar": False,
+                    "staticPlot": True,
+                    "responsive": True,
+                },
                 style={"height": "220px"},
             ),
         ],
@@ -567,7 +577,11 @@ def build_monitoring_tab() -> dmc.Stack:
             dmc.Text(t("Cycle Time Trend"), fw=700, size="lg"),
             dcc.Graph(
                 id="monitor-cycle-trend",
-                config={"displayModeBar": False},
+                config={
+                    "displayModeBar": False,
+                    "staticPlot": True,
+                    "responsive": True,
+                },
                 style={"height": "220px"},
             ),
         ],

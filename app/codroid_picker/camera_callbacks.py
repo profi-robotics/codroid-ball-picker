@@ -40,7 +40,22 @@ _safe_int = safe_int
 _safe_float = safe_float
 _safe_path = safe_path
 
+CALIBRATION_ACTION_MOUNT_GUARD_S = 0.75
+
+
+def _calibration_tab_action_guard_active(mounted_at: Optional[dict]) -> bool:
+    """Return true while newly mounted calibration controls should ignore clicks."""
+    if not mounted_at:
+        return False
+    try:
+        age_s = time.monotonic() - float(mounted_at.get("monotonic_s", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return age_s < CALIBRATION_ACTION_MOUNT_GUARD_S
+
 _CALIBRATION_ACTION_LOCK = threading.Lock()
+_PLATE_STATUS_REFRESH_INTERVAL_S = 0.5
+_plate_status_last_refresh_ts = 0.0
 
 
 def _format_fps(capture_fps: float, stream_fps: float) -> str:
@@ -281,19 +296,18 @@ def _capture_depth_snapshot_for_calibration(
     if stream is None or not stream.is_running():
         raise RuntimeError(t("Camera stream stopped before depth capture."))
 
-    if bool(stream.config.enable_depth):
-        depth_path = codroid_picker_module.capture_depth_snapshot(output_path)
-        return depth_path, False
+    depth_path = codroid_picker_module.capture_depth_snapshot(output_path)
+    return depth_path, False
 
-    logging.info("[CALIBRATE] Capturing depth snapshot via isolated helper process")
-    stop_camera_stream(wait_for_release=True)
-    depth_path = codroid_picker_module.capture_depth_snapshot_isolated(
-        output_path,
-        stream.config.resolution,
-        stream.config.fps,
-        bool(stream.config.lock_af),
-    )
-    return depth_path, True
+
+def _refresh_plate_status_throttled(frame, plate_path: Path) -> None:
+    """Refresh plate status at a bounded cadence from Dash callbacks."""
+    global _plate_status_last_refresh_ts
+    now = time.monotonic()
+    if now - _plate_status_last_refresh_ts < _PLATE_STATUS_REFRESH_INTERVAL_S:
+        return
+    _plate_status_last_refresh_ts = now
+    _refresh_plate_status(frame, plate_path)
 
 
 def register_camera_callbacks(app: Dash) -> None:
@@ -324,17 +338,16 @@ def register_camera_callbacks(app: Dash) -> None:
         Output("header-camera-badge", "color"),
         Output("camera-enable", "checked"),
         Output("camera-connection-state", "data"),
-        Output("camera-interval", "disabled"),
         Output("metrics-interval", "disabled"),
         Input("camera-enable", "checked"),
-        Input("auto-init", "n_intervals"),
+        Input("hardware-init", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         Input("camera-lock-af", "checked"),
         State("camera-connection-state", "data"),
         State("camera-width", "value"),
         State("camera-height", "value"),
         State("camera-fps-input", "value"),
-        prevent_initial_call=True,
+        prevent_initial_call=False,
     )
     def _toggle_camera(
         checked: bool,
@@ -345,7 +358,7 @@ def register_camera_callbacks(app: Dash) -> None:
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
-    ) -> Tuple[str, str, str, bool, dict, bool, bool]:
+    ) -> Tuple[str, str, str, bool, dict, bool]:
         def _describe_stream() -> str:
             stream = SESSION.camera_stream
             if stream is None:
@@ -366,11 +379,22 @@ def register_camera_callbacks(app: Dash) -> None:
                 no_update,
                 no_update,
                 no_update,
-                no_update,
+            )
+
+        startup_triggers = {"hardware-init"}
+        if trigger in startup_triggers and not SETTINGS.camera_auto_start:
+            SESSION.camera_auto_init_done = True
+            stopped = t("Camera stream stopped.")
+            return (
+                stopped,
+                t("Camera: off"),
+                "gray",
+                False,
+                {"status": "off", "message": stopped},
+                True,
             )
         if trigger == "monitor-interval" and SESSION.camera_calibration_in_progress:
             return (
-                no_update,
                 no_update,
                 no_update,
                 no_update,
@@ -382,6 +406,24 @@ def register_camera_callbacks(app: Dash) -> None:
             # Never auto-retry camera startup from the periodic monitor tick.
             # Reconnect attempts should be explicit user actions (switch/button),
             # otherwise missing hardware can cause endless retry loops.
+            stream_running = (
+                SESSION.camera_stream is not None
+                and SESSION.camera_stream.is_running()
+            )
+            if stream_running:
+                status = _describe_stream()
+                SESSION.camera_last_error_message = None
+                SESSION.camera_last_error_key = None
+                SESSION.camera_last_error_params = {}
+                SESSION.camera_last_error_status = None
+                return (
+                    status,
+                    t("Camera: live"),
+                    "brand",
+                    True,
+                    {"status": "live", "message": status},
+                    False,
+                )
             return (
                 no_update,
                 no_update,
@@ -389,9 +431,8 @@ def register_camera_callbacks(app: Dash) -> None:
                 no_update,
                 no_update,
                 no_update,
-                no_update,
             )
-        if trigger == "auto-init":
+        if trigger in startup_triggers:
             # Auto-init should run once per worker process. Dash can remount
             # intervals on client reconnects; avoid restarting camera retries.
             if SESSION.camera_auto_init_done:
@@ -407,7 +448,6 @@ def register_camera_callbacks(app: Dash) -> None:
                         "brand",
                         True,
                         {"status": "live", "message": status},
-                        False,
                         False,
                     )
                 if SESSION.camera_last_error_key or SESSION.camera_last_error_message:
@@ -426,7 +466,6 @@ def register_camera_callbacks(app: Dash) -> None:
                         False,
                         {"status": last_status, "message": message},
                         True,
-                        True,
                     )
                 stopped = t("Camera stream stopped.")
                 return (
@@ -435,7 +474,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     "gray",
                     False,
                     {"status": "off", "message": stopped},
-                    True,
                     True,
                 )
             SESSION.camera_auto_init_done = True
@@ -474,7 +512,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     False,
                     state_payload,
                     True,
-                    True,
                 )
         desired_checked = checked_value
 
@@ -494,7 +531,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     "brand",
                     True,
                     {"status": "live", "message": status},
-                    False,
                     False,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -517,10 +553,9 @@ def register_camera_callbacks(app: Dash) -> None:
                         "message_params": error_params,
                     },
                     False,
-                    False,
                 )
 
-        if trigger == "auto-init":
+        if trigger in startup_triggers:
             desired_checked = True
         elif trigger == "camera-enable" and desired_checked:
             # Explicit user retry path after unavailable/error.
@@ -540,14 +575,13 @@ def register_camera_callbacks(app: Dash) -> None:
                         True,
                         {"status": "live", "message": status},
                         False,
-                        False,
                     )
                 status = start_camera_stream(
                     width,
                     height,
                     fps,
                     bool(lock_af),
-                    enable_depth_override=False,
+                    enable_depth_override=True,
                 )
                 SESSION.camera_last_error_message = None
                 SESSION.camera_last_error_key = None
@@ -559,7 +593,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     "brand",
                     True,
                     {"status": "live", "message": status},
-                    False,
                     False,
                 )
             except RuntimeError as exc:
@@ -592,7 +625,6 @@ def register_camera_callbacks(app: Dash) -> None:
                         "message_params": error_params,
                     },
                     True,
-                    True,
                 )
             except Exception as exc:
                 set_active_overlay_task(None)
@@ -616,7 +648,6 @@ def register_camera_callbacks(app: Dash) -> None:
                         "message_params": error_params,
                     },
                     True,
-                    True,
                 )
         set_active_overlay_task(None)
         stop_camera_stream()
@@ -632,7 +663,6 @@ def register_camera_callbacks(app: Dash) -> None:
             False,
             {"status": "off", "message": stopped},
             True,
-            True,
         )
 
     @app.callback(
@@ -642,6 +672,12 @@ def register_camera_callbacks(app: Dash) -> None:
     def _update_camera_placeholder(camera_state: Optional[dict]) -> html.Div:
         """Show placeholder when camera is not connected, otherwise show video feed."""
         status = (camera_state or {}).get("status", "off")
+        if (
+            status != "live"
+            and SESSION.camera_stream is not None
+            and SESSION.camera_stream.is_running()
+        ):
+            status = "live"
         if status == "off" and (
             SESSION.camera_last_error_key or SESSION.camera_last_error_message
         ):
@@ -652,70 +688,37 @@ def register_camera_callbacks(app: Dash) -> None:
             return html.Img(
                 id="camera-feed",
                 src="/video_feed",
-                style={
-                    "width": "100%",
-                    "height": "auto",
-                    "maxHeight": "100%",
-                    "objectFit": "contain",
-                    "borderRadius": "16px",
-                    "border": "1px solid rgba(240, 65, 0, 0.25)",
-                    "marginTop": "8px",
-                    "backgroundColor": "#0b0f14",
-                },
+                className="camera-feed",
             )
         else:
             # Camera not connected - show placeholder
             message = _resolve_camera_message(camera_state)
             icon = "📷" if status == "off" else "⚠️"
-            color = "#666" if status == "off" else "#ff8c00"
+            title_class = (
+                "camera-placeholder-title"
+                if status == "off"
+                else "camera-placeholder-title is-warning"
+            )
 
             return html.Div(
                 [
                     html.Div(
                         [
-                            html.Div(icon, style={
-                                     "fontSize": "64px", "marginBottom": "16px"}),
+                            html.Div(icon, className="camera-placeholder-icon"),
                             html.Div(
                                 t("Camera Not Connected") if status == "off" else t("Camera Unavailable"),
-                                style={
-                                    "fontSize": "20px",
-                                    "fontWeight": 600,
-                                    "color": color,
-                                    "marginBottom": "8px",
-                                }
+                                className=title_class,
                             ),
                             html.Div(
                                 message,
-                                style={
-                                    "fontSize": "14px",
-                                    "color": "#888",
-                                    "textAlign": "center",
-                                    "maxWidth": "400px",
-                                }
+                                className="camera-placeholder-message",
                             ),
                         ],
-                        style={
-                            "display": "flex",
-                            "flexDirection": "column",
-                            "alignItems": "center",
-                            "justifyContent": "center",
-                            "height": "100%",
-                            "minHeight": "400px",
-                        }
+                        className="camera-placeholder-content",
                     )
                 ],
                 id="camera-feed",
-                style={
-                    "width": "100%",
-                    "height": "auto",
-                    "borderRadius": "16px",
-                    "border": "1px solid rgba(240, 65, 0, 0.25)",
-                    "marginTop": "8px",
-                    "backgroundColor": "#0b0f14",
-                    "display": "flex",
-                    "alignItems": "center",
-                    "justifyContent": "center",
-                },
+                className="camera-feed camera-placeholder",
             )
 
     @app.callback(
@@ -726,6 +729,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Input("use-existing-calibration", "n_clicks"),
         State("settings-calib-path", "value"),
         State("calibration-stepper", "active"),
+        State("calibration-tab-mounted-at", "data"),
         prevent_initial_call=True,
     )
     def _handle_camera_calibration_actions(
@@ -733,11 +737,16 @@ def register_camera_callbacks(app: Dash) -> None:
         _use_existing: int,
         bundle_path: str,
         current_step: Optional[int] = 0,
+        mounted_at: Optional[dict] = None,
     ) -> Tuple[dmc.Alert, dict, int]:
         # Import parent module to access helper functions
         import app.codroid_picker as codroid_picker_module
 
         trigger = callback_context.triggered_id
+        if trigger in {"calibrate-camera", "use-existing-calibration"}:
+            click_count = _calibrate if trigger == "calibrate-camera" else _use_existing
+            if not click_count or _calibration_tab_action_guard_active(mounted_at):
+                return no_update, no_update, no_update
 
         output_path = DEFAULT_CAPTURE_DIR
         board_path = DEFAULT_BOARD_PATH
@@ -817,9 +826,8 @@ def register_camera_callbacks(app: Dash) -> None:
                     ):
                         time.sleep(SETTINGS.camera_calibration_frame_delay_s)
 
-                # Capture depth snapshot. If runtime stream is RGB-only, stop the
-                # stream, capture depth in an isolated helper process, and keep the
-                # stream paused to avoid in-process DepthAI restarts.
+                # Capture depth from the live depth-enabled stream so calibration
+                # does not tear down or restart the DepthAI pipeline.
                 (
                     depth_path,
                     stream_paused_for_depth_capture,
@@ -896,17 +904,12 @@ def register_camera_callbacks(app: Dash) -> None:
     @app.callback(
         Output("overlay-status", "children", allow_duplicate=True),
         Output("camera-fps", "children", allow_duplicate=True),
-        Output("camera-calibration-metrics", "children", allow_duplicate=True),
-        Output("workspace-metrics", "children", allow_duplicate=True),
-        Output("plate-metrics", "children", allow_duplicate=True),
-        Output("detection-metrics", "children", allow_duplicate=True),
         Output("plate-detection-state", "data", allow_duplicate=True),
-        Output("calibrate-camera", "disabled", allow_duplicate=True),
-        Output("markers-detected-icon", "color", allow_duplicate=True),
+        Output("camera-ui-metrics-state", "data"),
         Input("metrics-interval", "n_intervals"),
         State("main-tabs", "value"),
-        State("calibration-stepper", "active"),
-        State("application-tabs", "value"),
+        State("calibration-step-state", "data"),
+        State("application-tab-state", "data"),
         State("settings-marker-a", "value"),
         State("settings-marker-b", "value"),
         State("settings-marker-size", "value"),
@@ -916,17 +919,35 @@ def register_camera_callbacks(app: Dash) -> None:
     def _update_live_metrics(
         _ticks: int,
         active_tab: Optional[str],
-        calibration_step: Optional[int],
-        application_tab: Optional[str],
+        calibration_step_state: Optional[dict],
+        application_tab_state: Optional[dict],
         marker_a: Optional[float],
         marker_b: Optional[float],
         marker_size: Optional[float],
         overlay_mode: Optional[str],
-    ) -> Tuple[str, str, str, str, str, str, dict, bool, str]:
-        # Import parent module to access helper functions and globals
-        import app.codroid_picker as codroid_picker_module
-
+    ) -> Tuple[str, str, dict, dict]:
         frame = RAW_STREAM.get_latest_frame()
+        tab = active_tab or "applications"
+        calibration_step = int((calibration_step_state or {}).get("active", 0) or 0)
+        application_tab = (application_tab_state or {}).get("value") or "pick-place"
+
+        def _metrics_payload(
+            *,
+            camera: str = "",
+            workspace: str = "",
+            plate: str = "",
+            detection: str = "",
+            calibrate_disabled: bool = True,
+            marker_color: str = "gray",
+        ) -> dict:
+            return {
+                "camera_calibration_metrics": camera,
+                "workspace_metrics": workspace,
+                "plate_metrics": plate,
+                "detection_metrics": detection,
+                "calibrate_camera_disabled": bool(calibrate_disabled),
+                "markers_detected_color": marker_color,
+            }
 
         def _camera_calibration_state(
             metrics_text: str, step: int
@@ -971,29 +992,48 @@ def register_camera_callbacks(app: Dash) -> None:
         if frame is None:
             set_active_overlay_task(None)
             # Don't add placeholder to MJPEG stream - let video element show its poster image
-            # Only log occasionally to reduce noise (every 300 intervals = ~30 seconds at default interval)
-            if _ticks % 300 == 0:
+            # Only log occasionally to reduce noise (every 30 intervals at default interval)
+            if _ticks % 30 == 0:
                 is_running = SESSION.camera_stream and SESSION.camera_stream.is_running()
                 if is_running:
                     # Only log if stream claims to be running but we're not getting frames
                     logging.warning(
                         "No frame from camera despite stream running: %s", is_running)
+            camera_metric = (
+                t("ChArUco corners: --")
+                if tab == "calibration" and calibration_step == 0
+                else ""
+            )
+            workspace_metric = (
+                t("Workspace: --")
+                if tab == "applications" and application_tab == "workspace"
+                else ""
+            )
+            plate_metric = (
+                t("Plate error: --")
+                if tab == "calibration" and calibration_step == 1
+                else ""
+            )
+            detection_metric = (
+                t("Detections: --")
+                if tab == "applications" and application_tab == "pick-place"
+                else ""
+            )
             return (
                 t("Camera stream is stopped."),
                 overlay_fps_text,
-                t("ChArUco corners: --"),
-                t("Workspace: --"),
-                t("Plate error: --"),
-                t("Detections: --"),
                 plate_state,
-                True,
-                "gray",
+                _metrics_payload(
+                    camera=camera_metric,
+                    workspace=workspace_metric,
+                    plate=plate_metric,
+                    detection=detection_metric,
+                    calibrate_disabled=True,
+                    marker_color="gray",
+                ),
             )
 
         # Frame received, dispatch to background processor for heavy overlays.
-        tab = active_tab or "applications"
-        calibration_step = calibration_step or 0
-        application_tab = application_tab or "workspace"
         board_path = DEFAULT_BOARD_PATH
         plate_path = DEFAULT_PLATE_PATH
         marker_ids = (
@@ -1027,9 +1067,9 @@ def register_camera_callbacks(app: Dash) -> None:
                 status_text = overlay.status
                 metric_text = overlay.metric
             if calibration_step == 1 and task.key != "calibration-plate":
-                _refresh_plate_status(frame, plate_path)
+                _refresh_plate_status_throttled(frame, plate_path)
         elif calibration_step == 1:
-            _refresh_plate_status(frame, plate_path)
+            _refresh_plate_status_throttled(frame, plate_path)
 
         if task is None:
             status_text = t("No overlay applied.")
@@ -1061,61 +1101,89 @@ def register_camera_callbacks(app: Dash) -> None:
                 return (
                     status_text,
                     overlay_fps_text,
-                    metric_text,
-                    t("Workspace: --"),
-                    t("Plate error: --"),
-                    t("Detections: --"),
                     plate_state,
-                    calibrate_disabled,
-                    marker_color,
+                    _metrics_payload(
+                        camera=metric_text,
+                        calibrate_disabled=calibrate_disabled,
+                        marker_color=marker_color,
+                    ),
                 )
-            metrics_text = t("ChArUco corners: --")
+            metrics_text = ""
             calibrate_disabled, marker_color = _camera_calibration_state(
                 metrics_text, calibration_step
             )
             return (
                 status_text,
                 overlay_fps_text,
-                metrics_text,
-                t("Workspace: --"),
-                metric_text,
-                t("Detections: --"),
                 plate_state,
-                calibrate_disabled,
-                marker_color,
+                _metrics_payload(
+                    plate=metric_text,
+                    calibrate_disabled=calibrate_disabled,
+                    marker_color=marker_color,
+                ),
             )
 
         if tab == "applications":
-            metrics_text = t("ChArUco corners: --")
-            calibrate_disabled, marker_color = _camera_calibration_state(
-                metrics_text, calibration_step
-            )
             return (
                 status_text,
                 overlay_fps_text,
-                metrics_text,
-                metric_text if application_tab == "workspace" else t("Workspace: --"),
-                t("Plate error: --"),
-                _format_detection_metrics() if application_tab == "pick-place" else t("Detections: --"),
                 plate_state,
-                calibrate_disabled,
-                marker_color,
+                _metrics_payload(
+                    workspace=metric_text if application_tab == "workspace" else "",
+                    detection=(
+                        _format_detection_metrics()
+                        if application_tab == "pick-place"
+                        else ""
+                    ),
+                ),
             )
 
         # Monitoring or any other tab: surface metrics.
-        metrics_text = t("ChArUco corners: --")
-        calibrate_disabled, marker_color = _camera_calibration_state(
-            metrics_text, calibration_step
-        )
         return (
             status_text,
             overlay_fps_text,
-            metrics_text,
-            t("Workspace: --"),
-            t("Plate error: --"),
-            t("Detections: --"),
             plate_state,
-            calibrate_disabled,
+            _metrics_payload(),
+        )
+
+    @app.callback(
+        Output("workspace-metrics", "children", allow_duplicate=True),
+        Output("detection-metrics", "children", allow_duplicate=True),
+        Input("application-ui-interval", "n_intervals"),
+        State("camera-ui-metrics-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _render_application_metrics(
+        _ticks: int,
+        metrics_state: Optional[dict],
+    ) -> Tuple[str, str]:
+        metrics = metrics_state or {}
+        workspace_metrics = metrics.get("workspace_metrics") or no_update
+        detection_metrics = metrics.get("detection_metrics") or no_update
+        return workspace_metrics, detection_metrics
+
+    @app.callback(
+        Output("camera-calibration-metrics", "children", allow_duplicate=True),
+        Output("plate-metrics", "children", allow_duplicate=True),
+        Output("calibrate-camera", "disabled", allow_duplicate=True),
+        Output("markers-detected-icon", "color", allow_duplicate=True),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("camera-ui-metrics-state", "data"),
+        prevent_initial_call=True,
+    )
+    def _render_calibration_metrics(
+        _ticks: int,
+        metrics_state: Optional[dict],
+    ) -> Tuple[str, str, bool, str]:
+        metrics = metrics_state or {}
+        camera_metrics = metrics.get("camera_calibration_metrics") or no_update
+        plate_metrics = metrics.get("plate_metrics") or no_update
+        disabled = metrics.get("calibrate_camera_disabled")
+        marker_color = metrics.get("markers_detected_color") or "gray"
+        return (
+            camera_metrics,
+            plate_metrics,
+            True if disabled is None else bool(disabled),
             marker_color,
         )
 
@@ -1124,7 +1192,7 @@ def register_camera_callbacks(app: Dash) -> None:
         Output("calibration-progress", "style"),
         Output("calibration-progress-text", "children"),
         Output("calibration-progress-text", "style"),
-        Input("calibration-progress-interval", "n_intervals"),
+        Input("calibration-ui-interval", "n_intervals"),
     )
     def _update_calibration_progress(_):
         """Update progress bar and text from global calibration progress tracker."""

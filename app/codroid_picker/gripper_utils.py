@@ -97,6 +97,30 @@ def _safe_int(value: Optional[float], default: int) -> int:
     return safe_int(value, default)
 
 
+def _wait_for_gripper_motion(t_index: int) -> bool:
+    """Wait for gripper motion to finish without requiring grip detection."""
+    session = registry().session
+    gripper = session.gripper
+    if gripper is None:
+        return False
+    policy = getattr(gripper, "_policy", None)
+    timeout_s = float(getattr(policy, "busy_timeout_s", 5.0) or 5.0)
+    deadline = time.monotonic() + max(timeout_s, 0.1)
+    while time.monotonic() < deadline:
+        try:
+            busy = gripper.isBusy(t_index=t_index)
+            if isinstance(busy, (int, float)) and busy < 0:
+                return False
+            if not bool(busy):
+                return True
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Failed to poll gripper busy state: %s", exc)
+            return False
+        time.sleep(0.05)
+    LOGGER.warning("Gripper motion timeout after %.1fs", timeout_s)
+    return False
+
+
 def _command_gripper(
     target_width: float,
     action_label: str,
@@ -108,7 +132,10 @@ def _command_gripper(
     """Move gripper to target width and return status text."""
     session = registry().session
     gripper_defaults = registry().gripper_defaults
-    if session.gripper is None or not session.gripper.isConnected(t_index=gripper_defaults["t_index"]):
+    if (
+        session.gripper is None
+        or not session.gripper.isConnected(t_index=gripper_defaults["t_index"])
+    ):
         return "Gripper is not connected. Enable gripper in Setup menu."
 
     try:
@@ -131,13 +158,16 @@ def _command_gripper(
         )
         applied_speed = _safe_int(speed, 80)
 
-        session.gripper.grip(
+        command_result = session.gripper.grip(
             t_index=gripper_defaults["t_index"],
             t_width=safe_width,
             n_force=applied_force,
             p_speed=applied_speed,
-            f_wait=True,
+            f_wait=False,
         )
+        if isinstance(command_result, (int, float)) and command_result < 0:
+            return f"Gripper action failed: command returned {command_result}."
+        _wait_for_gripper_motion(gripper_defaults["t_index"])
         session.last_action = (
             f"Gripper {action_label} to {safe_width:.1f} mm @ "
             f"{applied_force} N / {applied_speed}% speed."

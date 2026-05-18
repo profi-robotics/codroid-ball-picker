@@ -87,6 +87,9 @@ def auto_load_model(settings, activate_model_fn, logger) -> None:
     """
     from pathlib import Path
 
+    if not getattr(settings, "model_auto_load", False):
+        return
+
     # Check for last_model since that's what gets persisted
     model_setting = settings.active_model or settings.last_model
     if not model_setting:

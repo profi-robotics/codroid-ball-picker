@@ -19,13 +19,13 @@ def register_state_sync_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("current-robot-position", "children"),
-        Input("robot-connection-state", "data"),
-        Input("robot-status-interval", "n_intervals"),
+        Input("calibration-ui-interval", "n_intervals"),
+        State("robot-connection-state", "data"),
         prevent_initial_call=True,
     )
     def _update_robot_position_display(
-        robot_conn_state: Optional[dict],
         _intervals: int,
+        robot_conn_state: Optional[dict],
     ) -> str:
         import app.codroid_picker as codroid_picker_module
 

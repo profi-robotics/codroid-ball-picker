@@ -426,7 +426,9 @@ def register_settings_callbacks(app: Dash) -> None:
             camera_safety_heuristic_min_area_val,
             camera_safety_baseline_refresh_ms_val,
             int(camera_safety_interval_ms),
-            camera_safety_mode_val == "off",
+            camera_safety_mode_val == "off"
+            or SESSION.camera_stream is None
+            or not SESSION.camera_stream.is_running(),
         )
 
     @app.callback(

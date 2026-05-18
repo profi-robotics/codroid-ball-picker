@@ -74,6 +74,8 @@
   "Camera: {capture_fps:.1f} FPS · Stream: {stream_fps:.1f} FPS": "Камера: {capture_fps:.1f} FPS · Трансляція: {stream_fps:.1f} FPS",
   "Camera: {status} · {w}x{h} @ {fps:.1f}/{cfg:g} FPS": "Камера: {status} · {w}x{h} @ {fps:.1f}/{cfg:g} FPS",
   "Cancel & reset": "Скасувати та скинути",
+  "Hide controls": "Сховати панель керування",
+  "Show controls": "Показати панель керування",
   "Cannot reach the gripper control box. Check power and network.": "Немає доступу до блока керування схватом. Перевірте живлення та мережу.",
   "Capture the ChArUco board frames to calibrate the camera.": "Зробіть кадри дошки ChArUco для калібрування камери.",
   "Capturing images: {current}/{total}": "Захоплення зображень: {current}/{total}",
@@ -209,6 +211,8 @@
   "Height above taught drop position (positive = higher)": "Висота над заданим положенням падіння (позитивне = вище)",
   "Hide footer": "Сховати нижню панель",
   "Show footer": "Показати нижню панель",
+  "Hide details": "Сховати деталі",
+  "Show details": "Показати деталі",
   "Holding object: no": "Утримання об'єкта: ні",
   "Holding object: unknown": "Утримання об'єкта: невідомо",
   "Holding object: unknown (gripper offline)": "Утримання об'єкта: невідомо (схват офлайн)",
@@ -600,6 +604,8 @@
   "Drop target: {coord}": "Точка скиду: {coord}",
   "#{rank} {label} · neighbors={neighbors} · nearest={nearest}mm": "#{rank} {label} · сусідів={neighbors} · найближчий={nearest}мм",
   "Robot speed: {speed}%": "Швидкість робота: {speed}%",
+  "Motion Test": "Тест руху",
+  "Auto operation stopped": "Автоматичну операцію зупинено",
   "target": "ціль",
   "n/a": "н/д"
 }

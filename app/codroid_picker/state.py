@@ -333,6 +333,7 @@ def build_robot_calibration_state_payload() -> dict:
         "message": guidance.get("message", ""),
         "step": guidance.get("step", 0),
         "verification_ready": guidance.get("verification_ready", False),
+        "modal_suppressed": guidance.get("modal_suppressed", False),
         "accuracy": guidance.get("accuracy"),
         "accuracy_ready": guidance.get("accuracy_ready", False),
         "accuracy_passed": guidance.get("accuracy_passed", False),

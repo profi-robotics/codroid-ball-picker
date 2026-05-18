@@ -31,11 +31,20 @@ def register_detection_callbacks(app: Dash) -> None:
         SESSION = codroid_picker_module.SESSION
         _safe_float = codroid_picker_module._safe_float
         _safe_int = codroid_picker_module._safe_int
+        normalize_confidence = codroid_picker_module._normalize_detection_confidence
+        normalize_iou = codroid_picker_module._normalize_detection_iou
+        normalize_max = codroid_picker_module._normalize_max_detections
 
-        SESSION.detection_confidence = _safe_float(confidence, 0.4)
-        SESSION.detection_iou = _safe_float(iou, 0.45)
-        SESSION.detection_max = _safe_int(max_detections, 10)
+        fallback_confidence = _safe_float(current_confidence, SESSION.detection_confidence)
+        SESSION.detection_confidence = normalize_confidence(
+            _safe_float(confidence, fallback_confidence),
+            fallback_confidence,
+        )
+        SESSION.detection_iou = normalize_iou(_safe_float(iou, 0.45))
+        SESSION.detection_max = normalize_max(_safe_int(max_detections, 10))
         SESSION.detection_classes = class_filter
+        SESSION.detections = []
+        SESSION.auto_detection_updated_at = 0.0
         return SESSION.detection_confidence
 
     @app.callback(
@@ -64,6 +73,9 @@ def register_detection_callbacks(app: Dash) -> None:
         get_latest_frame = codroid_picker_module.get_latest_frame
         _safe_float = codroid_picker_module._safe_float
         _safe_int = codroid_picker_module._safe_int
+        normalize_confidence = codroid_picker_module._normalize_detection_confidence
+        normalize_iou = codroid_picker_module._normalize_detection_iou
+        normalize_max = codroid_picker_module._normalize_max_detections
         _run_detection = codroid_picker_module._run_detection
         _format_detection_list = codroid_picker_module._format_detection_list
 
@@ -75,9 +87,9 @@ def register_detection_callbacks(app: Dash) -> None:
                 [],
                 None,
             )
-        conf_value = _safe_float(confidence, 0.4)
-        iou_value = _safe_float(iou, 0.45)
-        max_value = _safe_int(max_detections, 10)
+        conf_value = normalize_confidence(_safe_float(confidence, 0.4))
+        iou_value = normalize_iou(_safe_float(iou, 0.45))
+        max_value = normalize_max(_safe_int(max_detections, 10))
         try:
             detections = _run_detection(
                 frame, conf_value, iou_value, max_value, class_filter)
@@ -109,11 +121,13 @@ def register_detection_callbacks(app: Dash) -> None:
     @app.callback(
         Output("detection-list", "children", allow_duplicate=True),
         Output("pick-detection-select", "data", allow_duplicate=True),
-        Input("monitor-interval", "n_intervals"),
+        Input("application-ui-interval", "n_intervals"),
+        State("application-tab-state", "data"),
         prevent_initial_call=True,
     )
     def _update_detection_display(
         _n: int,
+        application_tab_state: Optional[dict],
     ) -> Tuple[list, list]:
         """Update detection display from continuous detection results.
 
@@ -121,6 +135,10 @@ def register_detection_callbacks(app: Dash) -> None:
         if no model is loaded skip updating the display.
         """
         import app.codroid_picker as codroid_picker_module
+
+        application_tab = (application_tab_state or {}).get("value") or "pick-place"
+        if application_tab != "pick-place":
+            return no_update, no_update
 
         SESSION = codroid_picker_module.SESSION
         _format_detection_list = codroid_picker_module._format_detection_list

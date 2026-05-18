@@ -12,11 +12,13 @@ def register_workspace_callbacks(app: Dash) -> None:
     @app.callback(
         Output("compute-workspace", "disabled"),
         Output("compute-workspace", "title"),
-        Input("camera-connection-state", "data"),
-        Input("prerequisites-state", "data"),
+        Input("application-ui-interval", "n_intervals"),
+        State("camera-connection-state", "data"),
+        State("prerequisites-state", "data"),
         prevent_initial_call=False,
     )
     def _update_compute_workspace_state(
+        _ticks: int,
         camera_state: Optional[dict],
         prerequisites: Optional[dict],
     ) -> tuple[bool, str]:

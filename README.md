@@ -35,8 +35,9 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status (the stream auto-starts and retries if the device is slow to appear), verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup currently forces RGB-only mode (depth disabled) to prioritize stream stability on flaky USB links. During camera calibration, the app uses an isolated helper process to capture the required depth snapshot and intentionally leaves the live stream paused afterward; click **Enable camera** to resume RGB streaming. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
-To keep startup responsive on Jetson-class hardware, robot and gripper network probes are not forced during initial page load; use **Test robot connection** and **Test gripper** in Setup when needed.
+Use the Setup drawer to review camera status, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. The UI shell is rendered before camera, robot, gripper, or YOLO startup so Raspberry Pi Chromium clients get a fast first paint. By default, camera/robot/gripper and the remembered YOLO model auto-start after first paint; set `camera_auto_start`, `model_auto_load`, `robot_auto_connect_after_first_paint`, or `gripper_auto_connect_after_first_paint` to `false` in `data/app_settings.json` or via `CODROID_` environment overrides to keep hardware fully manual. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup enables depth so camera calibration can capture the required depth snapshot from the live stream without stopping or restarting the DepthAI pipeline. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_RGB_MAX_FPS_WITH_DEPTH` (default `15`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+The robot and gripper connections auto-start after first paint when enabled. Use **Test robot connection** or **Acquire robot control** in Setup to retry manually after a connection failure or after releasing robot control.
+YOLO models are remembered across restarts and loaded from `active_model`/`last_model` after the initial UI paint when `model_auto_load` is enabled. Open the Detection/Pick view and click **Load selected model** to retry manually after a load failure.
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
@@ -44,7 +45,7 @@ For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
 python run_codroid_picker.py
 ```
-On Jetson Nano, the UI uses slower polling intervals by default to reduce callback load and keep camera/robot pipelines responsive.
+The UI keeps Monitoring graphs lazy and uses lightweight styling/callbacks by default so slow browser clients stay responsive without reducing the configured camera or MJPEG FPS.
 
 ## User Manual (UK)
 
@@ -98,9 +99,14 @@ camera, detection, and robot flows together. It provides:
 - A guided robot calibration modal with a verification move; the calibration
   points and safe Z floor are persisted in `data/robot_calibration.json` and
   loaded on startup when available.
+- A continuous Auto Motion Test footer action that enters the same auto-socket
+  motion mode as Auto Pick & Place, then loops through rectangle, circle, and
+  figure-eight hover motions until the active program is stopped.
 - A program safety banner (warning border) that highlights when robot motion
   sequences are running, plus pause/stop/reset controls and emergency stop /
-  overspeed acknowledgment modals that pause active programs.
+  overspeed acknowledgment modals that pause active programs. The compact
+  footer keeps primary motion controls visible and places advanced footer
+  controls behind **Show details**.
 - If `data/calibration_bundle.npz` or `data/workspace_definition.npz` already
   exist, the Calibration and Application workspace steps surface “Use saved …”
   buttons to load them without recomputing.
@@ -114,7 +120,8 @@ Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
 connectivity follow the `codroid-api` settings (env `CODROID_HOST` and
 `CODROID_ROBOT_PORT`, or the factory defaults).
 Note: the debug reloader is disabled to keep camera/robot streams in a single
-process. Restart the app manually to pick up code changes.
+process. Restart the app manually to pick up code changes, or pass `--reload`
+when you explicitly want Werkzeug file watching during development.
 
 ### Docker on Jetson Orin Nano
 Pull and run with:
@@ -233,6 +240,15 @@ For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_int
 Auto mode uses YOLO detections to continuously pick the nearest target:
 
 - Start/stop from the **Auto pick & place** controls in the footer.
+- Auto Pick & Place uses `codroid-api` auto-socket motion by default, injecting
+  and updating the managed controller project `pjcodroidautosock`; the listener
+  port defaults to `auto_socket_port` / `CODROID_AUTO_SOCKET_PORT=19093`.
+- After robot control is acquired, codroid-ball-picker releases the controller
+  web/admin websocket so the native controller web console can be opened while
+  robot posture/control stays connected on the robot websocket.
+- The auto-socket controller read timeout defaults to
+  `auto_socket_read_timeout_ms` / `CODROID_AUTO_SOCKET_READ_TIMEOUT_MS=120000`
+  for long pick/place cycles.
 - Set the **Target class** (default `orange`) and **Drop ignore radius** in the Pick & Place tab.
 - Teach a drop position first; auto waits at the drop approach when no targets are visible.
 - Camera safety is selectable in **Setup → Safety guards**:

@@ -26,6 +26,7 @@ from app.codroid_picker.robot_motion import (
     move_linear_follow_target,
     command_gripper,
     resolve_gripper_limits,
+    resolve_gripper_close_width,
     ensure_coordinate_active,
     log_move_target,
 )
@@ -274,7 +275,7 @@ class ManualPickPlaceProgram(RobotProgram):
             settings.gripper_profile.force_default * 2,
             settings.gripper_profile.force_max,
         )
-        close_width = self._gripper_close_width or settings.gripper_profile.close_width_default
+        close_width = resolve_gripper_close_width(self._gripper_close_width)
         result = command_gripper(close_width, "closed", force=grip_force)
         LOGGER.info(f"Gripper close result: {result}")
         grip_timeout_s = max(float(settings.plate_test_grip_timeout_s), 0.5)
@@ -432,10 +433,7 @@ class ManualPickPlaceProgram(RobotProgram):
         await wait_for_operation_resume(self._run_id)
         self.update_message("Opening gripper...")
         open_width = self._gripper_open_width or settings.gripper_profile.open_width_default
-        if self._gripper_close_width is not None:
-            close_width = self._gripper_close_width
-        else:
-            close_width = settings.gripper_profile.close_width_default
+        close_width = resolve_gripper_close_width(self._gripper_close_width)
         if open_width <= close_width:
             gripper = registry().gripper
             if gripper is not None:

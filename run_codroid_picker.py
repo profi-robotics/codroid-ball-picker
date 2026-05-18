@@ -114,7 +114,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8050, help="Port to bind.")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug mode.")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable Werkzeug file watching/reloader. Implies debug mode.",
+    )
     args = parser.parse_args()
+    if args.reload:
+        args.debug = True
 
     # Keep debug logging, but avoid heavy Dash dev frontend features that can
     # stall browser bootstrap on Jetson-class hardware.
@@ -133,6 +140,9 @@ def main() -> None:
     )
     logging.getLogger('asyncio').setLevel(logging.INFO)
     logging.getLogger('websockets').setLevel(logging.INFO)
+    logging.getLogger('werkzeug').setLevel(
+        logging.INFO if args.debug else logging.WARNING
+    )
 
     # DepthAI installs its own native signal handler by default. In debug mode
     # with Werkzeug reloader, keep Python's signal handling path to reduce
@@ -141,9 +151,9 @@ def main() -> None:
         os.environ.setdefault("DEPTHAI_INSTALL_SIGNAL_HANDLER", "0")
         faulthandler.enable(all_threads=True)
 
-    # In debug mode with reloader, only the worker process should initialize
-    # the app module and register cleanup handlers.
-    if args.debug and is_reloader_process():
+    # With --reload, only the worker process should initialize the app module
+    # and register cleanup handlers.
+    if args.reload and is_reloader_process():
         # This is the reloader parent process - just start the reloader
         # without loading the full app module (which has side effects)
         logging.info("Reloader process starting - will spawn worker...")
@@ -160,6 +170,7 @@ def main() -> None:
             host=args.host,
             port=args.port,
             debug=True,
+            use_reloader=True,
             extra_files=extra_files,
             **dash_dev_kwargs,
         )
@@ -189,7 +200,8 @@ def main() -> None:
         host=args.host,
         port=args.port,
         debug=args.debug,
-        extra_files=extra_files if args.debug else None,
+        use_reloader=args.reload,
+        extra_files=extra_files if args.reload else None,
         **dash_dev_kwargs,
     )
 

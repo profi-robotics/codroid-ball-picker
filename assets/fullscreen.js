@@ -1,54 +1,59 @@
 /**
- * Fullscreen handler for video element
- * Executes immediately on load, no waiting for DOMContentLoaded
+ * Delegated fullscreen handler for the camera feed.
+ *
+ * The camera feed node is replaced when camera connection state changes, so bind
+ * to the document once instead of polling for a specific element at startup.
  */
 (function initFullscreen() {
-  let attempts = 0;
-  const maxAttempts = 50;
+  function cameraFeed() {
+    return document.getElementById("camera-feed");
+  }
 
-  function bindHandlers() {
-    const fullscreenBtn = document.getElementById("fullscreen-btn");
-    const cameraFeed = document.getElementById("camera-feed");
+  function requestFullscreen() {
+    const feed = cameraFeed();
+    if (!feed) {
+      return;
+    }
 
-    attempts++;
+    const fsFn =
+      feed.requestFullscreen ||
+      feed.webkitRequestFullscreen ||
+      feed.mozRequestFullScreen ||
+      feed.msRequestFullscreen;
 
-    if (!fullscreenBtn || !cameraFeed) {
-      if (attempts < maxAttempts) {
-        setTimeout(bindHandlers, 100);
+    if (fsFn) {
+      const result = fsFn.call(feed);
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {
+          if (feed.webkitEnterFullscreen) {
+            feed.webkitEnterFullscreen();
+          }
+        });
       }
       return;
     }
 
-    function requestFullscreen() {
-      const fsFn =
-        cameraFeed.requestFullscreen ||
-        cameraFeed.webkitRequestFullscreen ||
-        cameraFeed.mozRequestFullScreen ||
-        cameraFeed.msRequestFullscreen;
-
-      if (fsFn) {
-        fsFn.call(cameraFeed).catch((err) => {
-          if (cameraFeed.webkitEnterFullscreen) {
-            cameraFeed.webkitEnterFullscreen();
-          }
-        });
-      } else if (cameraFeed.webkitEnterFullscreen) {
-        cameraFeed.webkitEnterFullscreen();
-      }
+    if (feed.webkitEnterFullscreen) {
+      feed.webkitEnterFullscreen();
     }
-
-    fullscreenBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      requestFullscreen();
-    });
-
-    cameraFeed.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      requestFullscreen();
-    });
   }
 
-  // Try immediately in case DOM is ready
-  bindHandlers();
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest("#fullscreen-btn")) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    requestFullscreen();
+  });
+
+  document.addEventListener("dblclick", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest("#camera-feed")) {
+      return;
+    }
+    event.preventDefault();
+    requestFullscreen();
+  });
 })();

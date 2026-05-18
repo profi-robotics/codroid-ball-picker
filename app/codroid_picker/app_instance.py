@@ -212,14 +212,14 @@ class AppRegistry:
         """
         if self._robot_session is None:
             from codroid_api import (
-                CodroidSettings,
                 RobotSession,
                 DEFAULT_FLANGE_BUTTON_PORT,
                 DEFAULT_FLANGE_BUTTON_PORTS,
             )
+            from app.settings import build_codroid_settings
 
             self._robot_session = RobotSession(
-                CodroidSettings(),
+                build_codroid_settings(),
                 flange_button_port=DEFAULT_FLANGE_BUTTON_PORT,
                 flange_button_ports=DEFAULT_FLANGE_BUTTON_PORTS,
             )
@@ -327,4 +327,3 @@ def registry() -> AppRegistry:
         settings = registry().settings
     """
     return AppRegistry()
-

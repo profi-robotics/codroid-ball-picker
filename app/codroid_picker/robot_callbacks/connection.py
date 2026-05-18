@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, html, no_update
 from app.codroid_picker.i18n import t
+from app.settings import SETTINGS
 
 
 def _control_state_payload(
@@ -49,11 +50,11 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("robot-test", "n_clicks"),
         Input("robot-acquire-control", "n_clicks"),
         Input("robot-release-control", "n_clicks"),
-        Input("auto-init", "n_intervals"),
+        Input("hardware-init", "n_intervals"),
         Input("monitor-interval", "n_intervals"),
         State("robot-uri", "value"),
         State("robot-control-state", "data"),
-        prevent_initial_call=True,
+        prevent_initial_call=False,
     )
     async def _test_robot(
         _clicks: int,
@@ -72,9 +73,16 @@ def register_connection_callbacks(app: Dash) -> None:
         resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
         control_released = codroid_picker_module._robot_control_released(control_state)
 
-        if trigger == "auto-init":
-            # Keep first paint lightweight on embedded devices:
-            # don't block page load on websocket probes.
+        if trigger is None:
+            trigger = "initial-load"
+
+        startup_triggers = {"hardware-init"}
+        if trigger in startup_triggers and control_released:
+            return no_update, no_update, no_update, no_update, no_update
+        if (
+            trigger in startup_triggers
+            and not SETTINGS.robot_auto_connect_after_first_paint
+        ):
             return no_update, no_update, no_update, no_update, no_update
 
         if trigger == "robot-release-control":
@@ -152,7 +160,7 @@ def register_connection_callbacks(app: Dash) -> None:
                 {"status": "error", "message": status},
                 _control_state_payload(mode="acquired"),
             )
-        if trigger not in {"robot-acquire-control", "robot-test"}:
+        if trigger not in {"robot-acquire-control", "robot-test", *startup_triggers}:
             return no_update, no_update, no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
             status = t("Robot connection check already in progress.")
@@ -204,9 +212,9 @@ def register_connection_callbacks(app: Dash) -> None:
         Output("gripper-connection-state", "data"),
         Input("gripper-test", "n_clicks"),
         Input("gripper-enable", "checked"),
-        Input("auto-init", "n_intervals"),
+        Input("hardware-init", "n_intervals"),
         State("gripper-cb-ip", "value"),
-        prevent_initial_call=True,
+        prevent_initial_call=False,
     )
     def _handle_gripper(
         _test_clicks: int,
@@ -221,6 +229,11 @@ def register_connection_callbacks(app: Dash) -> None:
 
         if trigger is None:
             return no_update, no_update, no_update, no_update, no_update
+
+        if trigger == "hardware-init":
+            if not SETTINGS.gripper_auto_connect_after_first_paint:
+                return no_update, no_update, no_update, no_update, no_update
+            enabled = True
 
         if not enabled and trigger == "gripper-enable":
             # Disable gripper
