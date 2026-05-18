@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_hardware_autoconnect_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODROID_ROBOT_AUTOCONNECT", "false")
+    monkeypatch.setenv("CODROID_GRIPPER_AUTOCONNECT", "false")
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Default unmarked tests to unit for consistent marker policy."""
     marker_names = {"unit", "integration", "hardware", "legacy"}

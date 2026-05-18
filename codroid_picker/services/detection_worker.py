@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import signal
+from importlib import import_module
 from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
 from queue import Empty
@@ -52,10 +53,43 @@ def _detections_from_results(results: Any, model: Any) -> list[dict[str, Any]]:
     return detections
 
 
+def _select_inference_device() -> str:
+    """Prefer CUDA only when the installed PyTorch build can run kernels."""
+    is_jetson = Path("/etc/nv_tegra_release").exists()
+    try:
+        torch = import_module("torch")
+        cuda = getattr(torch, "cuda", None)
+        if cuda is None or not bool(cuda.is_available()):
+            if is_jetson:
+                raise RuntimeError(
+                    "CUDA is not available to PyTorch on this Jetson. "
+                    "Install a Jetson-compatible CUDA PyTorch build."
+                )
+            return "cpu"
+        if cuda is not None and bool(cuda.is_available()):
+            try:
+                sample = torch.ones((64, 64), device="cuda")
+                result = sample @ sample
+                cuda.synchronize()
+                float(result[0, 0].detach().cpu().item())
+                return "cuda:0"
+            except Exception as exc:  # noqa: BLE001
+                if is_jetson:
+                    raise RuntimeError(
+                        "CUDA is visible to PyTorch but cannot execute kernels on this Jetson GPU. "
+                        "Install a Jetson-compatible PyTorch build for this device compute capability."
+                    ) from exc
+    except Exception:  # noqa: BLE001
+        if is_jetson:
+            raise
+    return "cpu"
+
+
 def worker_main(command_queue: Any, result_queue: Any) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     model: object | None = None
     model_path: str | None = None
+    device = "cpu"
     while True:
         try:
             command = command_queue.get(timeout=0.2)
@@ -73,8 +107,19 @@ def worker_main(command_queue: Any, result_queue: Any) -> None:
             try:
                 from ultralytics import YOLO  # type: ignore[import-not-found]
 
+                device = _select_inference_device()
                 model = YOLO(str(Path(model_path)))
-                result_queue.put({"kind": "activated", "path": model_path, "labels": _labels(model)})
+                with_device = getattr(model, "to", None)
+                if callable(with_device):
+                    with_device(device)
+                result_queue.put(
+                    {
+                        "kind": "activated",
+                        "path": model_path,
+                        "labels": _labels(model),
+                        "device": device,
+                    }
+                )
             except Exception as exc:  # noqa: BLE001
                 model = None
                 result_queue.put({"kind": "error", "error": str(exc), "path": model_path})
@@ -97,6 +142,7 @@ def worker_main(command_queue: Any, result_queue: Any) -> None:
                 iou=float(command.get("iou", 0.45)),
                 max_det=int(command.get("max_detections", 10)),
                 classes=command.get("classes"),
+                device=device,
                 verbose=False,
             )
             latency_ms = (time.perf_counter() - started) * 1000.0
@@ -106,6 +152,7 @@ def worker_main(command_queue: Any, result_queue: Any) -> None:
                     "detections": _detections_from_results(results, model),
                     "latency_ms": latency_ms,
                     "path": model_path,
+                    "device": device,
                     "frame_id": command.get("frame_id"),
                 }
             )

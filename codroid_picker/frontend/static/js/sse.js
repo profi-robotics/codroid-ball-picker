@@ -214,6 +214,7 @@
     kv("detection", [
       ["Worker", detection.worker_status || "stopped"],
       ["ML extras", detection.ml_available === false ? "missing" : (detection.ml_available === true ? "ready" : "unknown"), detection.ml_available === false ? "danger" : ""],
+      ["Device", detection.backend_device || "unknown", detection.backend_device === "cpu" ? "warn" : ""],
       ["Model", detection.active_model || "none"],
       ["Latency", detection.latency_ms ? `${Number(detection.latency_ms).toFixed(1)} ms` : "--"],
       ["Benchmark", detection.benchmark?.rating || detection.benchmark?.status || "not run"],

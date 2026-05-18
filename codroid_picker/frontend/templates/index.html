@@ -365,6 +365,7 @@
             <label>Robot port<input type="number" min="1" data-setting="robot_port"></label>
             <label>User WS port<input type="number" min="1" data-setting="user_port"></label>
             <label>Robot coordinate ID<input type="number" min="0" max="10" data-setting="robot_coordinate_id"></label>
+            <label class="switch-row"><input type="checkbox" data-setting="robot_autoconnect"> Auto-connect robot</label>
           </div>
           <div class="button-row">
             <button data-command="/robot/connect" data-payload-source="robot-settings" type="button">Test robot connection</button>
@@ -386,6 +387,7 @@
               </select>
             </label>
             <label>Compute Box IP<input type="text" data-setting="gripper_ip" placeholder="192.168.101.95"></label>
+            <label class="switch-row"><input type="checkbox" data-setting="gripper_autoconnect"> Auto-connect gripper</label>
             <label>Finger orientation
               <select id="gripper-orientation">
                 <option value="inward">Inward</option>

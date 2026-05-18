@@ -108,6 +108,24 @@ def test_robot_speed_requires_connection_without_500() -> None:
     assert response.json()["message"] == "Robot is not connected."
 
 
+def test_hardware_autoconnect_runs_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    _use_temp_robot_calibration(monkeypatch, tmp_path)
+    monkeypatch.setenv("CODROID_ROBOT_AUTOCONNECT", "true")
+    monkeypatch.setenv("CODROID_GRIPPER_AUTOCONNECT", "true")
+
+    with TestClient(create_app()) as client:
+        deadline = time.time() + 2.0
+        state = client.get("/state").json()
+        while time.time() < deadline:
+            state = client.get("/state").json()
+            if state["robot"]["status"] == "online" and state["gripper"]["status"] == "online":
+                break
+            time.sleep(0.05)
+
+    assert state["robot"]["status"] == "online"
+    assert state["gripper"]["status"] == "online"
+
+
 def test_robot_speed_updates_connected_fake_robot(monkeypatch, tmp_path: Path) -> None:
     _use_temp_robot_calibration(monkeypatch, tmp_path)
     with TestClient(create_app()) as client:

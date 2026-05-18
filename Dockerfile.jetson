@@ -30,9 +30,13 @@ COPY codroid-ball-picker/codroid_picker ./codroid_picker
 COPY codroid-ball-picker/vision ./vision
 COPY codroid-ball-picker/assets ./assets
 COPY codroid-ball-picker/data/markers ./data/markers
+RUN mkdir -p scripts
+COPY codroid-ball-picker/scripts/check_ml_gpu.py ./scripts/check_ml_gpu.py
 COPY codroid-ball-picker/run_codroid_picker.py ./
 
-RUN uv sync --no-dev --extra ml --frozen
+RUN uv venv --python python3 "${UV_PROJECT_ENVIRONMENT}" && \
+  uv sync --no-dev --frozen --inexact --extra torch && \
+  uv run python scripts/check_ml_gpu.py --require-cuda
 
 EXPOSE 8050
 

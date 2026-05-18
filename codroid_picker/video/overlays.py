@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 import cv2
 import numpy as np
 
 
-class OverlayMode(StrEnum):
+class OverlayMode(str, Enum):
     AUTO = "auto"
     CALIBRATION = "calibration"
     WORKSPACE = "workspace"

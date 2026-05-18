@@ -105,7 +105,10 @@ class DetectionService:
         if path is not None and not path.exists():
             raise FileNotFoundError(path)
         if path is not None and importlib.util.find_spec("ultralytics") is None:
-            message = "ML extras are not installed. Install with `uv sync --extra ml` before activating YOLO models."
+            message = (
+                "ML dependencies are not installed. Run `uv sync` before "
+                "activating YOLO models."
+            )
             self.state.update_domain(
                 "detection",
                 active_model=None,
@@ -128,6 +131,7 @@ class DetectionService:
                 labels=result.get("labels", []),
                 ml_available=True if path else None,
                 last_error=None,
+                backend_device=result.get("device"),
             )
         return self.state.domain("detection")
 
@@ -193,6 +197,7 @@ class DetectionService:
             "frame_source": frame_source,
             "input_shape": list(frame.shape),
             "backend": "ultralytics-worker",
+            "device": self.state.domain("detection").get("backend_device") or "unknown",
             "rating": benchmark_rating(avg),
         }
         self.state.update_domain("detection", benchmark=benchmark_payload, last_error=None)

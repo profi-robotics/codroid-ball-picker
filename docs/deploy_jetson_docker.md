@@ -1,13 +1,13 @@
 # Jetson Docker Deployment
 
-These steps run the FastAPI operator UI on a Jetson with USB access for the OAK-D, host networking for the robot/gripper LAN, MJPEG video, and optional GPU support for YOLO/TensorRT model execution.
+These steps run the FastAPI operator UI on a Jetson with USB access for the OAK-D, host networking for the robot/gripper LAN, MJPEG video, and GPU support for YOLO/TensorRT model execution.
 
 ## Prerequisites
 - JetPack with NVIDIA Container Runtime (`sudo apt install nvidia-container-runtime`) when GPU/ML support is needed.
 - Docker + docker-compose plugin.
 - Repo cloned to the Jetson (`codroid-ball-picker`).
 
-Use a base image that matches the deployed JetPack/L4T release. `Dockerfile.jetson` targets JetPack 6-class L4T R36 images; original Jetson Nano JetPack 4 deployments need a separately validated base image and Python 3.11 toolchain.
+Use a base image that matches the deployed JetPack/L4T release. `Dockerfile.jetson` targets JetPack 6-class L4T R36 images; original Jetson Nano JetPack 4 deployments need a separately validated base image and Python toolchain.
 
 ## Pull image
 ```bash
@@ -51,7 +51,9 @@ Keep `--workers 1`; the camera stream, robot session, gripper client, state stor
 
 ## Automatic updates on Jetson
 Install the systemd service/timer pair:
-- `codroid-ball-picker-compose.service` starts the compose stack on boot.
+- `codroid-ball-picker-compose.service` starts the compose stack on boot after
+  Docker, network-online, and synchronized system time are ready. It refuses to
+  run with an unset RTC/epoch clock.
 - `codroid-ball-picker-auto-update.timer` keeps the image updated and recreates the container when a new image is published.
 
 ```bash
@@ -92,11 +94,15 @@ Use `CODROID_USE_FAKE_HARDWARE=1` for a container smoke test without robot, grip
 ## Video and detection
 The default browser stream is MJPEG at `GET /video/stream`, with `GET /video/snapshot.jpg` as the fallback path. Tune defaults with `CODROID_VIDEO_MAX_WIDTH`, `CODROID_VIDEO_MAX_FPS`, and `CODROID_VIDEO_JPEG_QUALITY`.
 
-YOLO model loading is optional. Install/run the image with the `ml` extra when model activation is required. Jetson PyTorch wheels are platform-specific; use the NVIDIA wheel index that matches the device JetPack/L4T release, for example only after verifying compatibility:
+YOLO model loading uses Ultralytics through PyTorch. On the JetPack 6 / CUDA 12.6 Jetson Orin Nano, PyTorch must come from a Jetson-built wheel with `sm_87` kernels. The project `torch` extra pins `torch==2.8.0`, `torchvision==0.23.0`, and `torchaudio==2.8.0` to `https://pypi.jetson-ai-lab.io/jp6/cu126`, and pins `numpy<2` to keep the PyTorch NumPy bridge working. `Dockerfile.jetson` installs that extra and runs:
 
 ```bash
-uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
+uv run python scripts/check_ml_gpu.py --require-cuda
 ```
+
+This check requires a real CUDA tensor operation to succeed. A PyTorch build that reports CUDA as available but cannot execute kernels for the Jetson GPU compute capability fails validation.
+
+For non-container Jetson installs, run `scripts/install_jetson_torch.sh`. It recreates `.venv` with system Python 3.10 when the existing environment uses another interpreter, then runs `uv sync --extra torch` against the locked Jetson AI Lab sources.
 
 ## Notes
 - For additional cameras, add more `/dev/video*` entries.

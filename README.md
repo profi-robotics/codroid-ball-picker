@@ -19,10 +19,17 @@ robot motion commands.
 - `docs/` – integration guides for gripper and other peripherals.
 
 ## Quickstart
-1. Install dependencies with Python 3.11+ via `uv sync`; the manifest pins DepthAI to the tested runtime version:
+1. Install dependencies with Python 3.10-3.12 via `uv sync`; the manifest pins DepthAI to the tested runtime version:
    ```bash
    uv sync
    ```
+   On the JetPack 6 / CUDA 12.6 Jetson Orin Nano, install the Jetson torch extra before activating YOLO models. The extra pins `torch==2.8.0`, `torchvision==0.23.0`, and `torchaudio==2.8.0` to the Jetson AI Lab package index and pins `numpy<2`. The install script recreates `.venv` with system Python 3.10 when needed.
+   ```bash
+   ./scripts/install_jetson_torch.sh
+   uv run python scripts/check_ml_gpu.py --require-cuda
+   ```
+
+   The GPU check runs an actual CUDA tensor operation, so `torch.cuda.is_available()` is not treated as sufficient when the installed wheel lacks kernels for the Jetson GPU.
 2. Capture calibration data (ChArUco board images + one depth frame) and place them somewhere accessible to the Jetson. The helper script can automate the capture. For the default ChArUco board layout run:
    ```bash
    python scripts/capture_calibration_data.py \
@@ -61,13 +68,13 @@ Set `CODROID_CAMERA_AUTOSTART=1` to open the configured camera during server sta
 
 For Azure Kinect testing, first confirm that the color stream is exposed to OpenCV, for example as `/dev/video*` or through a GStreamer pipeline. If the Azure Kinect Sensor SDK is the only available interface on the host, install/configure a V4L2/GStreamer bridge first or add a dedicated `k4a` adapter; the generic path intentionally only depends on OpenCV.
 
-The FastAPI server intentionally runs as one process and one uvicorn worker so the camera, robot session, gripper session, state store, and detection worker are not duplicated. Robot and gripper network probes are not forced during initial page load; use the Setup tab to connect or acquire control. The UI supports English (`en`) and Ukrainian (`uk`) through locale JSON files in `codroid_picker/i18n/`; `ui_language` is persisted in `data/app_settings.json`.
+The FastAPI server intentionally runs as one process and one uvicorn worker so the camera, robot session, gripper session, state store, and detection worker are not duplicated. Robot and gripper auto-connect are enabled by default and can be disabled with `CODROID_ROBOT_AUTOCONNECT=false` or `CODROID_GRIPPER_AUTOCONNECT=false`; use the Setup tab to reconnect or acquire robot control. The UI supports English (`en`) and Ukrainian (`uk`) through locale JSON files in `codroid_picker/i18n/`; `ui_language` is persisted in `data/app_settings.json`.
 
 For Jetson runtime FPS benchmarking, run without debug mode:
 ```bash
 uv run python run_codroid_picker.py
 ```
-Useful video knobs are `CODROID_VIDEO_MAX_FPS`, `CODROID_VIDEO_MAX_WIDTH`, and `CODROID_VIDEO_JPEG_QUALITY`. Detection is isolated behind `DetectionService`; install the optional ML stack with `uv sync --extra ml` when YOLO model loading is needed.
+Useful video knobs are `CODROID_VIDEO_MAX_FPS`, `CODROID_VIDEO_MAX_WIDTH`, and `CODROID_VIDEO_JPEG_QUALITY`; the default MJPEG target is 30 FPS. Detection is isolated behind `DetectionService`, and the YOLO runtime dependency is installed by the default `uv sync`. Jetson host installs must run `scripts/install_jetson_torch.sh` so Ultralytics uses NVIDIA CUDA PyTorch instead of the PyPI CPU wheel.
 
 ## Run checks locally
 
@@ -169,13 +176,13 @@ GitHub Actions publishes releases and container images automatically for pushes 
 - Builds and publishes the ARM64 image (`linux/arm64/v8`) on a native ARM GitHub runner (`ubuntu-24.04-arm`) to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
 - Creates a GitHub release for the new tag.
 
-`codroid-api` and `onrobot-api` are resolved from the `profi-robotics` GitHub
-repositories through `uv` source entries in `pyproject.toml`. For active
-multi-repo development you may still clone the sibling repositories beside this
-checkout and temporarily switch the sources to local editable paths.
+`codroid-api` and `onrobot-api` are normally resolved from the
+`profi-robotics` GitHub repositories through `uv` source entries in
+`pyproject.toml`. This checkout is currently configured for active multi-repo
+development with local editable sibling clones at `../codroid-api` and
+`../onrobot-api`.
 
-YOLO inference relies on the `ultralytics` package. Install it with `uv add ultralytics`
-if you want to run detections from uploaded `.pt`/`.onnx` models.
+YOLO inference relies on the `ultralytics` package, which is part of the default runtime dependencies so uploaded `.pt`/`.onnx` models can be activated after a normal `uv sync`.
 
 ## Corner markers
 Printable ArUco fiducials for the default `(1, 2)` marker IDs live under `data/markers/corner_markers/`:

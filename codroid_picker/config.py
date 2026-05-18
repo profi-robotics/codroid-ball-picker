@@ -67,6 +67,10 @@ class AppSettings(BaseSettings):
     camera_autostart: bool = False
     camera_enable_depth: bool = False
     camera_fast_depth: bool = True
+    robot_autoconnect: bool = True
+    robot_autoconnect_timeout_s: float = 10.0
+    gripper_autoconnect: bool = True
+    gripper_autoconnect_timeout_s: float = 8.0
     model_dir: Path = DEFAULT_MODEL_DIR
     drop_target_path: Path = DEFAULT_DROP_TARGET_PATH
     drop_marker_id: int = 30
@@ -148,7 +152,7 @@ class AppSettings(BaseSettings):
     auto_separation_max_attempts: int = 2
     auto_rescan_delay_s: float = 0.25
 
-    video_max_fps: float = 15.0
+    video_max_fps: float = 30.0
     video_max_width: int = 960
     video_jpeg_quality: int = 70
     video_snapshot_width: int = 640

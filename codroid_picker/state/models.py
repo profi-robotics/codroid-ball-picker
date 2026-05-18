@@ -40,6 +40,7 @@ class DetectionState(BaseModel):
     ml_available: Optional[bool] = None
     active_model: Optional[str] = None
     labels: list[str] = Field(default_factory=list)
+    backend_device: Optional[str] = None
     confidence: float = 0.4
     iou: float = 0.45
     max_detections: int = 10
