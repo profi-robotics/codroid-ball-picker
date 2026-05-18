@@ -2,7 +2,7 @@ services:
   ui:
     image: ghcr.io/profi-robotics/codroid-ball-picker:latest
     container_name: codroid-ui
-    restart: unless-stopped
+    restart: always
     runtime: nvidia
     # Host networking keeps direct reachability to robot/gripper LAN segments
     # (for example 192.168.101.0/24) while still exposing the UI on Tailscale.

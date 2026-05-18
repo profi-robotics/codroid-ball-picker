@@ -121,6 +121,7 @@ Pull and run with:
 ```bash
 docker compose pull
 docker compose up
+./scripts/setup_jetson_auto_update.sh
 ```
 See `docs/deploy_jetson_docker.md` for Jetson prerequisites, device mappings, and GPU/runtime notes.
 The provided compose file uses host networking so the UI can be opened via a
