@@ -7,10 +7,10 @@ name = "codroid-ball-picker"
 version = "0.1.0"
 description = "Vision-guided Estun Codroid ball picker workflow scaffold."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "opencv-python",
-    "numpy",
+    "numpy>=1.26.4,<2",
     "websockets",
     "depthai==3.2.1",
     "codroid-api",
@@ -26,27 +26,32 @@ dependencies = [
     "weasyprint>=68.1",
 ]
 
-# PyTorch is listed separately because Jetson requires special wheels
-# On x86_64 Linux/Windows/macOS: uv sync --extra torch
-# On Jetson (aarch64): uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
-# See docs/deploy_jetson_docker.md for details
+# PyTorch is listed separately because Jetson requires wheels built for the
+# device GPU architecture. On this JP6/CUDA 12.6 Jetson Orin Nano, the torch
+# extra resolves torch/torchvision/torchaudio from the Jetson AI Lab index.
+# See docs/deploy_jetson_docker.md for details.
 [project.optional-dependencies]
 torch = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
+    "torch==2.8.0; sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'",
+    "torchvision==0.23.0; sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'",
+    "torchaudio==2.8.0; sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'",
 ]
 
 [tool.uv.sources]
 codroid-api = { path = "../codroid-api", editable = true }
 onrobot-api = { path = "../onrobot-api", editable = true }
+torch = { index = "jetson-ai-lab-jp6-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'" }
+torchvision = { index = "jetson-ai-lab-jp6-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'" }
+torchaudio = { index = "jetson-ai-lab-jp6-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.10'" }
 
-# PyTorch from NVIDIA for Jetson (JetPack 6 / L4T R36.x / CUDA 12.x)
-# uv does not yet support conditional index URLs per-extra, so for Jetson:
-#   1. Install without torch extra: uv sync
-#   2. Install CUDA-enabled torch manually:
-#      uv pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
-# Or use pip directly in the venv:
-#      .venv/bin/pip install torch torchvision --index-url https://developer.download.nvidia.com/compute/redist/jp/v60
+[[tool.uv.index]]
+name = "jetson-ai-lab-jp6-cu126"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126"
+explicit = true
+
+# PyTorch for Jetson must not be replaced by PyPI CPU/incompatible CUDA wheels.
+# Use scripts/install_jetson_torch.sh for host installs; it rebuilds the venv
+# with system Python 3.10 and installs the torch extra from the index above.
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "robot", "vision"]
