@@ -21,7 +21,7 @@ This pulls `ghcr.io/profi-robotics/codroid-ball-picker:latest`.
 docker compose up -d
 ```
 
-The UI will be reachable on `http://<jetson-ip>:8050` and auto-restart after reboot.
+The UI will be reachable on `http://<jetson-ip>:8050`.
 When Tailscale is enabled, use `http://<tailscale-ip>:8050` as well.
 
 The container starts:
@@ -50,7 +50,9 @@ Keep `--workers 1`; the camera stream, robot session, gripper client, state stor
 `./data` is mounted into the container to keep calibration bundles, workspace definitions, and settings.
 
 ## Automatic updates on Jetson
-Install a systemd timer that checks for new image versions, pulls them, and recreates the container if needed:
+Install the systemd service/timer pair:
+- `codroid-ball-picker-compose.service` starts the compose stack on boot.
+- `codroid-ball-picker-auto-update.timer` keeps the image updated and recreates the container when a new image is published.
 
 ```bash
 ./scripts/setup_jetson_auto_update.sh
@@ -66,6 +68,13 @@ Run one update cycle manually:
 
 ```bash
 ./scripts/jetson_auto_update_check.sh
+```
+
+Verify both are active:
+
+```bash
+systemctl status codroid-ball-picker-compose.service
+systemctl status codroid-ball-picker-auto-update.timer
 ```
 
 ## Environment overrides

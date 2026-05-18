@@ -416,6 +416,19 @@ def build_setup_drawer() -> dmc.Drawer:
                             ),
                             span=4,
                         ),
+                        dmc.GridCol(
+                            dmc.NumberInput(
+                                id="settings-auto-transit-clearance",
+                                label=t("Transit clearance (mm)"),
+                                description=t("Extra upward clearance for XY travel above approach/drop."),
+                                value=SETTINGS.auto_transit_clearance_mm,
+                                min=0,
+                                max=100,
+                                step=1,
+                                size="sm",
+                            ),
+                            span=4,
+                        ),
                     ],
                     gutter="sm",
                 ),
@@ -490,11 +503,18 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Grid(
                     [
                         dmc.GridCol(
-                            dmc.Switch(
-                                id="settings-camera-safety-enabled",
-                                label=t("Enable camera safety pause"),
-                                description=t("Pause active programs when configured labels are detected."),
-                                checked=SETTINGS.camera_safety_enabled,
+                            dmc.Select(
+                                id="settings-camera-safety-mode",
+                                label=t("Camera safety mode"),
+                                data=[
+                                    {"label": t("Safety off"), "value": "off"},
+                                    {"label": t("Model safety"), "value": "model"},
+                                    {"label": t("Heuristic safety"), "value": "heuristic"},
+                                ],
+                                value=getattr(SETTINGS, "camera_safety_mode", "model"),
+                                description=t("Select how camera safety should pause robot motion."),
+                                comboboxProps={"withinPortal": False},
+                                clearable=False,
                                 size="sm",
                             ),
                             span=4,
@@ -527,6 +547,53 @@ def build_setup_drawer() -> dmc.Drawer:
                                 size="sm",
                             ),
                             span=4,
+                        ),
+                        dmc.GridCol(
+                            dmc.Box(
+                                [
+                                    dmc.NumberInput(
+                                        id="settings-camera-safety-heuristic-threshold",
+                                        label=t("Heuristic diff threshold"),
+                                        description=t("Normalized changed-pixel ratio to trigger pause."),
+                                        value=SETTINGS.camera_safety_heuristic_threshold,
+                                        min=0.001,
+                                        max=1.0,
+                                        step=0.001,
+                                        decimalScale=3,
+                                        size="sm",
+                                    ),
+                                    dmc.NumberInput(
+                                        id="settings-camera-safety-heuristic-min-area",
+                                        label=t("Heuristic min area ratio"),
+                                        description=t("Small-change filter ratio inside monitored zone."),
+                                        value=SETTINGS.camera_safety_heuristic_min_area_ratio,
+                                        min=0.001,
+                                        max=1.0,
+                                        step=0.001,
+                                        decimalScale=3,
+                                        size="sm",
+                                        mt="sm",
+                                    ),
+                                    dmc.NumberInput(
+                                        id="settings-camera-safety-baseline-refresh-ms",
+                                        label=t("Baseline refresh (ms)"),
+                                        description=t("How often heuristic baseline can refresh while clear."),
+                                        value=SETTINGS.camera_safety_baseline_refresh_ms,
+                                        min=100,
+                                        max=10000,
+                                        step=50,
+                                        size="sm",
+                                        mt="sm",
+                                    ),
+                                ],
+                                id="settings-camera-safety-heuristic-box",
+                                style={
+                                    "display": "block"
+                                    if getattr(SETTINGS, "camera_safety_mode", "model") == "heuristic"
+                                    else "none"
+                                },
+                            ),
+                            span=8,
                         ),
                         dmc.GridCol(
                             dmc.NumberInput(
@@ -758,7 +825,7 @@ def build_layout() -> dmc.MantineProvider:
                     id="camera-safety-interval",
                     interval=SETTINGS.camera_safety_check_interval_ms,
                     n_intervals=0,
-                    disabled=not SETTINGS.camera_safety_enabled,
+                    disabled=getattr(SETTINGS, "camera_safety_mode", "model") == "off",
                 ),
                 html.Div(id="camera-refresh-container",
                          style={"display": "none"}),

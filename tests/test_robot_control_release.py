@@ -34,55 +34,45 @@ class RobotControlReleaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_release_robot_ownership_stops_power_off_and_closes(self) -> None:
         calls: list[str] = []
 
-        class _FakeAPI:
-            async def stop_command(self) -> None:
-                calls.append("stop_command")
-
-            async def power_off(self) -> None:
-                calls.append("power_off")
-
         class _FakeSession:
-            async def close(self) -> None:
-                calls.append("close")
+            async def release_control(self, uri: str, power_off: bool, wait_closed_s: float) -> dict:
+                calls.append(f"release_control:{uri}:{power_off}:{wait_closed_s}")
+                return {"mode": "released", "released_at": 123.0, "last_error": None}
 
         class _FakeModule:
-            async def _with_robot_api(self, _uri: str, action):
-                calls.append("with_robot_api")
-                await action(_FakeAPI())
-
             def _get_robot_session(self) -> _FakeSession:
                 return _FakeSession()
 
         fake_registry = SimpleNamespace(active_program=object(), stop=lambda: calls.append("registry_stop"))
 
         with mock.patch("app.codroid_picker.programs.get_registry", return_value=fake_registry):
-            await _release_robot_ownership(_FakeModule(), "ws://robot/")
+            result = await _release_robot_ownership(_FakeModule(), "ws://robot/")
 
         self.assertEqual(
             calls,
-            ["registry_stop", "with_robot_api", "stop_command", "power_off", "close"],
+            ["registry_stop", "release_control:ws://robot/:True:2.0"],
         )
+        self.assertEqual(result["mode"], "released")
 
     async def test_release_robot_ownership_closes_even_when_api_fails(self) -> None:
         calls: list[str] = []
 
         class _FakeSession:
-            async def close(self) -> None:
-                calls.append("close")
+            async def release_control(self, _uri: str, power_off: bool, wait_closed_s: float) -> dict:
+                calls.append(f"release_control:{power_off}:{wait_closed_s}")
+                raise RuntimeError("release failed")
 
         class _FakeModule:
-            async def _with_robot_api(self, _uri: str, _action):
-                raise RuntimeError("api unavailable")
-
             def _get_robot_session(self) -> _FakeSession:
                 return _FakeSession()
 
         fake_registry = SimpleNamespace(active_program=None, stop=lambda: calls.append("registry_stop"))
 
         with mock.patch("app.codroid_picker.programs.get_registry", return_value=fake_registry):
-            await _release_robot_ownership(_FakeModule(), "ws://robot/")
+            with self.assertRaisesRegex(RuntimeError, "release failed"):
+                await _release_robot_ownership(_FakeModule(), "ws://robot/")
 
-        self.assertEqual(calls, ["close"])
+        self.assertEqual(calls, ["release_control:True:2.0"])
 
 
 if __name__ == "__main__":

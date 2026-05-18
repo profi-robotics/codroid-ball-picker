@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+COMPOSE_SERVICE_NAME="codroid-ball-picker-compose.service"
 SERVICE_NAME="codroid-ball-picker-auto-update.service"
 TIMER_NAME="codroid-ball-picker-auto-update.timer"
 INTERVAL="${AUTO_UPDATE_INTERVAL:-5min}"
@@ -17,11 +18,32 @@ if ! command -v sudo >/dev/null 2>&1; then
   exit 1
 fi
 
+cat <<EOF | sudo tee "/etc/systemd/system/${COMPOSE_SERVICE_NAME}" >/dev/null
+[Unit]
+Description=Codroid Ball Picker Docker Compose stack
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=${REPO_DIR}
+# Pull the latest image on boot when reachable; continue if registry is unavailable.
+ExecStartPre=-/usr/bin/docker compose pull ui
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat <<EOF | sudo tee "/etc/systemd/system/${SERVICE_NAME}" >/dev/null
 [Unit]
 Description=Codroid Ball Picker container auto-update check
-After=docker.service network-online.target
-Wants=docker.service network-online.target
+After=${COMPOSE_SERVICE_NAME}
+Wants=${COMPOSE_SERVICE_NAME}
 
 [Service]
 Type=oneshot
@@ -44,8 +66,11 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
+sudo systemctl enable --now "${COMPOSE_SERVICE_NAME}"
 sudo systemctl enable --now "${TIMER_NAME}"
 
+echo "Compose startup service installed: ${COMPOSE_SERVICE_NAME}"
+echo "Check status with: systemctl status ${COMPOSE_SERVICE_NAME}"
 echo "Auto-update timer installed: ${TIMER_NAME}"
 echo "Check status with: systemctl status ${TIMER_NAME}"
 echo "List schedules with: systemctl list-timers --all | grep codroid-ball-picker-auto-update"

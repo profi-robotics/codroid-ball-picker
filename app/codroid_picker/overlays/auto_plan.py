@@ -10,8 +10,10 @@ import cv2
 import numpy as np
 
 from app.codroid_picker.auto_plan_state import get_auto_plan_snapshot
+from app.codroid_picker.procedures import _current_coordinate_id, _get_robot_session, _robot_to_workspace_mm
 from app.codroid_picker.session import SESSION
 from app.codroid_picker.transforms import _coord5_to_workspace_mm
+from app.settings import SETTINGS
 from .drawing import _draw_label
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +54,31 @@ def _coord5_to_pixel(coord5_xy: Optional[Sequence[float]]) -> Optional[tuple[int
     if workspace_xy is None:
         return None
     return _workspace_mm_to_pixel(workspace_xy)
+
+
+def _robot_posture_pixel() -> Optional[tuple[int, int]]:
+    """Project live robot posture into pixel coordinates."""
+    if SESSION.workspace_definition is None:
+        return None
+    try:
+        robot_session = _get_robot_session()
+        if not robot_session.posture_seen():
+            return None
+        pos = robot_session.position_snapshot()
+        coord_id = _current_coordinate_id(robot_session)
+        if coord_id == SETTINGS.robot_coordinate_id:
+            workspace_xy = _coord5_to_workspace_mm(
+                SESSION.workspace_definition,
+                (float(pos.x), float(pos.y)),
+            )
+        else:
+            robot_xyz = np.array([pos.x, pos.y, pos.z], dtype=np.float64)
+            workspace_xy = _robot_to_workspace_mm(SESSION.workspace_definition, robot_xyz)
+        if workspace_xy is None:
+            return None
+        return _workspace_mm_to_pixel(workspace_xy)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _candidate_pixel(candidate: dict) -> Optional[tuple[int, int]]:
@@ -171,8 +198,12 @@ def draw_auto_plan_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
     if drop_px is not None:
         cv2.circle(vis, drop_px, 10, (255, 255, 255), 2, lineType=cv2.LINE_AA)
         _draw_label(vis, "Drop", (drop_px[0] + 8, drop_px[1] - 8), (255, 255, 255))
+    robot_px = _robot_posture_pixel()
+    if selected_px is not None and robot_px is not None:
+        cv2.arrowedLine(vis, robot_px, selected_px, (255, 160, 80), 2, cv2.LINE_AA, 0, 0.04)
+        _draw_label(vis, "Approach", (robot_px[0] + 8, robot_px[1] - 8), (255, 160, 80))
     if selected_px is not None and drop_px is not None:
-        cv2.arrowedLine(vis, selected_px, drop_px, (180, 180, 255), 2, lineType=cv2.LINE_AA, tipLength=0.03)
+        cv2.arrowedLine(vis, selected_px, drop_px, (180, 180, 255), 2, cv2.LINE_AA, 0, 0.03)
 
     # Draw separation vectors for crowded plans.
     separation = pick_plan.get("separation") if isinstance(pick_plan, dict) else None
@@ -181,7 +212,7 @@ def draw_auto_plan_overlay(frame: np.ndarray) -> Tuple[np.ndarray, str, str]:
         push_px = _coord5_to_pixel(separation.get("push_end_xy"))
         blocker_px = _coord5_to_pixel(separation.get("blocker_xy"))
         if entry_px is not None and push_px is not None:
-            cv2.arrowedLine(vis, entry_px, push_px, (0, 140, 255), 2, lineType=cv2.LINE_AA, tipLength=0.08)
+            cv2.arrowedLine(vis, entry_px, push_px, (0, 140, 255), 2, cv2.LINE_AA, 0, 0.08)
             _draw_label(vis, "Separation", (entry_px[0] + 6, entry_px[1] - 10), (0, 140, 255))
         if blocker_px is not None:
             cv2.circle(vis, blocker_px, 10, (0, 140, 255), 2, lineType=cv2.LINE_AA)

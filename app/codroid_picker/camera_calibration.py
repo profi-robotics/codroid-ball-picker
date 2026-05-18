@@ -240,7 +240,8 @@ def compute_calibration_bundle(
     )
     if depth_frame is None:
         raise RuntimeError(
-            "No depth snapshot found. Capture a depth frame before calibrating."
+            "No depth snapshot found. Capture a depth frame before calibrating "
+            "so the workspace plane can be estimated."
         )
     board_spec = aruco_board.load_charuco_board_spec(board_path)
     cam = calibration.calibrate_camera_charuco(frames, board_spec)
