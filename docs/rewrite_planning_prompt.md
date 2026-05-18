@@ -226,7 +226,9 @@ For each phase, list: inputs, outputs, acceptance criteria.
 
 - `uv` must remain the package manager. `pyproject.toml` is the manifest.
 - `depthai==3.2.1` must remain pinned (SDK stability).
-- `codroid-api` and `onrobot-api` remain as editable local path dependencies.
+- `codroid-api` and `onrobot-api` are external API packages; production
+  installs resolve them from GitHub, while local editable path sources may be
+  used temporarily during multi-repo development.
 - `torch` must remain an optional extra, with the Jetson JetPack NVIDIA wheel install documented.
 - Remove: `dash`, `dash-mantine-components`, `aiortc`, `weasyprint`, `pypandoc-binary`.
 - Add: `fastapi`, `uvicorn[standard]`, `python-multipart` (form uploads), `httpx` (async HTTP for tests), `anyio` (async compat).

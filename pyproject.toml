@@ -57,8 +57,8 @@ dev = [
 ]
 
 [tool.uv.sources]
-codroid-api = { path = "../codroid-api", editable = true }
-onrobot-api = { path = "../onrobot-api", editable = true }
+codroid-api = { git = "https://github.com/profi-robotics/codroid-api.git", branch = "master" }
+onrobot-api = { git = "https://github.com/profi-robotics/onrobot-api.git", branch = "master" }
 
 # PyTorch from NVIDIA for Jetson (JetPack 6 / L4T R36.x / CUDA 12.x)
 # uv does not yet support conditional index URLs per-extra, so for Jetson:

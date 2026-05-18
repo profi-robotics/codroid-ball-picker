@@ -97,7 +97,8 @@ full controller speed.
 
 ## Key Findings From Sibling Repos
 
-`codroid-api` is cloned at `../codroid-api` and already exposes useful
+`codroid-api` is linked from GitHub in `pyproject.toml`; for live multi-repo
+development it can also be cloned at `../codroid-api`. It already exposes useful
 controller primitives:
 
 - WebSocket login for user and robot channels.
@@ -118,8 +119,9 @@ controller primitives:
 - `VariableState`, but not yet general variable value read/write helpers for a
   running controller-side wait loop.
 
-`onrobot-api` is cloned at `../onrobot-api` and confirms the gripper layer can
-support profile-based production operation:
+`onrobot-api` is linked from GitHub in `pyproject.toml`; for live multi-repo
+development it can also be cloned at `../onrobot-api`. It confirms the gripper
+layer can support profile-based production operation:
 
 - Detection order: `twofg7`, `rg2`, `vgc10`, `vg10`, `sg`.
 - 2FG7: width, force, speed, busy state, grip detection, orientation.

@@ -119,7 +119,8 @@ def test_robot_speed_updates_connected_fake_robot(monkeypatch, tmp_path: Path) -
     assert state["robot"]["speed_rate"] == 0.5
 
 
-def test_manual_pick_closest_executes_with_seeded_detection() -> None:
+def test_manual_pick_closest_executes_with_seeded_detection(monkeypatch, tmp_path: Path) -> None:
+    _use_temp_robot_calibration(monkeypatch, tmp_path)
     with TestClient(create_app()) as client:
         ctx = client.app.state.context
         ctx.state.update_domain(
@@ -138,7 +139,8 @@ def test_manual_pick_closest_executes_with_seeded_detection() -> None:
     assert state["monitoring"]["pick_successes"] >= 1
 
 
-def test_pick_and_drop_executes_with_seeded_drop_target() -> None:
+def test_pick_and_drop_executes_with_seeded_drop_target(monkeypatch, tmp_path: Path) -> None:
+    _use_temp_robot_calibration(monkeypatch, tmp_path)
     with TestClient(create_app()) as client:
         ctx = client.app.state.context
         ctx.calibration.drop_target = {
@@ -169,7 +171,8 @@ def test_pick_and_drop_executes_with_seeded_drop_target() -> None:
     assert state["gripper"]["holding"] is False
 
 
-def test_auto_pick_loop_executes_seeded_detection_then_stops() -> None:
+def test_auto_pick_loop_executes_seeded_detection_then_stops(monkeypatch, tmp_path: Path) -> None:
+    _use_temp_robot_calibration(monkeypatch, tmp_path)
     with TestClient(create_app()) as client:
         ctx = client.app.state.context
         ctx.calibration.drop_target = {

@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-onrobot-api = { path = "../onrobot-api", editable = true }
+onrobot-api = { git = "https://github.com/profi-robotics/onrobot-api.git", branch = "master" }
 ```
 
 To install dependencies:

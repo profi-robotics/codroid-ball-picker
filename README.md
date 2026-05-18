@@ -169,7 +169,10 @@ GitHub Actions publishes releases and container images automatically for pushes 
 - Builds and publishes the ARM64 image (`linux/arm64/v8`) on a native ARM GitHub runner (`ubuntu-24.04-arm`) to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
 - Creates a GitHub release for the new tag.
 
-If `codroid-api` and `onrobot-api` are private in your organization, add a repository secret named `CI_REPO_READ_TOKEN` with read access to those repos.
+`codroid-api` and `onrobot-api` are resolved from the `profi-robotics` GitHub
+repositories through `uv` source entries in `pyproject.toml`. For active
+multi-repo development you may still clone the sibling repositories beside this
+checkout and temporarily switch the sources to local editable paths.
 
 YOLO inference relies on the `ultralytics` package. Install it with `uv add ultralytics`
 if you want to run detections from uploaded `.pt`/`.onnx` models.
