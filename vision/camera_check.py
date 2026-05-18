@@ -7,7 +7,8 @@ import logging
 
 def _log_missing_dependency() -> None:
     logging.error(
-        "depthai is not installed. Install dependencies with `uv install` (reads pyproject.toml) before running the camera check."
+        "depthai is not installed. Install dependencies with `uv sync` "
+        "(reads pyproject.toml) before running the camera check."
     )
 
 

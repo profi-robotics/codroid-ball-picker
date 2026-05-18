@@ -15,7 +15,7 @@ from pathlib import Path
 try:
     import depthai as dai
 except ImportError:
-    print("ERROR: depthai module not found. Run 'uv install' to install dependencies.")
+    print("ERROR: depthai module not found. Run 'uv sync' to install dependencies.")
     sys.exit(1)
 
 

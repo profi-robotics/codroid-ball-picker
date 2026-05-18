@@ -728,6 +728,144 @@ async def move_linear_follow_target(
     return last_target
 
 
+def _auto_socket_backend_connected(robot_api: "CodroidAPI") -> bool | None:
+    """Return auto-socket connection state when the backend exposes it."""
+    backend = getattr(robot_api, "_auto_socket_backend", None)
+    if backend is None:
+        return None
+
+    is_connected = getattr(backend, "is_connected", None)
+    if callable(is_connected):
+        return bool(is_connected())
+
+    writer = getattr(backend, "_writer", None)
+    if writer is None:
+        return False
+    return not writer.is_closing()
+
+
+async def move_auto_socket_cartesian_target(
+    robot_api: "CodroidAPI",
+    target_pose: dict,
+    *,
+    label: str,
+    coordinate_id: Optional[int] = None,
+    timeout_s: Optional[float] = None,
+    tolerance_mm: Optional[float] = None,
+    z_tolerance_mm: Optional[float] = None,
+    settle_s: Optional[float] = None,
+    hold_s: float = 0.0,
+    active_check: Optional[Callable[[], None]] = None,
+) -> None:
+    """Send one auto-socket cartesian target and wait for posture to reach it.
+
+    This intentionally uses the same codroid-api path as the standalone
+    auto-mode test script: build a target CPos, then call
+    move_to_cartesian_target_linear while the auto-socket project is active.
+    """
+    if coordinate_id is None:
+        coordinate_id = registry().robot_coordinate_id
+
+    settings = registry().settings
+    session = registry().get_or_create_robot_session()
+    timeout_s = float(timeout_s or getattr(settings, "auto_move_timeout_s", 15.0))
+    tolerance_mm = float(tolerance_mm or getattr(settings, "auto_tolerance_mm", 2.0))
+    z_tolerance_mm = float(
+        z_tolerance_mm or getattr(settings, "auto_z_tolerance_mm", tolerance_mm)
+    )
+    settle_s = float(
+        settle_s
+        if settle_s is not None
+        else getattr(settings, "auto_settle_s", 0.1)
+    )
+
+    log_move_target(label, target_pose, coordinate_id=coordinate_id)
+    connected = _auto_socket_backend_connected(robot_api)
+    if connected is False:
+        raise RuntimeError(
+            "Auto socket disconnected before "
+            f"{label}: controller TCP client is missing."
+        )
+
+    cpos = robot_api.build_target_cpos(**target_pose)
+    attach_coordinate = getattr(robot_api, "attach_coordinate_to_cpos", None)
+    if int(coordinate_id) != 0 and callable(attach_coordinate):
+        cpos = attach_coordinate(cpos, coordinate_id=coordinate_id)
+    try:
+        from codroid_api import format_auto_socket_frame
+
+        config = getattr(robot_api, "_auto_socket_config", None)
+        if config is not None:
+            LOGGER.info(
+                "Auto socket move '%s': sending frame %s",
+                label,
+                format_auto_socket_frame(cpos, config),
+            )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("Auto socket move '%s': frame formatting failed: %s", label, exc)
+
+    try:
+        await robot_api.set_current_coordinate_id(coordinate_id)
+        await robot_api.move_to_cartesian_target_linear(cpos)
+    except (TimeoutError, ConnectionError, OSError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"Auto socket move failed during {label}: {exc}"
+        ) from exc
+
+    target_xyz = (
+        float(target_pose["x"]),
+        float(target_pose["y"]),
+        float(target_pose["z"]),
+    )
+    deadline = time.monotonic() + max(timeout_s, 0.1)
+    settle_since: Optional[float] = None
+    last_xyz: tuple[float, float, float] | None = None
+
+    while time.monotonic() < deadline:
+        if active_check is not None:
+            active_check()
+
+        posture = session.position_snapshot()
+        if session.posture_seen():
+            last_xyz = (
+                float(posture.x),
+                float(posture.y),
+                float(posture.z),
+            )
+            within_target = (
+                abs(last_xyz[0] - target_xyz[0]) <= tolerance_mm
+                and abs(last_xyz[1] - target_xyz[1]) <= tolerance_mm
+                and abs(last_xyz[2] - target_xyz[2]) <= z_tolerance_mm
+            )
+            if within_target:
+                if settle_s <= 0:
+                    break
+                if settle_since is None:
+                    settle_since = time.monotonic()
+                elif time.monotonic() - settle_since >= settle_s:
+                    break
+            else:
+                settle_since = None
+
+        await asyncio.sleep(0.1)
+    else:
+        raise TimeoutError(
+            "Auto socket move did not reach "
+            f"{label} within {timeout_s:.1f}s "
+            f"(coord={coordinate_id}, current_xyz={last_xyz}, "
+            "target_xyz="
+            f"({target_xyz[0]:.2f}, {target_xyz[1]:.2f}, {target_xyz[2]:.2f}), "
+            f"tolerance_xy={tolerance_mm:.1f}mm, "
+            f"tolerance_z={z_tolerance_mm:.1f}mm)."
+        )
+
+    hold_deadline = time.monotonic() + max(float(hold_s), 0.0)
+    while time.monotonic() < hold_deadline:
+        if active_check is not None:
+            active_check()
+        await asyncio.sleep(0.1)
+
+
 async def ensure_coordinate_active(
     robot_api: "CodroidAPI",
     coordinate_id: Optional[int] = None,

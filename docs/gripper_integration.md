@@ -44,7 +44,7 @@ onrobot-api = { path = "../onrobot-api", editable = true }
 
 To install dependencies:
 ```bash
-uv install
+uv sync
 ```
 
 1. Launch the calibration UI: `python run_codroid_picker.py`

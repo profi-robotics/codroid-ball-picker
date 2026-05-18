@@ -20,13 +20,15 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
 from app.codroid_picker.app_instance import registry
-from app.codroid_picker.exceptions import OperationPaused
 from app.codroid_picker.programs.base import (
     ProgramResult,
     ProgramStatus,
     RobotProgram,
 )
-from app.codroid_picker.robot_motion import ensure_coordinate_active, log_move_target
+from app.codroid_picker.robot_motion import (
+    ensure_coordinate_active,
+    move_auto_socket_cartesian_target,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -108,8 +110,13 @@ class AutoMotionTestProgram(RobotProgram):
         await robot_api.set_auto_mode()
         await robot_api.set_current_coordinate_id(coordinate_id)
 
-        auto_socket_config = self._build_auto_socket_config(settings, robot_api)
         try:
+            auto_socket_config = self._build_auto_socket_config(settings, robot_api)
+            if not hasattr(robot_api, "auto_socket_mode"):
+                raise RuntimeError(
+                    "Installed codroid-api does not provide auto_socket_mode. "
+                    "Install a codroid-api version with auto-socket support."
+                )
             with suppress(Exception):
                 await robot_api.stop_project()
                 await asyncio.sleep(0.3)
@@ -182,7 +189,16 @@ class AutoMotionTestProgram(RobotProgram):
     @staticmethod
     def _build_auto_socket_config(settings: object, robot_api: "CodroidAPI"):
         """Build the codroid-api auto-socket config for the motion test."""
-        from codroid_api import AutoSocketConfig
+        try:
+            from codroid_api import AutoSocketConfig
+        except ImportError as exc:
+            from types import SimpleNamespace as AutoSocketConfig
+
+            LOGGER.warning(
+                "Installed codroid-api does not export AutoSocketConfig; "
+                "using a compatible config namespace: %s",
+                exc,
+            )
 
         port = int(getattr(settings, "auto_socket_port", 19093) or 19093)
         return AutoSocketConfig(
@@ -257,54 +273,18 @@ class AutoMotionTestProgram(RobotProgram):
         poscfg: object,
         coordinate_id: int,
     ) -> None:
-        """Stream one target for a short interval."""
+        """Stream one target through the shared auto-socket movement helper."""
         await self.wait_for_resume()
         pose = self._build_target_pose(target, orientation, poscfg)
-
-        if target.log:
-            log_move_target(target.label, pose, coordinate_id=coordinate_id)
-
-        cpos = robot_api.build_target_cpos(
-            float(pose["x"]),
-            float(pose["y"]),
-            float(pose["z"]),
-            float(pose["a"]),
-            float(pose["b"]),
-            float(pose["c"]),
-        )
-        try:
-            from codroid_api import format_auto_socket_frame
-
-            LOGGER.info(
-                "Auto motion test: sending socket frame %s",
-                format_auto_socket_frame(cpos, self._build_auto_socket_config(
-                    registry().settings,
-                    robot_api,
-                )),
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("Auto motion test: failed to format diagnostic frame: %s", exc)
-        await robot_api.move_to_cartesian_target_linear(cpos)
-        await self._wait_until_target_reached(target)
-
-    async def _wait_until_target_reached(self, target: MotionTarget) -> None:
-        """Wait until live posture reaches the socket target Z."""
-        session = registry().get_or_create_robot_session()
-        deadline = time.monotonic() + max(target.duration_s, 0.1)
-        while time.monotonic() < deadline:
-            self.ensure_active()
-            posture = session.position_snapshot()
-            if session.posture_seen():
-                dz = abs(float(posture.z) - float(target.z))
-                if dz <= MOTION_TEST_REACH_TOLERANCE_MM:
-                    return
-            await asyncio.sleep(0.1)
-        posture = session.position_snapshot()
-        current_z = getattr(posture, "z", None)
-        raise TimeoutError(
-            f"Auto motion test did not reach {target.label} "
-            f"within {MOTION_TEST_REACH_TOLERANCE_MM:.1f} mm "
-            f"(current_z={current_z}, target_z={target.z:.2f})."
+        await move_auto_socket_cartesian_target(
+            robot_api,
+            pose,
+            label=target.label,
+            coordinate_id=coordinate_id,
+            timeout_s=target.duration_s,
+            tolerance_mm=MOTION_TEST_REACH_TOLERANCE_MM,
+            z_tolerance_mm=MOTION_TEST_REACH_TOLERANCE_MM,
+            active_check=self.ensure_active,
         )
 
     @staticmethod
@@ -323,37 +303,6 @@ class AutoMotionTestProgram(RobotProgram):
             "c": float(orientation[2] + target.c_offset),
             "poscfg": poscfg,
         }
-
-    async def _heartbeat_for(
-        self,
-        robot_api: "CodroidAPI",
-        duration_s: float,
-    ) -> None:
-        """Keep the current robot command alive while respecting pause/stop."""
-        remaining = max(float(duration_s), 0.05)
-        deadline = time.monotonic() + remaining
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-
-            try:
-                self.ensure_active()
-            except OperationPaused:
-                self.update_message("Auto motion test paused.")
-                with suppress(Exception):
-                    await robot_api.stop_command()
-                await self.wait_for_resume()
-                await robot_api.set_robot_command(
-                    robot_api.config.commands.move_target_linear
-                )
-                deadline = time.monotonic() + remaining
-                continue
-
-            await robot_api.send_command_heartbeat()
-            await asyncio.sleep(min(0.05, remaining))
-
 
 def _resolve_local_socket_host(robot_api: "CodroidAPI") -> str | None:
     """Resolve the app host IP the robot controller should connect back to."""

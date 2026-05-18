@@ -15,10 +15,19 @@ robot motion commands.
 - `docs/` – integration guides for gripper and other peripherals.
 
 ## Quickstart
-1. Install dependencies (Python 3.11+ recommended) via `uv install`—the manifest pins DepthAI to the 2.x series so the capture helpers use the classic API:
+1. Install dependencies with Python 3.11+ via `uv sync`—the manifest pins
+   DepthAI to the 3.2.x series used by the capture helpers:
    ```bash
-   uv install
+   uv sync
    ```
+   For a non-Jetson workstation or robot-cell computer that should run YOLO
+   locally, install the workstation profile. This uses CPU PyTorch wheels from
+   the PyTorch CPU index instead of Jetson wheels:
+   ```bash
+   uv sync --extra workstation
+   ```
+   See [`docs/deploy_non_jetson.md`](docs/deploy_non_jetson.md) for the
+   non-Jetson deployment profile.
 2. Capture calibration data (ChArUco board images + one depth frame) and place them somewhere accessible to the Jetson. The helper script can automate the capture. For the default ChArUco board layout run:
    ```bash
    python scripts/capture_calibration_data.py \
@@ -41,7 +50,8 @@ YOLO models are remembered across restarts and loaded from `active_model`/`last_
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
-For Jetson runtime FPS benchmarking, run without debug mode:
+For Jetson runtime FPS benchmarking, use the Jetson deployment flow below, then
+run without debug mode:
 ```bash
 python run_codroid_picker.py
 ```
@@ -99,9 +109,9 @@ camera, detection, and robot flows together. It provides:
 - A guided robot calibration modal with a verification move; the calibration
   points and safe Z floor are persisted in `data/robot_calibration.json` and
   loaded on startup when available.
-- A continuous Auto Motion Test footer action that enters the same auto-socket
-  motion mode as Auto Pick & Place, then loops through rectangle, circle, and
-  figure-eight hover motions until the active program is stopped.
+- An Auto Motion Test footer action that enters the same auto-socket motion
+  mode as Auto Pick & Place, sends a small vertical move from the current
+  robot pose, then returns to the starting pose.
 - A program safety banner (warning border) that highlights when robot motion
   sequences are running, plus pause/stop/reset controls and emergency stop /
   overspeed acknowledgment modals that pause active programs. The compact
@@ -243,6 +253,9 @@ Auto mode uses YOLO detections to continuously pick the nearest target:
 - Auto Pick & Place uses `codroid-api` auto-socket motion by default, injecting
   and updating the managed controller project `pjcodroidautosock`; the listener
   port defaults to `auto_socket_port` / `CODROID_AUTO_SOCKET_PORT=19093`.
+- Fixed auto pick/drop moves use the same `move_to_cartesian_target_linear`
+  auto-socket path as the Auto Motion Test; segmented tracking keeps its live
+  target update loop with socket health checks.
 - After robot control is acquired, codroid-ball-picker releases the controller
   web/admin websocket so the native controller web console can be opened while
   robot posture/control stays connected on the robot websocket.

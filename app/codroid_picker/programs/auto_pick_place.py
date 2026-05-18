@@ -30,6 +30,7 @@ from app.codroid_picker.robot_motion import (
     ensure_operation_active,
     wait_for_operation_resume,
     move_linear_follow_target,
+    move_auto_socket_cartesian_target,
     command_gripper,
     ensure_coordinate_active,
     log_move_target,
@@ -255,8 +256,13 @@ class AutoPickPlaceProgram(RobotProgram):
             await self._restore_manual_mode(robot_api)
             return ProgramResult(status=ProgramStatus.ERROR, message=message)
 
-        auto_socket_config = self._build_auto_socket_config(settings, robot_api)
         try:
+            auto_socket_config = self._build_auto_socket_config(settings, robot_api)
+            if not hasattr(robot_api, "auto_socket_mode"):
+                raise RuntimeError(
+                    "Installed codroid-api does not provide auto_socket_mode. "
+                    "Install a codroid-api version with auto-socket support."
+                )
             try:
                 await robot_api.stop_project()
                 await asyncio.sleep(0.3)
@@ -313,7 +319,16 @@ class AutoPickPlaceProgram(RobotProgram):
     @staticmethod
     def _build_auto_socket_config(settings, robot_api: "CodroidAPI"):
         """Build the codroid-api auto-socket config for Auto Pick & Place."""
-        from codroid_api import AutoSocketConfig
+        try:
+            from codroid_api import AutoSocketConfig
+        except ImportError as exc:
+            from types import SimpleNamespace as AutoSocketConfig
+
+            LOGGER.warning(
+                "Installed codroid-api does not export AutoSocketConfig; "
+                "using a compatible config namespace: %s",
+                exc,
+            )
 
         port = int(getattr(settings, "auto_socket_port", 19093) or 19093)
         return AutoSocketConfig(
@@ -921,6 +936,12 @@ class AutoPickPlaceProgram(RobotProgram):
         log_move_target("pick_pose", pick_pose, coordinate_id=coordinate_id)
 
         if use_segment_tracking:
+            async def _check_segment_socket() -> None:
+                self._require_auto_socket_connected(
+                    robot_api,
+                    label="auto_pick_pose",
+                )
+
             await move_linear_follow_target(
                 robot_api,
                 _pick_pose_fn,
@@ -928,6 +949,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 coordinate_id=coordinate_id,
                 settle_on_stall=True,
                 run_id=self._run_id,
+                safety_check=_check_segment_socket,
             )
         else:
             await self._move_linear_with_hold(
@@ -1359,75 +1381,23 @@ class AutoPickPlaceProgram(RobotProgram):
         label: str = "move",
         hold_s: float = 2.0,
     ) -> None:
-        """Execute a linear move with optional hold.
-
-        This is a self-contained movement loop similar to PlateTestProgram's
-        implementation. Unlike the base class move_with_hold which delegates
-        to execute_linear_move_with_hold, this method handles the heartbeat
-        loop directly to avoid asyncio task cancellation issues in Dash callbacks.
-        """
+        """Execute a fixed auto-socket linear move with optional hold."""
         settings = registry().settings
-        session = registry().get_or_create_robot_session()
 
         await self.wait_for_resume()
-
-        log_move_target(label, target_pose, coordinate_id=coordinate_id)
         self._require_auto_socket_connected(robot_api, label=label)
-
-        await robot_api.set_target_pos_type(robot_api.config.target_pos_types.cpos)
-        await robot_api.set_target_cpos(
-            robot_api.attach_coordinate_to_cpos(
-                robot_api.build_target_cpos(**target_pose),
-                coordinate_id=coordinate_id,
-            )
+        await move_auto_socket_cartesian_target(
+            robot_api,
+            target_pose,
+            label=label,
+            coordinate_id=coordinate_id,
+            timeout_s=getattr(settings, "auto_move_timeout_s", 15.0),
+            tolerance_mm=getattr(settings, "auto_tolerance_mm", 2.0),
+            z_tolerance_mm=getattr(settings, "auto_z_tolerance_mm", 3.0),
+            settle_s=getattr(settings, "auto_settle_s", 0.1),
+            hold_s=hold_s,
+            active_check=self.ensure_active,
         )
-        try:
-            await robot_api.set_robot_command(robot_api.config.commands.move_target_linear)
-        except (TimeoutError, ConnectionError, OSError, RuntimeError) as exc:
-            raise self._socket_move_error(exc, label=label) from exc
-
-        # Wait for motion to settle - use auto-specific faster settings
-        timeout_s = getattr(settings, 'auto_move_timeout_s', 15.0)
-        settle_s = getattr(settings, 'auto_settle_s', 0.1)
-        tolerance_mm = getattr(settings, 'auto_tolerance_mm', 2.0)
-        z_tolerance_mm = getattr(settings, 'auto_z_tolerance_mm', 3.0)
-
-        deadline = time.monotonic() + timeout_s
-        settle_since: float | None = None
-
-        while time.monotonic() < deadline:
-            self.ensure_active()
-            await robot_api.send_command_heartbeat()
-            await asyncio.sleep(0.1)
-
-            posture = session.position_snapshot()
-            curr_xyz = (posture.x, posture.y, posture.z)
-            target_xyz = (target_pose["x"], target_pose["y"], target_pose["z"])
-
-            if (
-                abs(curr_xyz[0] - target_xyz[0]) <= tolerance_mm
-                and abs(curr_xyz[1] - target_xyz[1]) <= tolerance_mm
-                and abs(curr_xyz[2] - target_xyz[2]) <= z_tolerance_mm
-            ):
-                if settle_s <= 0:
-                    break
-                if settle_since is None:
-                    settle_since = time.monotonic()
-                elif time.monotonic() - settle_since >= settle_s:
-                    break
-            else:
-                settle_since = None
-
-        # Hold if requested
-        if hold_s > 0:
-            hold_deadline = time.monotonic() + hold_s
-            while time.monotonic() < hold_deadline:
-                self.ensure_active()
-                await robot_api.send_command_heartbeat()
-                await asyncio.sleep(0.1)
-
-        await robot_api.clear_target_position()
-        await robot_api.stop_command()
 
     def _filter_targets(
         self,

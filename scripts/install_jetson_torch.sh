@@ -2,7 +2,7 @@
 # Install CUDA-enabled PyTorch on NVIDIA Jetson (JetPack 6 / L4T R36.x)
 #
 # This script installs PyTorch with CUDA support from NVIDIA's wheel repository.
-# Run this after `uv sync` to replace the CPU-only torch with CUDA-enabled version.
+# Run this after `uv sync` to expose Jetson CUDA-enabled torch to the venv.
 #
 # Usage: ./scripts/install_jetson_torch.sh
 
