@@ -170,6 +170,7 @@ class FrameProcessor:
         self._queue = deque(maxlen=max_queue)
         self._lock = threading.Lock()
         self._latest: dict[str, OverlayState] = {}
+        self._last_frame_size: tuple[int, int] | None = None
         self._busy = False
         self._last_submit_ts = 0.0
         self._min_submit_interval_s = (
@@ -184,7 +185,9 @@ class FrameProcessor:
     def submit(self, task: OverlayTaskSnapshot, frame: np.ndarray) -> bool:
         """Submit a frame processing task when the worker can accept one."""
         now = time.monotonic()
+        height, width = frame.shape[:2]
         with self._lock:
+            self._last_frame_size = (int(width), int(height))
             if self._busy:
                 return False
             if now - self._last_submit_ts < self._min_submit_interval_s:
@@ -240,6 +243,10 @@ class FrameProcessor:
             payload = _empty_overlay_payload(snapshot.task.key, snapshot.generation)
             payload["status"] = "Overlay processing..."
             payload["metric"] = "--"
+            with self._lock:
+                frame_size = self._last_frame_size
+            if frame_size is not None:
+                payload["frame_width"], payload["frame_height"] = frame_size
             return payload
         payload = state.to_dict()
         payload["stale"] = (time.time() - state.updated_at) > _OVERLAY_EMPTY_HOLD_S
@@ -268,6 +275,7 @@ class FrameProcessor:
             has_targets=bool(result.has_targets),
         )
         with self._lock:
+            self._last_frame_size = (int(width), int(height))
             self._latest[key] = state
 
     def stop(self) -> None:

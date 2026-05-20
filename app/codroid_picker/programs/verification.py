@@ -23,7 +23,6 @@ from app.codroid_picker.programs.base import (
     ProgramStatus,
     ProgramResult,
 )
-from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.exceptions import OperationPaused
 from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
@@ -32,19 +31,6 @@ from app.codroid_picker.robot_motion import (
 )
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _resolve_local_socket_host(robot_api: "CodroidAPI") -> str | None:
-    """Resolve the app host IP the robot controller should connect back to."""
-    config = getattr(robot_api, "config", None)
-    robot_host = getattr(config, "host", None)
-    resolver = getattr(robot_api, "_local_source_ip_for", None)
-    if callable(resolver) and robot_host:
-        try:
-            return str(resolver(str(robot_host)))
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Verification: failed to resolve local socket host: %s", exc)
-    return None
 
 
 class VerificationProgram(RobotProgram):
@@ -89,28 +75,6 @@ class VerificationProgram(RobotProgram):
             return False, f"Robot posture stale ({age:.1f}s old)."
 
         return True, "Ready for verification."
-
-    @staticmethod
-    def _build_auto_socket_config(settings: object, robot_api: "CodroidAPI"):
-        """Build the codroid-api auto-socket config for verification."""
-        from codroid_api import AutoSocketConfig
-
-        port = int(getattr(settings, "auto_socket_port", 19093) or 19093)
-        return AutoSocketConfig(
-            socket_role="server",
-            socket_bind_host="0.0.0.0",
-            socket_port=port,
-            project_socket_host=_resolve_local_socket_host(robot_api),
-            project_socket_port=port,
-            install_project=True,
-            start_project=True,
-            stop_project_on_exit=True,
-            connect_on_enter=True,
-            accept_timeout_s=25.0,
-            read_timeout_ms=10000,
-            move_speed="V100",
-            move_acc="ACC100",
-        )
 
     async def execute(self, robot_api: "CodroidAPI") -> ProgramResult:
         """Execute the verification motion sequence."""
@@ -410,24 +374,6 @@ class VerificationProgram(RobotProgram):
             await robot_api.set_current_coordinate_id(coord_id)
             await _run_sequence("manual")
 
-            self.update_message(
-                "Verification move: switching to Auto mode for fast pass."
-            )
-            await enter_controller_auto_mode(robot_api)
-            await robot_api.set_current_coordinate_id(coord_id)
-            auto_socket_context = robot_api.auto_socket_mode(
-                self._build_auto_socket_config(settings, robot_api)
-            )
-            try:
-                await auto_socket_context.__aenter__()
-                await robot_api.set_current_coordinate_id(coord_id)
-                await _run_sequence("auto")
-            finally:
-                with suppress(Exception):
-                    await auto_socket_context.__aexit__(None, None, None)
-                with suppress(Exception):
-                    await robot_api.set_manual_mode()
-
             # Ensure coordinate system is set correctly at end
             if not use_coord5:
                 await robot_api.set_current_coordinate_id(coordinate_id)
@@ -438,7 +384,7 @@ class VerificationProgram(RobotProgram):
             self.finish(status="idle", message="Verification complete.")
             return ProgramResult(
                 status=ProgramStatus.COMPLETED,
-                message="Calibration verified in manual and auto modes.",
+                message="Calibration verified.",
             )
         finally:
             with suppress(Exception):

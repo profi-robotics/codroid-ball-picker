@@ -21,13 +21,14 @@ indentations labeled **1**, **2**, **3**.
 
 ## UI Control
 
-Use **Pick & Place → Plate Pick & Place Test** in the calibration UI. Set the
-approach/pick/drop heights and the grip timeout, then run the test. The run
+Use **Pick & Place → Plate Pick & Place Test** in the calibration UI. Open
+**Pick & Place → Advanced** when you need to adjust approach/pick/drop heights,
+the grip timeout, or shared tracking settings before running the test. The run
 returns to the drop position and fully opens the gripper before any targets,
 then re-tracks the plate pose continuously during each approach/pick move. Use
-**Tracking mode** to switch between standard move updates and segmented
-tracking (longer steps when far away, finer steps near the target). The
-segment min/max and fraction controls let you tune how many steps the robot
+**Tracking mode** in **Advanced** to switch between standard move updates and
+segmented tracking (longer steps when far away, finer steps near the target).
+The segment min/max and fraction controls let you tune how many steps the robot
 takes during tracking.
 
 After each run, the UI shows a short analysis of commanded vs. reported

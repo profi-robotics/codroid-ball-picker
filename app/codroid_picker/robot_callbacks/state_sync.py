@@ -37,7 +37,7 @@ def register_state_sync_callbacks(app: Dash) -> None:
         # Show position if we have recent data (from any source)
         if session.posture_seen() and age_s < 2.0:
             return (
-                t("🤖 Robot position: X={x:.1f}, Y={y:.1f}, Z={z:.1f}", x=pos.x, y=pos.y, z=pos.z)
+                t("Robot position: X={x:.1f}, Y={y:.1f}, Z={z:.1f}", x=pos.x, y=pos.y, z=pos.z)
             )
 
         # Check if robot is connected via test connection

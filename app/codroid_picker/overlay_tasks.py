@@ -19,9 +19,9 @@ from app.codroid_picker.auto_plan_state import get_auto_plan_snapshot
 from app.codroid_picker.overlays import (
     _apply_workspace_overlay,
     _workspace_corners_px,
-    draw_charuco_overlay,
-    draw_workspace_overlay,
-    draw_plate_overlay,
+    build_charuco_overlay,
+    build_plate_overlay,
+    build_workspace_overlay,
     draw_detection_overlay,
     draw_drop_marker_overlay,
     draw_auto_plan_overlay,
@@ -167,14 +167,19 @@ def _run_charuco_task(board_path: Path) -> Callable[[np.ndarray], OverlayResult]
     """Create a task runner for ChArUco board detection overlay."""
 
     def _runner(frame: np.ndarray) -> OverlayResult:
-        vis, status, metric = draw_charuco_overlay(frame, board_path)
+        vis, status, metric, primitives = build_charuco_overlay(
+            frame,
+            board_path,
+        )
         _apply_workspace_overlay(vis)
+        primitives = primitives + _workspace_primitives()
         return _result_from_render(
             frame,
             vis,
             status,
             metric,
-            has_targets="detected" in status.lower(),
+            primitives=primitives,
+            has_targets=bool(primitives),
         )
 
     return _runner
@@ -186,14 +191,19 @@ def _run_workspace_task(
     """Create a task runner for workspace marker detection overlay."""
 
     def _runner(frame: np.ndarray) -> OverlayResult:
-        vis, status, metric = draw_workspace_overlay(
-            frame, marker_ids, marker_size_mm)
+        vis, status, metric, primitives = build_workspace_overlay(
+            frame,
+            marker_ids,
+            marker_size_mm,
+        )
         _apply_workspace_overlay(vis)
+        primitives = primitives + _workspace_primitives()
         return _result_from_render(
             frame,
             vis,
             status,
             metric,
+            primitives=primitives,
             has_targets="detected" in status.lower() or "defined" in status.lower(),
         )
 
@@ -204,13 +214,15 @@ def _run_plate_task(layout_path: Path) -> Callable[[np.ndarray], OverlayResult]:
     """Create a task runner for calibration plate detection overlay."""
 
     def _runner(frame: np.ndarray) -> OverlayResult:
-        vis, status, metric = draw_plate_overlay(frame, layout_path)
+        vis, status, metric, primitives = build_plate_overlay(frame, layout_path)
         _apply_workspace_overlay(vis)
+        primitives = primitives + _workspace_primitives()
         return _result_from_render(
             frame,
             vis,
             status,
             metric,
+            primitives=primitives,
             has_targets="detected" in status.lower(),
         )
 

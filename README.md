@@ -288,7 +288,7 @@ Auto mode uses YOLO detections to continuously pick the nearest target:
   - `Model safety`: pause on configured YOLO labels in workspace/full-frame zone.
   - `Heuristic safety`: pause on large frame-difference intrusions against a baseline image.
 - Auto transit uses a configurable **Transit clearance (mm)** so XY travel stays above drop/approach heights.
-- Auto uses the shared **Tracking mode** controls; segmented tracking keeps the last known target when it is obscured.
+- Auto uses the shared **Tracking mode** controls in the Pick & Place **Advanced** accordion; segmented tracking keeps the last known target when it is obscured.
 - Coordinate mapping uses the saved plate homography from robot calibration; re-run plate calibration if coord5 overlays drift.
 - Overlay selector includes **Auto Plan** mode. When overlay is set to **Auto**
   and Auto Pick & Place is running in Applications → Pick & Place, the camera

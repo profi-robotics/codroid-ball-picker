@@ -235,30 +235,11 @@ def _build_auto_control_column() -> dmc.Stack:
             "minWidth": "86px",
         },
     )
-    auto_stop_button = dmc.Button(
-        t("Stop Auto"),
-        id="auto-stop",
-        color="red",
-        size="xs",
-        radius="md",
-        variant="filled",
-        disabled=True,
-        leftSection=dmc.ActionIcon(
-            "■",
-            size="sm",
-            variant="transparent",
-            color="white",
-        ),
-        style={
-            "fontWeight": 700,
-            "minWidth": "86px",
-        },
-    )
     return dmc.Stack(
         [
             dmc.Text(t("Auto pick & place"), fw=700, size="xs", c="blue"),
             dmc.Group(
-                [auto_start_button, auto_stop_button],
+                [auto_start_button],
                 gap="xs",
                 justify="center",
                 style={"width": "100%"},

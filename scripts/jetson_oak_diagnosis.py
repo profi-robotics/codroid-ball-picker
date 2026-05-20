@@ -32,7 +32,7 @@ def run_command(cmd: str) -> tuple[int, str]:
 
 def check_jetson_info() -> None:
     """Check Jetson hardware information."""
-    print("🤖 JETSON HARDWARE DIAGNOSTICS")
+    print("JETSON HARDWARE DIAGNOSTICS")
     print("=" * 30)
     
     # Jetson model

@@ -13,6 +13,9 @@ from .drawing import (
     _apply_workspace_overlay,
 )
 from .calibration import (
+    build_charuco_overlay,
+    build_plate_overlay,
+    build_workspace_overlay,
     draw_charuco_overlay,
     draw_workspace_overlay,
     draw_plate_overlay,
@@ -34,6 +37,9 @@ __all__ = [
     "_workspace_corners_px",
     "_apply_workspace_overlay",
     # Calibration overlays
+    "build_charuco_overlay",
+    "build_plate_overlay",
+    "build_workspace_overlay",
     "draw_charuco_overlay",
     "draw_workspace_overlay",
     "draw_plate_overlay",

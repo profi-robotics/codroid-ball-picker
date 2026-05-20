@@ -196,6 +196,65 @@ def _build_pick_label_controls() -> list:
     ]
 
 
+def _build_plate_test_tuning_controls() -> dmc.Stack:
+    """Build advanced tuning controls for the plate pick/place test."""
+    return dmc.Stack(
+        [
+            dmc.Group(
+                [
+                    dmc.NumberInput(
+                        id="plate-test-approach-height",
+                        label=t("Approach height (mm)"),
+                        description=t("Negative = UP from table (safe in coord5)"),
+                        value=-30.0,
+                        min=-200,
+                        max=0,
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-pick-height",
+                        label=t("Pick height (mm)"),
+                        value=0.0,
+                        min=-50,
+                        max=200,
+                    ),
+                ],
+                grow=True,
+            ),
+            dmc.Group(
+                [
+                    dmc.NumberInput(
+                        id="plate-test-drop-height",
+                        label=t("Drop height offset (mm)"),
+                        value=10.0,
+                        min=-50,
+                        max=200,
+                        description=t("Height above taught drop position"),
+                    ),
+                    dmc.NumberInput(
+                        id="plate-test-grip-timeout",
+                        label=t("Grip timeout (s)"),
+                        value=SETTINGS.plate_test_grip_timeout_s,
+                        min=0.5,
+                        max=10.0,
+                        step=0.5,
+                    ),
+                ],
+                grow=True,
+            ),
+            dmc.Text(
+                t(
+                    "Gripper close uses {force} N and {speed}% speed.",
+                    force=GRIPPER_FORCE_MIN,
+                    speed=GRIPPER_SPEED_MIN,
+                ),
+                size="xs",
+                c="dimmed",
+            ),
+        ],
+        gap="xs",
+    )
+
+
 def build_detection_tab() -> dmc.Stack:
     """Build the detection tab with GPU status, model loader, and detection controls."""
     gpu_card = _panel_card(
@@ -267,18 +326,24 @@ def build_pick_place_tab() -> dmc.Stack:
             dmc.Text(t("Drop Target"), fw=600, size="lg"),
             dmc.Text(t("First teach a drop position, then use return to go back to it."),
                      size="sm", c="dimmed"),
-            dmc.Button(
-                t("Teach drop position (use current robot pose)"),
-                id="teach-drop-position",
-                variant="filled",
-                className="action-btn",
-                color="green",
-            ),
-            dmc.Button(
-                t("↩ Return to drop position"),
-                id="return-to-drop-position",
-                variant="outline",
-                className="action-btn-outline",
+            dmc.Stack(
+                [
+                    dmc.Button(
+                        t("Teach drop position (use current robot pose)"),
+                        id="teach-drop-position",
+                        variant="filled",
+                        className="action-btn",
+                        color="green",
+                    ),
+                    dmc.Button(
+                        t("↩ Return to drop position"),
+                        id="return-to-drop-position",
+                        variant="outline",
+                        className="action-btn-outline",
+                    ),
+                ],
+                gap="sm",
+                style={"marginTop": "12px", "marginBottom": "12px"},
             ),
             dmc.Text(id="drop-position-metrics", size="sm"),
             dmc.NumberInput(
@@ -318,7 +383,7 @@ def build_pick_place_tab() -> dmc.Stack:
                 grow=True,
             ),
             dmc.Space(h="md"),  # Add space for visual separation
-            dmc.Button(t("🔄 Pick & Drop closest"),
+            dmc.Button(t("Pick & Drop closest"),
                        id="manual-pick-place-target",
                        variant="filled",
                        color="blue",
@@ -345,52 +410,6 @@ def build_pick_place_tab() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="plate-test-approach-height",
-                        label=t("Approach height (mm)"),
-                        description=t("Negative = UP from table (safe in coord5)"),
-                        value=-30.0,
-                        min=-200,
-                        max=0,
-                    ),
-                    dmc.NumberInput(
-                        id="plate-test-pick-height",
-                        label=t("Pick height (mm)"),
-                        value=0.0,
-                        min=-50,
-                        max=200,
-                    ),
-                ],
-                grow=True,
-            ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="plate-test-drop-height",
-                        label=t("Drop height offset (mm)"),
-                        value=10.0,
-                        min=-50,
-                        max=200,
-                        description=t("Height above taught drop position"),
-                    ),
-                    dmc.NumberInput(
-                        id="plate-test-grip-timeout",
-                        label=t("Grip timeout (s)"),
-                        value=SETTINGS.plate_test_grip_timeout_s,
-                        min=0.5,
-                        max=10.0,
-                        step=0.5,
-                    ),
-                ],
-                grow=True,
-            ),
-            dmc.Text(
-                t("Gripper close uses {force} N and {speed}% speed.", force=GRIPPER_FORCE_MIN, speed=GRIPPER_SPEED_MIN),
-                size="xs",
-                c="dimmed",
-            ),
             dmc.Button(
                 t("Run plate test"),
                 id="plate-test-run",
@@ -407,6 +426,26 @@ def build_pick_place_tab() -> dmc.Stack:
                     "marginTop": "6px",
                 },
             ),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
+    tracking_controls_card = dmc.Card(
+        [
+            dmc.Text(t("Tracking Controls"), fw=600, size="lg"),
+            build_tracking_mode_controls(),
+        ],
+        withBorder=True,
+        radius="lg",
+        className="panel-card",
+    )
+
+    plate_test_tuning_card = dmc.Card(
+        [
+            dmc.Text(t("Plate Pick & Place Test"), fw=600, size="lg"),
+            _build_plate_test_tuning_controls(),
         ],
         withBorder=True,
         radius="lg",
@@ -471,21 +510,25 @@ def build_pick_place_tab() -> dmc.Stack:
             ],
             value="plate-test",
         ),
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl(t("Advanced")),
+                dmc.AccordionPanel(
+                    dmc.Stack(
+                        [
+                            tracking_controls_card,
+                            plate_test_tuning_card,
+                        ],
+                        gap="md",
+                    )
+                ),
+            ],
+            value="advanced",
+        ),
     ]
-
-    tracking_controls_card = dmc.Card(
-        [
-            dmc.Text(t("Tracking Controls"), fw=600, size="lg"),
-            build_tracking_mode_controls(),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
-    )
 
     return dmc.Stack(
         [
-            tracking_controls_card,
             dmc.Accordion(
                 accordion_items,
                 multiple=True,

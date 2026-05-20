@@ -1,0 +1,3 @@
+# Keep repository AGENTS.md guidance fully available to Codex sessions that
+# start anywhere inside this project.
+project_doc_max_bytes = 65536

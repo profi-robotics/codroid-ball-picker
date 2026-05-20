@@ -278,9 +278,9 @@
       return;
     }
     const { ctx, rect } = resizeCanvas(canvas);
-    ctx.clearRect(0, 0, rect.width, rect.height);
     if (!state || !state.key) {
       lastMeaningful = null;
+      ctx.clearRect(0, 0, rect.width, rect.height);
       return;
     }
     const displayState = chooseState(state);
@@ -293,6 +293,7 @@
     if (!mapping) {
       return;
     }
+    ctx.clearRect(0, 0, rect.width, rect.height);
     ctx.save();
     if (displayState.stale) {
       ctx.globalAlpha = 0.62;
