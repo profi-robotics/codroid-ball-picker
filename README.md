@@ -269,7 +269,8 @@ For detailed documentation, see [`docs/gripper_integration.md`](docs/gripper_int
 
 Auto mode uses YOLO detections to continuously pick the nearest target:
 
-- Start/stop from the **Auto pick & place** controls in the footer.
+- Start from the **Auto pick & place** control in the footer. Use the shared
+  **Program control** buttons to pause, stop, or reset a running program.
 - Auto Pick & Place uses `codroid-api` auto-socket motion by default, injecting
   and updating the managed controller project `pjcodroidautosock`; the listener
   port defaults to `auto_socket_port` / `CODROID_AUTO_SOCKET_PORT=19093`.

@@ -424,6 +424,103 @@ class OverlayRouteTests(unittest.TestCase):
         self.assertFalse(payload["has_targets"])
         self.assertIn("status", payload)
 
+    def test_overlay_state_route_serializes_numpy_primitives(self) -> None:
+        app = Dash(__name__)
+        app.layout = html.Div()
+        register_video_routes(app)
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        task = OverlayTask(
+            "numpy-overlay",
+            lambda image: OverlayResult(image, "ok", "metric"),
+        )
+
+        streaming.set_active_overlay_task(task)
+        snapshot = streaming.get_active_overlay_task()
+        assert snapshot is not None
+        streaming.FRAME_PROCESSOR.store_latest(
+            snapshot.task.key,
+            snapshot.generation,
+            frame,
+            OverlayResult(
+                frame,
+                "ok",
+                "metric",
+                primitives=[
+                    {
+                        "type": "circle",
+                        "x": np.int64(1),
+                        "y": np.int64(2),
+                        "radius": np.float64(3.0),
+                    }
+                ],
+                has_targets=True,
+            ),
+        )
+
+        response = app.server.test_client().get("/overlay_state.json")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["primitives"][0]["x"], 1)
+        self.assertEqual(payload["primitives"][0]["radius"], 3.0)
+
+    def test_overlay_state_route_serializes_plate_primitives(self) -> None:
+        app = Dash(__name__)
+        app.layout = html.Div()
+        register_video_routes(app)
+
+        layout_path = Path(
+            "data/markers/robot_calibration/calibration_plate_layout.json"
+        )
+        scale = 4
+        frame = np.full((280 * scale + 80, 300 * scale + 80, 3), 255, dtype=np.uint8)
+        marker_centers = (
+            (20, (20, 20)),
+            (21, (150, 20)),
+            (22, (280, 20)),
+            (23, (20, 140)),
+            (24, (280, 140)),
+            (25, (20, 260)),
+            (26, (150, 260)),
+            (27, (280, 260)),
+        )
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        for marker_id, center_mm in marker_centers:
+            marker = np.zeros((20 * scale, 20 * scale), dtype=np.uint8)
+            cv2.aruco.generateImageMarker(
+                dictionary,
+                marker_id,
+                20 * scale,
+                marker,
+                1,
+            )
+            marker = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
+            x = int(center_mm[0] * scale + 40 - marker.shape[1] / 2)
+            y = int(center_mm[1] * scale + 40 - marker.shape[0] / 2)
+            frame[y:y + marker.shape[0], x:x + marker.shape[1]] = marker
+
+        task = OverlayTask(
+            "manual-plate",
+            overlay_tasks._run_plate_task(layout_path),
+        )
+        streaming.set_active_overlay_task(task)
+        snapshot = streaming.get_active_overlay_task()
+        assert snapshot is not None
+        result = task.runner(frame)
+        streaming.FRAME_PROCESSOR.store_latest(
+            snapshot.task.key,
+            snapshot.generation,
+            frame,
+            result,
+        )
+
+        response = app.server.test_client().get("/overlay_state.json")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["has_targets"])
+        self.assertIn("circle", {item["type"] for item in payload["primitives"]})
+
 
 class OverlayPrimitiveTests(unittest.TestCase):
     @staticmethod

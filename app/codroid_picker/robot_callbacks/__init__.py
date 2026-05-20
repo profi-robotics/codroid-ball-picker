@@ -1,7 +1,7 @@
 """Robot callbacks package - organized by functional area.
 
 This package contains robot-related Dash callbacks split into logical modules:
-- auto_operation: Auto pick & place operation start/stop and state sync
+- auto_operation: Auto pick & place operation start and state sync
 - connection: Robot/gripper connection and power management
 - error_handling: Error modal updates and response handlers
 - rescue_mode: Manual robot recovery operations

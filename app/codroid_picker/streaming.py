@@ -94,6 +94,22 @@ class OverlayState:
         }
 
 
+def _json_safe_overlay_value(value: Any) -> Any:
+    """Convert NumPy values in overlay payloads to JSON-safe Python types."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return _json_safe_overlay_value(value.tolist())
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_overlay_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_overlay_value(item) for item in value]
+    return value
+
+
 class MotionJPEGStream:
     """Manager for Motion JPEG video streaming for fullscreen video playback."""
 
@@ -271,7 +287,10 @@ class FrameProcessor:
             updated_at=time.time(),
             status=result.status,
             metric=result.metric,
-            primitives=[dict(item) for item in result.primitives],
+            primitives=[
+                _json_safe_overlay_value(item)
+                for item in result.primitives
+            ],
             has_targets=bool(result.has_targets),
         )
         with self._lock:
