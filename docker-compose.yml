@@ -4,6 +4,7 @@ services:
     container_name: codroid-ui
     init: true
     restart: unless-stopped
+    privileged: true
     runtime: nvidia
     # Host networking keeps direct reachability to robot/gripper LAN segments
     # (for example 192.168.101.0/24) while still exposing the UI on Tailscale.
@@ -15,10 +16,15 @@ services:
       - CODROID_RGB_MAX_FPS=15
       - CODROID_RGB_MAX_FPS_WITH_DEPTH=10
       - CODROID_DEPTH_MAX_FPS=5
+      - CODROID_USBFS_MEMORY_MB=1000
+      # This Jetson/OAK-D installation repeatedly crashes the camera link at
+      # USB 3 SuperSpeed. USB 2 HighSpeed is lower bandwidth but stable.
+      - CODROID_DEPTHAI_MAX_USB_SPEED=high
     device_cgroup_rules:
       - "c 189:* rmw" # Allow USB re-enumeration (DepthAI boots as a new USB node)
     volumes:
       - "/dev/bus/usb:/dev/bus/usb" # OAK-D / USB devices
+      - "/run/udev:/run/udev:ro" # Device metadata for USB re-enumeration diagnostics
       - ./data:/app/data # persist calibration/workspace data
     stop_grace_period: 20s
     command:

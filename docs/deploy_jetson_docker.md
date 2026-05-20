@@ -140,7 +140,21 @@ sudo systemctl restart codroid-ball-picker-auto-update.timer
 ## Device Access
 
 - USB/OAK-D: `/dev/bus/usb` is bind-mounted and `device_cgroup_rules` allows
-  USB re-enumeration after DepthAI boots the device.
+  USB re-enumeration after DepthAI boots the device. The UI container runs with
+  `privileged: true` because DepthAI repeatedly resets and re-enumerates the
+  OAK-D while booting firmware. The compose service also mounts `/run/udev`
+  read-only so USB device metadata remains visible inside the container.
+- USB buffer memory: OAK-D high-bandwidth streams need more than the Linux
+  default 16 MB `usbfs_memory_mb` value. Run
+  `sudo scripts/configure_depthai_usb.sh` once on the Jetson, or install the
+  systemd service with `scripts/setup_jetson_auto_update.sh`; both set the live
+  host value and persist `options usbcore usbfs_memory_mb=1000` for reboot.
+- USB link speed: this compose file sets
+  `CODROID_DEPTHAI_MAX_USB_SPEED=high`, which forces USB 2.0 HighSpeed. Use
+  this when a Jetson/OAK-D link detects the camera at USB 3 SuperSpeed but then
+  logs repeated `X_LINK_ERROR` messages. Remove the variable or set it to
+  `auto` only after the USB 3 cable, hub, and power path have been proven
+  stable.
 - GPU: compose uses `runtime: nvidia` with `NVIDIA_VISIBLE_DEVICES=all`.
 - Network: `network_mode: host` lets the container reach robot/gripper subnets
   such as `192.168.101.0/24` while the UI is exposed through the Jetson host.
@@ -168,6 +182,10 @@ and persisted `data/app_settings.json`. Add deployment-specific variables to
 - If `docker compose pull` fails for GHCR, run `docker login ghcr.io`.
 - If the OAK-D is not visible, verify the Jetson host can see it with `lsusb`
   and check that no other process owns the device.
+- If the OAK-D is detected but the camera stream repeatedly logs
+  `X_LINK_ERROR`, check `cat /sys/module/usbcore/parameters/usbfs_memory_mb`.
+  If it is below `1000`, run `sudo scripts/configure_depthai_usb.sh` and
+  recreate the UI container.
 - If CUDA is unavailable in the verification command, confirm the host is
   JetPack 6 / L4T R36.x and the NVIDIA runtime is configured for Docker.
 - If disk usage grows after many releases, the updater prunes dangling images

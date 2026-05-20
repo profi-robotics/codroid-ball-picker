@@ -52,6 +52,7 @@ WorkingDirectory=${REPO_DIR}
 Environment=CODROID_COMPOSE_SERVICE=${COMPOSE_SERVICE}
 EnvironmentFile=-${ENV_FILE}
 ExecStartPre=-${DOCKER_BIN} compose pull
+ExecStartPre=${REPO_DIR}/scripts/configure_depthai_usb.sh
 ExecStart=${DOCKER_BIN} compose up -d
 ExecStop=${DOCKER_BIN} compose down
 TimeoutStartSec=0

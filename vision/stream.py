@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 import logging
+import os
 import threading
 import time
 from typing import Callable, Optional, Tuple
@@ -19,6 +20,33 @@ import depthai as dai
 import numpy as np
 
 from .capture import build_pipeline, resolve_camera_sockets
+
+
+def _resolve_max_usb_speed() -> Optional[dai.UsbSpeed]:
+    """Resolve an optional DepthAI USB speed cap from the environment."""
+    raw_value = os.getenv("CODROID_DEPTHAI_MAX_USB_SPEED", "").strip().lower()
+    if not raw_value:
+        usb2_mode = os.getenv("CODROID_DEPTHAI_USB2_MODE", "").strip().lower()
+        if usb2_mode in {"1", "true", "yes", "on"}:
+            raw_value = "high"
+    if raw_value in {"", "auto", "default"}:
+        return None
+
+    speeds = {
+        "usb2": dai.UsbSpeed.HIGH,
+        "high": dai.UsbSpeed.HIGH,
+        "usb3": dai.UsbSpeed.SUPER,
+        "super": dai.UsbSpeed.SUPER,
+        "super_plus": dai.UsbSpeed.SUPER_PLUS,
+        "superplus": dai.UsbSpeed.SUPER_PLUS,
+    }
+    speed = speeds.get(raw_value)
+    if speed is None:
+        logging.warning(
+            "Ignoring invalid CODROID_DEPTHAI_MAX_USB_SPEED=%r; expected auto, high, super, or super_plus.",
+            raw_value,
+        )
+    return speed
 
 
 def _configure_depthai_logging(device: dai.Device) -> None:
@@ -215,9 +243,19 @@ class DepthAIFrameStream:
     def _open_pipeline(self) -> None:
         with self._state_lock:
             self._stack = ExitStack()
-            pipeline = self._stack.enter_context(dai.Pipeline())
-            logging.info("Created pipeline, calling getDefaultDevice")
-            device = pipeline.getDefaultDevice()
+            max_usb_speed = _resolve_max_usb_speed()
+            if max_usb_speed is None:
+                pipeline = self._stack.enter_context(dai.Pipeline())
+                logging.info("Created pipeline, calling getDefaultDevice")
+                device = pipeline.getDefaultDevice()
+            else:
+                logging.info(
+                    "Creating DepthAI device with max USB speed: %s",
+                    max_usb_speed,
+                )
+                device = dai.Device(maxUsbSpeed=max_usb_speed)
+                self._stack.callback(device.close)
+                pipeline = self._stack.enter_context(dai.Pipeline(device))
             logging.info("Got device: %s", device)
             if device is None:
                 raise RuntimeError(
