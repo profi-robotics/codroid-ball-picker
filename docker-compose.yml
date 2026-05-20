@@ -12,6 +12,9 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
       - UV_PROJECT_ENVIRONMENT=/app/.venv
+      - CODROID_RGB_MAX_FPS=15
+      - CODROID_RGB_MAX_FPS_WITH_DEPTH=10
+      - CODROID_DEPTH_MAX_FPS=5
     device_cgroup_rules:
       - "c 189:* rmw" # Allow USB re-enumeration (DepthAI boots as a new USB node)
     volumes:
