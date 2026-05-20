@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+COMPOSE_SERVICE_NAME="codroid-ball-picker-compose.service"
 SERVICE_NAME="codroid-ball-picker-auto-update.service"
 TIMER_NAME="codroid-ball-picker-auto-update.timer"
 ENV_FILE="/etc/codroid-ball-picker-auto-update.env"
@@ -10,6 +11,7 @@ INTERVAL="${AUTO_UPDATE_INTERVAL:-5min}"
 IMAGE_REF="${CODROID_IMAGE:-ghcr.io/profi-robotics/codroid-ball-picker:latest}"
 COMPOSE_SERVICE="${CODROID_COMPOSE_SERVICE:-ui}"
 CONTAINER_NAME="${CODROID_CONTAINER_NAME:-codroid-ui}"
+DOCKER_BIN=$(command -v docker || true)
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl is required for auto-update setup."
@@ -18,6 +20,11 @@ fi
 
 if ! command -v sudo >/dev/null 2>&1; then
   echo "sudo is required for auto-update setup."
+  exit 1
+fi
+
+if [ -z "${DOCKER_BIN}" ]; then
+  echo "docker is required for auto-update setup."
   exit 1
 fi
 
@@ -31,11 +38,33 @@ else
   echo "Keeping existing ${ENV_FILE}; edit it to change the image or service name."
 fi
 
+cat <<EOF | sudo tee "/etc/systemd/system/${COMPOSE_SERVICE_NAME}" >/dev/null
+[Unit]
+Description=Codroid Ball Picker Docker Compose stack
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=${REPO_DIR}
+Environment=CODROID_COMPOSE_SERVICE=${COMPOSE_SERVICE}
+EnvironmentFile=-${ENV_FILE}
+ExecStartPre=-${DOCKER_BIN} compose pull \${CODROID_COMPOSE_SERVICE}
+ExecStart=${DOCKER_BIN} compose up -d \${CODROID_COMPOSE_SERVICE}
+ExecStop=${DOCKER_BIN} compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat <<EOF | sudo tee "/etc/systemd/system/${SERVICE_NAME}" >/dev/null
 [Unit]
 Description=Codroid Ball Picker container auto-update check
-After=docker.service network-online.target
-Wants=docker.service network-online.target
+After=${COMPOSE_SERVICE_NAME}
+Wants=${COMPOSE_SERVICE_NAME}
 
 [Service]
 Type=oneshot
@@ -59,8 +88,11 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
+sudo systemctl enable --now "${COMPOSE_SERVICE_NAME}"
 sudo systemctl enable --now "${TIMER_NAME}"
 
+echo "Compose startup service installed: ${COMPOSE_SERVICE_NAME}"
+echo "Check status with: systemctl status ${COMPOSE_SERVICE_NAME}"
 echo "Auto-update timer installed: ${TIMER_NAME}"
 echo "Configuration file: ${ENV_FILE}"
 echo "Check status with: systemctl status ${TIMER_NAME}"

@@ -168,9 +168,9 @@ GitHub Actions publishes releases and container images automatically for pushes 
 If `codroid-api` and `onrobot-api` are private in your organization, add a repository secret named `CI_REPO_READ_TOKEN` with read access to those repos.
 
 On the Jetson, install `scripts/setup_jetson_auto_update.sh` once. The systemd
-timer pulls the compose image and recreates the `codroid-ui` container when CI
-publishes a new `latest` image. Pin or override the image via
-`/etc/codroid-ball-picker-auto-update.env`.
+compose service starts the UI on boot, and the timer pulls the compose image
+and recreates the `codroid-ui` container when CI publishes a new `latest`
+image. Pin or override the image via `/etc/codroid-ball-picker-auto-update.env`.
 
 YOLO inference is part of the base dependency set. Run `uv sync` after pulling
 dependency changes so uploaded `.pt`/`.onnx` models can load.

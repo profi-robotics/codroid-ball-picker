@@ -23,6 +23,8 @@ Python 3.10 + CUDA 12.6 PyTorch dependency set.
 Application code updates arrive through the container image. Changes to
 `docker-compose.yml`, systemd scripts, or this deployment guide require a
 manual `git pull` on the Jetson and rerunning `scripts/setup_jetson_auto_update.sh`.
+The installer also enables `codroid-ball-picker-compose.service`, which starts
+the compose service on boot before periodic update checks run.
 
 ## Prerequisites
 
@@ -77,7 +79,7 @@ PY
 
 ## Automatic Updates
 
-Install the updater:
+Install the boot service and updater:
 
 ```bash
 ./scripts/setup_jetson_auto_update.sh
@@ -99,6 +101,7 @@ Run one update cycle manually:
 Inspect the timer:
 
 ```bash
+systemctl status codroid-ball-picker-compose.service
 systemctl status codroid-ball-picker-auto-update.timer
 systemctl list-timers --all | grep codroid-ball-picker-auto-update
 ```
