@@ -584,6 +584,7 @@
   "Robot control released": "Керування роботом звільнено",
   "Robot control is released. Acquire control first.": "Керування роботом звільнено. Спочатку отримайте керування.",
   "Robot control released. Acquire control to reconnect.": "Керування роботом звільнено. Отримайте керування, щоб підключитися знову.",
+  "Robot connection timed out after {seconds} seconds.": "Час очікування підключення до робота минув через {seconds} с.",
   "Auto Plan": "Авто-план",
   "Overlay: Auto Plan": "Оверлей: Авто-план",
   "Auto Plan Summary": "Підсумок авто-плану",

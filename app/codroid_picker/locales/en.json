@@ -87,6 +87,7 @@
   ,"Robot control released": "Robot control released"
   ,"Robot control is released. Acquire control first.": "Robot control is released. Acquire control first."
   ,"Robot control released. Acquire control to reconnect.": "Robot control released. Acquire control to reconnect."
+  ,"Robot connection timed out after {seconds} seconds.": "Robot connection timed out after {seconds} seconds."
   ,"Auto Plan": "Auto Plan"
   ,"Overlay: Auto Plan": "Overlay: Auto Plan"
   ,"Auto Plan Summary": "Auto Plan Summary"

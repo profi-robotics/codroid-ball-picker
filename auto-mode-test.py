@@ -21,6 +21,9 @@ CYCLES = 4
 REACH_TOLERANCE_MM = 3.0
 MOVE_TIMEOUT_S = 10.0
 AUTO_MODE_SETTLE_S = 0.5
+COORDINATE_ID = 5
+COORDINATE_SETTLE_S = 2.0
+COORDINATE_TIMEOUT_S = 5.0
 
 POWER_KEYS = (
     'PowerOn',
@@ -206,6 +209,13 @@ def make_target_from_pose(pose, z):
     )
 
 
+def coordinate_matches(status, coordinate_id):
+    try:
+        return int(infer_coordinate_id(status)) == int(coordinate_id)
+    except (TypeError, ValueError):
+        return False
+
+
 async def restore_step(label, awaitable):
     try:
         await awaitable
@@ -334,6 +344,27 @@ async def main():
         except Exception as exc:  # noqa: BLE001
             print('restore_pose_failed', repr(exc), flush=True)
 
+    async def select_coordinate_and_wait(coordinate_id):
+        nonlocal latest_pose
+
+        latest_pose = None
+        await api.set_current_coordinate_id(coordinate_id)
+        deadline = time.monotonic() + COORDINATE_TIMEOUT_S
+        resent = False
+        while time.monotonic() < deadline:
+            if coordinate_matches(latest_status, coordinate_id) and latest_pose:
+                await asyncio.sleep(COORDINATE_SETTLE_S)
+                return
+            if not resent and time.monotonic() > deadline - (
+                COORDINATE_TIMEOUT_S / 2.0
+            ):
+                await api.set_current_coordinate_id(coordinate_id)
+                resent = True
+            await asyncio.sleep(0.1)
+        raise RuntimeError(
+            f'Failed to confirm CoordinateId {coordinate_id} with RobotPosture.'
+        )
+
     await api.connect()
     task = asyncio.create_task(listener())
 
@@ -344,14 +375,19 @@ async def main():
         await api.read_global_data()
         await asyncio.sleep(2.0)
 
-        print('initial_status', latest_status, flush=True)
-        print('initial_pose', latest_pose, flush=True)
+        print('startup_status_before_coordinate_select', latest_status, flush=True)
+        print('startup_pose_before_coordinate_select', latest_pose, flush=True)
 
         initial_state = snapshot_robot_state(latest_status)
         print('initial_robot_state', initial_state.summary(), flush=True)
 
-        await api.set_current_coordinate_id(0)
-        await asyncio.sleep(2.0)
+        await select_coordinate_and_wait(COORDINATE_ID)
+        print('motion_coordinate_selected', COORDINATE_ID, flush=True)
+        print(
+            'motion_robot_state',
+            snapshot_robot_state(latest_status).summary(),
+            flush=True,
+        )
         print('test_coordinate_pose', latest_pose, flush=True)
 
         if not latest_pose:
@@ -393,9 +429,10 @@ async def main():
 
         initial_pose = dict(latest_pose)
         base_target = make_target_from_pose(initial_pose, float(initial_pose['z']))
+        z_delta = -MOVE_DELTA_Z_MM if COORDINATE_ID != 0 else MOVE_DELTA_Z_MM
         up_target = make_target_from_pose(
             initial_pose,
-            float(initial_pose['z']) + MOVE_DELTA_Z_MM,
+            float(initial_pose['z']) + z_delta,
         )
 
         print(
@@ -409,11 +446,14 @@ async def main():
             flush=True,
         )
         print('cycles', CYCLES, flush=True)
+        print('motion_coordinate_id', COORDINATE_ID, flush=True)
 
         print('activate_auto_mode_start', flush=True)
         await api.power_on()
         await asyncio.sleep(AUTO_MODE_SETTLE_S)
         await api.set_auto_mode()
+        await select_coordinate_and_wait(COORDINATE_ID)
+        print('auto_mode_coordinate_confirmed', COORDINATE_ID, flush=True)
         await asyncio.sleep(AUTO_MODE_SETTLE_S)
         print('activate_auto_mode_done', flush=True)
 
@@ -445,6 +485,8 @@ async def main():
             )
 
             try:
+                await select_coordinate_and_wait(COORDINATE_ID)
+                print('socket_motion_coordinate_confirmed', COORDINATE_ID, flush=True)
                 for cycle in range(1, CYCLES + 1):
                     print('cycle_start', cycle, flush=True)
                     await move_and_wait(up_target, f'cycle_{cycle}_up_pose')

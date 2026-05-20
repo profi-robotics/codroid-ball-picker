@@ -95,7 +95,7 @@ def download_default_model(output_dir: Path = DEFAULT_MODEL_DIR) -> Optional[Pat
     except ImportError:
         LOGGER.warning(
             "ultralytics not installed, cannot download default model. "
-            "Run `uv add ultralytics` to enable."
+            "Run `uv sync` to install the project inference dependencies."
         )
         return None
 
@@ -163,7 +163,7 @@ def _load_ultralytics_model(model_path: Path) -> object:
         from ultralytics import YOLO
     except ImportError as exc:
         raise RuntimeError(
-            "ultralytics is not installed. Run `uv add ultralytics` to enable YOLO inference."
+            "ultralytics is not installed. Run `uv sync` to install YOLO inference dependencies."
         ) from exc
     return YOLO(str(model_path))
 

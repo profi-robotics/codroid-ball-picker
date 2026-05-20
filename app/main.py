@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from dash import Dash, Input, Output, State, no_update
+from dash import Dash, Input, Output, State, callback_context, no_update
 
 import app.settings as app_settings
 from app.codroid_picker import bootstrap
@@ -355,35 +355,37 @@ def register_callbacks(app: Dash) -> None:
     register_camera_callbacks(app)
     register_ui_callbacks(app)
 
-    # Client-side toggle for the Setup drawer (faster UI response).
-    app.clientside_callback(
-        """
-        function(openClicks, closeClicks, opened) {
-            const ctx = dash_clientside.callback_context;
-            if (!ctx.triggered || ctx.triggered.length === 0) {
-                return opened;
-            }
-            const trigger = ctx.triggered[0].prop_id.split('.')[0];
-            if (trigger === "open-setup") {
-                return true;
-            }
-            if (trigger === "setup-close") {
-                return false;
-            }
-            // Fallback: compare counts.
-            const o = openClicks || 0;
-            const c = closeClicks || 0;
-            if (o > c) return true;
-            if (c > o) return false;
-            return opened;
-        }
-        """,
+    # Toggle for the Setup drawer.
+    @app.callback(
         Output("setup-drawer", "opened"),
         Input("open-setup", "n_clicks"),
         Input("setup-close", "n_clicks"),
         State("setup-drawer", "opened"),
-        prevent_initial_call=False,
+        prevent_initial_call=True,
     )
+    def _toggle_setup_drawer(
+        open_clicks: int | None, close_clicks: int | None, opened: bool
+    ) -> bool:
+        if not callback_context.triggered:
+            return opened
+        trigger = callback_context.triggered_id
+        if trigger is None:
+            trigger = callback_context.triggered[0].get("prop_id", "")
+            trigger = str(trigger).split(".")[0]
+        elif isinstance(trigger, str):
+            trigger = trigger.split(".")[0]
+        if trigger == "open-setup":
+            return True
+        if trigger == "setup-close":
+            return False
+
+        open_count = open_clicks or 0
+        close_count = close_clicks or 0
+        if open_count > close_count:
+            return True
+        if close_count > open_count:
+            return False
+        return opened
 
     # Auto-refresh camera image (enabled only when camera is live)
     # (Client refresh removed; MJPEG stream handles updates)

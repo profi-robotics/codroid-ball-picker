@@ -165,6 +165,13 @@ def build_header() -> dmc.AppShellHeader:
         className="app-header",
         px="md",
         h=64,
+        id="app-header",
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "minHeight": "64px",
+            "height": "64px",
+        },
     )
 
 

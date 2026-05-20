@@ -820,7 +820,7 @@ def build_layout() -> dmc.MantineProvider:
                     padding="xs",
                     className="app-shell",
                     header={"height": 64},
-                    footer={"height": 132},
+                    footer={"height": 144},
                     children=[
                         build_header(),
                         dmc.AppShellMain(

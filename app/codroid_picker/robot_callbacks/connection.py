@@ -1,5 +1,6 @@
 """Robot connection, gripper, and power management callbacks."""
 
+import asyncio
 import time
 from typing import Optional, Tuple
 
@@ -7,6 +8,10 @@ import dash_mantine_components as dmc
 from dash import Dash, Input, Output, State, callback_context, html, no_update
 from app.codroid_picker.i18n import t
 from app.settings import SETTINGS
+
+
+ROBOT_CONNECT_TIMEOUT_S = 10.0
+ROBOT_STALE_PROBE_RESET_S = ROBOT_CONNECT_TIMEOUT_S + 5.0
 
 
 def _control_state_payload(
@@ -38,6 +43,34 @@ async def _release_robot_ownership(
     return await session.release_control(resolved_uri, power_off=True, wait_closed_s=2.0)
 
 
+def _resolve_trigger_id() -> str:
+    """Return a stable trigger identifier for this callback invocation."""
+    trigger = callback_context.triggered_id
+    if isinstance(trigger, str):
+        return trigger.split(".")[0]
+
+    if isinstance(trigger, dict):
+        maybe_id = trigger.get("id")
+        if isinstance(maybe_id, str):
+            return maybe_id
+        if isinstance(maybe_id, dict):
+            return str(maybe_id)
+
+    if callback_context.triggered:
+        prop_id = callback_context.triggered[0].get("prop_id", "")
+        if isinstance(prop_id, str):
+            return prop_id.split(".")[0]
+
+    return "initial-load"
+
+
+def _probe_stale(started_at: float) -> bool:
+    """Return True when a robot probe marker is too old to trust."""
+    if started_at <= 0.0:
+        return True
+    return time.time() - started_at > ROBOT_STALE_PROBE_RESET_S
+
+
 def register_connection_callbacks(app: Dash) -> None:
     """Register robot connection, gripper, and power management callbacks."""
 
@@ -54,6 +87,11 @@ def register_connection_callbacks(app: Dash) -> None:
         Input("monitor-interval", "n_intervals"),
         State("robot-uri", "value"),
         State("robot-control-state", "data"),
+        running=[
+            (Output("robot-test", "loading"), True, False),
+            (Output("robot-acquire-control", "loading"), True, False),
+            (Output("robot-release-control", "loading"), True, False),
+        ],
         prevent_initial_call=False,
     )
     async def _test_robot(
@@ -67,7 +105,7 @@ def register_connection_callbacks(app: Dash) -> None:
     ) -> Tuple[str, str, str, dict, dict]:
         import app.codroid_picker as codroid_picker_module
 
-        trigger = callback_context.triggered_id
+        trigger = _resolve_trigger_id()
         session = codroid_picker_module._get_robot_session()
         ui_session = codroid_picker_module.SESSION
         resolved_uri = uri or codroid_picker_module.DEFAULT_ROBOT_URI
@@ -163,18 +201,29 @@ def register_connection_callbacks(app: Dash) -> None:
         if trigger not in {"robot-acquire-control", "robot-test", *startup_triggers}:
             return no_update, no_update, no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
-            status = t("Robot connection check already in progress.")
-            return (
-                status,
-                t("Robot: probing"),
-                "yellow",
-                {"status": "probing", "message": status},
-                _control_state_payload(mode="acquired"),
-            )
+            if _probe_stale(ui_session.robot_last_probe_started_at):
+                codroid_picker_module.LOGGER.warning(
+                    "Resetting stale robot connection probe marker after %.1fs.",
+                    time.time() - ui_session.robot_last_probe_started_at,
+                )
+                ui_session.robot_probe_inflight = False
+                ui_session.robot_last_probe_started_at = 0.0
+            else:
+                status = t("Robot connection check already in progress.")
+                return (
+                    status,
+                    t("Robot: probing"),
+                    "yellow",
+                    {"status": "probing", "message": status},
+                    _control_state_payload(mode="acquired"),
+                )
         ui_session.robot_probe_inflight = True
         ui_session.robot_last_probe_started_at = time.time()
         try:
-            await session.acquire_control(resolved_uri)
+            await asyncio.wait_for(
+                session.acquire_control(resolved_uri),
+                timeout=ROBOT_CONNECT_TIMEOUT_S,
+            )
             target = session.resolve_robot_target(resolved_uri)
             host = target.get("host", t("unknown"))
             port = target.get("port", t("unknown"))
@@ -188,6 +237,20 @@ def register_connection_callbacks(app: Dash) -> None:
                 t("Robot: online"),
                 "brand",
                 {"status": "online", "message": status},
+                _control_state_payload(mode="acquired"),
+            )
+        except asyncio.TimeoutError:
+            error = t(
+                "Robot connection timed out after {seconds} seconds.",
+                seconds=int(ROBOT_CONNECT_TIMEOUT_S),
+            )
+            ui_session.robot_connection_attempted = True
+            ui_session.robot_last_connection_error = error
+            return (
+                error,
+                t("Robot: error"),
+                "yellow",
+                {"status": "error", "message": error},
                 _control_state_payload(mode="acquired"),
             )
         except Exception as exc:

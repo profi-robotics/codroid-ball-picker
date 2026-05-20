@@ -100,7 +100,7 @@ class _FakeMoveRegistry:
         return self._session
 
 
-def test_motion_test_uses_current_pose_vertical_targets() -> None:
+def test_motion_test_uses_coordinate5_vertical_targets() -> None:
     targets, orientation, poscfg = AutoMotionTestProgram._build_current_pose_targets(
         _FakeRobotAPI(),
         _FakeSession(),

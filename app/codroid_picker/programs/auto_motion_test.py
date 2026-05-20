@@ -35,6 +35,8 @@ LOGGER = logging.getLogger(__name__)
 MOTION_TEST_DELTA_Z_MM = 35.0
 MOTION_TEST_REACH_TOLERANCE_MM = 3.0
 MOTION_TEST_REACH_TIMEOUT_S = 10.0
+MOTION_TEST_COORDINATE_SETTLE_S = 2.0
+MOTION_TEST_COORDINATE_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -97,8 +99,11 @@ class AutoMotionTestProgram(RobotProgram):
         self.update_message(
             f"Auto motion test: selecting coordinate system {coordinate_id}."
         )
-        await ensure_coordinate_active(robot_api, coordinate_id)
-        await asyncio.sleep(0.3)
+        await self._select_coordinate_and_wait_for_posture(
+            robot_api,
+            session,
+            coordinate_id=coordinate_id,
+        )
         await self._apply_current_speed(robot_api)
         loop_targets, orientation, poscfg = self._build_current_pose_targets(
             robot_api,
@@ -108,7 +113,11 @@ class AutoMotionTestProgram(RobotProgram):
 
         self.update_message("Auto motion test: switching controller to Auto mode.")
         await robot_api.set_auto_mode()
-        await robot_api.set_current_coordinate_id(coordinate_id)
+        await self._select_coordinate_and_wait_for_posture(
+            robot_api,
+            session,
+            coordinate_id=coordinate_id,
+        )
 
         try:
             auto_socket_config = self._build_auto_socket_config(settings, robot_api)
@@ -122,7 +131,11 @@ class AutoMotionTestProgram(RobotProgram):
                 await asyncio.sleep(0.3)
             auto_socket_context = robot_api.auto_socket_mode(auto_socket_config)
             backend = await auto_socket_context.__aenter__()
-            await robot_api.set_current_coordinate_id(coordinate_id)
+            await self._select_coordinate_and_wait_for_posture(
+                robot_api,
+                session,
+                coordinate_id=coordinate_id,
+            )
             project_info = getattr(backend, "project_info", None)
             LOGGER.info(
                 "Auto motion test: auto-socket active project=%s task=%s "
@@ -255,6 +268,54 @@ class AutoMotionTestProgram(RobotProgram):
         poscfg = robot_api.build_poscfg(mode=int(getattr(posture, "mode", 0) or 0))
         return [raised, base], orientation, poscfg
 
+    @staticmethod
+    async def _select_coordinate_and_wait_for_posture(
+        robot_api: "CodroidAPI",
+        session: object,
+        *,
+        coordinate_id: int,
+    ) -> None:
+        """Select the motion coordinate and wait for a fresh pose in that frame."""
+        initial_posture = session.position_snapshot()
+        initial_timestamp = float(getattr(initial_posture, "timestamp", 0.0) or 0.0)
+
+        await ensure_coordinate_active(robot_api, coordinate_id)
+        deadline = time.monotonic() + MOTION_TEST_COORDINATE_TIMEOUT_S
+        matched_coordinate = False
+        resent = False
+
+        while time.monotonic() < deadline:
+            status = session.robot_status_snapshot()
+            current_id = None
+            if isinstance(status, dict):
+                current_id = status.get("CoordinateId")
+            try:
+                matched_coordinate = int(current_id) == int(coordinate_id)
+            except (TypeError, ValueError):
+                matched_coordinate = False
+
+            posture = session.position_snapshot()
+            posture_timestamp = float(getattr(posture, "timestamp", 0.0) or 0.0)
+            fresh_posture = (
+                posture_timestamp <= 0.0
+                or initial_timestamp <= 0.0
+                or posture_timestamp > initial_timestamp
+            )
+            if matched_coordinate and fresh_posture:
+                await asyncio.sleep(MOTION_TEST_COORDINATE_SETTLE_S)
+                return
+
+            if not resent and time.monotonic() > deadline - (
+                MOTION_TEST_COORDINATE_TIMEOUT_S / 2.0
+            ):
+                await robot_api.set_current_coordinate_id(coordinate_id)
+                resent = True
+            await asyncio.sleep(0.1)
+
+        raise RuntimeError(
+            f"Failed to confirm CoordinateId {coordinate_id} with fresh posture."
+        )
+
     async def _apply_current_speed(self, robot_api: "CodroidAPI") -> None:
         """Apply the currently selected robot speed rate before streaming."""
         from app.codroid_picker.session import SESSION
@@ -303,6 +364,7 @@ class AutoMotionTestProgram(RobotProgram):
             "c": float(orientation[2] + target.c_offset),
             "poscfg": poscfg,
         }
+
 
 def _resolve_local_socket_host(robot_api: "CodroidAPI") -> str | None:
     """Resolve the app host IP the robot controller should connect back to."""
