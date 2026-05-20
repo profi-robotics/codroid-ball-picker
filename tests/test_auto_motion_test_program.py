@@ -9,8 +9,18 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 
 from app.codroid_picker.programs.auto_motion_test import AutoMotionTestProgram
+from app.codroid_picker.programs.auto_mode import (
+    apply_full_auto_speed,
+    controller_is_auto_mode,
+    enter_controller_auto_mode,
+    pause_auto_program_manual_mode,
+    restore_active_auto_program_manual_mode,
+    restore_manual_mode,
+    resume_auto_program_auto_mode,
+)
 from app.codroid_picker.programs.auto_pick_place import AutoPickPlaceProgram
 from app.codroid_picker.robot_motion import move_auto_socket_cartesian_target
+from app.codroid_picker.session import SESSION
 
 
 class _FakeRobotAPI:
@@ -42,8 +52,49 @@ class _FakeAutoModeRobotAPI(_FakeRobotAPI):
     async def set_manual_mode(self) -> None:
         self.calls.append("set_manual_mode")
 
+    async def clear_target_position(self) -> None:
+        self.calls.append("clear_target_position")
+
+    async def stop_command(self) -> None:
+        self.calls.append("stop_command")
+
     async def stop_auto_socket_project(self) -> None:
         self.calls.append("stop_auto_socket_project")
+
+
+class _FakeAutoSocketBackend:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def clear_target_position(self) -> None:
+        self.calls.append("clear_target_position")
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
+class _InspectingAutoModeRobotAPI(_FakeAutoModeRobotAPI):
+    async def stop_command(self) -> None:
+        detached = getattr(self, "_auto_socket_backend", None) is None
+        self.calls.append(f"stop_command:detached={detached}")
+
+    async def set_manual_mode(self) -> None:
+        detached = getattr(self, "_auto_socket_backend", None) is None
+        self.calls.append(f"set_manual_mode:detached={detached}")
+
+
+class _FailingCleanupRobotAPI(_FakeAutoModeRobotAPI):
+    async def clear_target_position(self) -> None:
+        self.calls.append("clear_target_position")
+        raise RuntimeError("clear failed")
+
+    async def stop_command(self) -> None:
+        self.calls.append("stop_command")
+        raise RuntimeError("stop failed")
+
+    async def stop_auto_socket_project(self) -> None:
+        self.calls.append("stop_auto_socket_project")
+        raise RuntimeError("project stop failed")
 
 
 class _FakeMoveRobotAPI:
@@ -184,6 +235,10 @@ def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
             "_build_current_pose_targets",
             return_value=([], (0.0, 0.0, 0.0), {}),
         ),
+        patch(
+            "app.codroid_picker.programs.auto_mode._latest_controller_status",
+            return_value={"ControllerMode": "MANUAL"},
+        ),
     ):
         result = asyncio.run(program.execute(robot_api))
 
@@ -193,6 +248,8 @@ def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
         "power_on",
         "set_auto_mode",
         "set_manual_move_rate:1.0",
+        "clear_target_position",
+        "stop_command",
         "stop_auto_socket_project",
         "set_manual_mode",
     ]
@@ -228,6 +285,207 @@ def test_auto_socket_move_uses_cartesian_target_api() -> None:
     move_call = robot_api.calls[-1]
     assert move_call[0] == "move_to_cartesian_target_linear"
     assert move_call[1]["coord"]["datavar"]["value"] == 5
+
+
+def test_auto_mode_helpers_apply_full_speed_and_restore_manual() -> None:
+    robot_api = _FakeAutoModeRobotAPI()
+    robot_api._auto_socket_backend = object()
+    active_program = types.SimpleNamespace(
+        name="auto_pick_place",
+        robot_api=robot_api,
+    )
+
+    with patch(
+        "app.codroid_picker.programs.auto_mode._latest_controller_status",
+        return_value={"ControllerMode": "MANUAL"},
+    ):
+        asyncio.run(apply_full_auto_speed(robot_api))
+        restored = asyncio.run(
+            restore_active_auto_program_manual_mode(
+                active_program,
+                logger=types.SimpleNamespace(
+                    debug=lambda *_args: None,
+                    warning=lambda *_args: None,
+                ),
+                context="test",
+            )
+        )
+
+    assert restored
+    assert robot_api._auto_socket_backend is None
+    assert SESSION.robot_speed_rate == 1.0
+    assert robot_api.calls == [
+        "set_manual_move_rate:1.0",
+        "clear_target_position",
+        "stop_command",
+        "stop_auto_socket_project",
+        "set_manual_mode",
+    ]
+
+
+def test_restore_manual_detaches_socket_backend_before_controller_commands() -> None:
+    robot_api = _InspectingAutoModeRobotAPI()
+    backend = _FakeAutoSocketBackend()
+    robot_api._auto_socket_backend = backend
+
+    with patch(
+        "app.codroid_picker.programs.auto_mode._latest_controller_status",
+        return_value={"ControllerMode": "MANUAL"},
+    ):
+        asyncio.run(
+            restore_manual_mode(
+                robot_api,
+                logger=types.SimpleNamespace(
+                    debug=lambda *_args: None,
+                    warning=lambda *_args: None,
+                ),
+                context="test",
+            )
+        )
+
+    assert robot_api._auto_socket_backend is None
+    assert backend.calls == ["clear_target_position", "close"]
+    assert robot_api.calls == [
+        "clear_target_position",
+        "stop_command:detached=True",
+        "stop_auto_socket_project",
+        "set_manual_mode:detached=True",
+    ]
+
+
+def test_restore_manual_still_sends_manual_after_cleanup_failures() -> None:
+    robot_api = _FailingCleanupRobotAPI()
+
+    with patch(
+        "app.codroid_picker.programs.auto_mode._latest_controller_status",
+        return_value={"ControllerMode": "MANUAL"},
+    ):
+        asyncio.run(
+            restore_manual_mode(
+                robot_api,
+                logger=types.SimpleNamespace(
+                    debug=lambda *_args: None,
+                    warning=lambda *_args: None,
+                ),
+                context="test",
+            )
+        )
+
+    assert robot_api.calls == [
+        "clear_target_position",
+        "stop_command",
+        "stop_auto_socket_project",
+        "set_manual_mode",
+    ]
+
+
+def test_restore_manual_retries_while_controller_reports_auto() -> None:
+    robot_api = _FakeAutoModeRobotAPI()
+
+    with patch(
+        "app.codroid_picker.programs.auto_mode._latest_controller_status",
+        side_effect=[
+            {"ControllerMode": "AUTO"},
+            {"ControllerMode": "AUTO"},
+            {"ControllerMode": "MANUAL"},
+        ],
+    ):
+        asyncio.run(
+            restore_manual_mode(
+                robot_api,
+                logger=types.SimpleNamespace(
+                    debug=lambda *_args: None,
+                    warning=lambda *_args: None,
+                ),
+                context="test",
+            )
+        )
+
+    assert robot_api.calls == [
+        "clear_target_position",
+        "stop_command",
+        "stop_auto_socket_project",
+        "set_manual_mode",
+        "set_manual_mode",
+        "set_manual_mode",
+    ]
+
+
+def test_pause_auto_program_switches_manual_without_closing_socket() -> None:
+    robot_api = _FakeAutoModeRobotAPI()
+    backend = _FakeAutoSocketBackend()
+    robot_api._auto_socket_backend = backend
+    active_program = types.SimpleNamespace(
+        name="auto_pick_place",
+        robot_api=robot_api,
+    )
+
+    with patch(
+        "app.codroid_picker.programs.auto_mode._latest_controller_status",
+        return_value={"ControllerMode": "MANUAL"},
+    ):
+        paused = asyncio.run(
+            pause_auto_program_manual_mode(
+                active_program,
+                logger=types.SimpleNamespace(
+                    debug=lambda *_args: None,
+                    warning=lambda *_args: None,
+                ),
+                context="test",
+            )
+        )
+
+    assert paused
+    assert robot_api._auto_socket_backend is backend
+    assert backend.calls == ["clear_target_position"]
+    assert robot_api.calls == ["set_manual_mode"]
+
+
+def test_resume_auto_program_switches_back_to_auto_mode() -> None:
+    robot_api = _FakeAutoModeRobotAPI()
+    backend = _FakeAutoSocketBackend()
+    robot_api._auto_socket_backend = backend
+    active_program = types.SimpleNamespace(
+        name="auto_pick_place",
+        robot_api=robot_api,
+    )
+
+    resumed = asyncio.run(
+        resume_auto_program_auto_mode(
+            active_program,
+            logger=types.SimpleNamespace(
+                debug=lambda *_args: None,
+                warning=lambda *_args: None,
+            ),
+            context="test",
+        )
+    )
+
+    assert resumed
+    assert robot_api._auto_socket_backend is backend
+    assert robot_api.calls == [
+        "set_auto_mode",
+        "set_manual_move_rate:1.0",
+    ]
+
+
+def test_controller_is_auto_mode_reads_nested_status_values() -> None:
+    assert controller_is_auto_mode({"ControllerMode": "AUTO"})
+    assert controller_is_auto_mode({"nested": {"mode": {"value": 5}}})
+    assert not controller_is_auto_mode({"ControllerMode": "manual"})
+    assert not controller_is_auto_mode({"model": "auto-detection"})
+
+
+def test_enter_controller_auto_mode_forces_full_speed() -> None:
+    robot_api = _FakeAutoModeRobotAPI()
+
+    asyncio.run(enter_controller_auto_mode(robot_api))
+
+    assert SESSION.robot_speed_rate == 1.0
+    assert robot_api.calls == [
+        "set_auto_mode",
+        "set_manual_move_rate:1.0",
+    ]
 
 
 def test_auto_socket_move_accepts_base_posture_for_coord5_target() -> None:

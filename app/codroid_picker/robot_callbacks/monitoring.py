@@ -22,6 +22,13 @@ from app.codroid_picker.programs import (
     resume_program,
     stop_program,
 )
+from app.codroid_picker.programs.auto_mode import (
+    AUTO_CONTROL_PROGRAMS,
+    pause_auto_program_manual_mode,
+    restore_active_auto_program_manual_mode,
+    restore_manual_mode,
+    resume_auto_program_auto_mode,
+)
 
 
 def register_monitoring_callbacks(app: Dash) -> None:
@@ -129,6 +136,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         if trigger == "program-pause":
             if status == "running":
                 # Use registry if active, otherwise legacy
+                active_program = registry.active_program
                 if registry.active_program is not None:
                     pause_program("operator")
                 else:
@@ -139,9 +147,16 @@ def register_monitoring_callbacks(app: Dash) -> None:
                     await api.stop_command()
 
                 try:
-                    await codroid_picker_module._with_robot_api(
-                        robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _stop_motion
+                    auto_paused = await pause_auto_program_manual_mode(
+                        active_program,
+                        logger=codroid_picker_module.LOGGER,
+                        context="Program pause",
                     )
+                    if not auto_paused:
+                        await codroid_picker_module._with_robot_api(
+                            robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
+                            _stop_motion,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     codroid_picker_module.LOGGER.debug(
                         "Pause stop command failed: %s", exc)
@@ -154,7 +169,13 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 )
             if status == "paused":
                 # Use registry if active, otherwise legacy
-                if registry.active_program is not None:
+                active_program = registry.active_program
+                if active_program is not None:
+                    await resume_auto_program_auto_mode(
+                        active_program,
+                        logger=codroid_picker_module.LOGGER,
+                        context="Program resume",
+                    )
                     resume_program()
                 else:
                     codroid_picker_module._resume_operation(t("Program resumed."))
@@ -167,19 +188,35 @@ def register_monitoring_callbacks(app: Dash) -> None:
                 )
         elif trigger == "program-stop":
             # Use registry if active, otherwise legacy
-            if registry.active_program is not None:
+            active_program = registry.active_program
+            source = (operation_state or {}).get("source", "")
+            if active_program is not None:
                 stop_program()
             else:
                 codroid_picker_module._request_stop_operation(
                     t("Program stop requested."))
 
             async def _stop_motion(api: codroid_picker_module.CodroidAPI) -> None:
-                await api.stop_command()
+                if source in AUTO_CONTROL_PROGRAMS:
+                    await restore_manual_mode(
+                        api,
+                        logger=codroid_picker_module.LOGGER,
+                        context="Program stop",
+                    )
+                else:
+                    await api.stop_command()
 
             try:
-                await codroid_picker_module._with_robot_api(
-                    robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _stop_motion
+                auto_restored = await restore_active_auto_program_manual_mode(
+                    active_program,
+                    logger=codroid_picker_module.LOGGER,
+                    context="Program stop",
                 )
+                if not auto_restored:
+                    await codroid_picker_module._with_robot_api(
+                        robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI,
+                        _stop_motion,
+                    )
             except Exception as exc:  # noqa: BLE001
                 codroid_picker_module.LOGGER.debug(
                     "Stop command failed: %s", exc)

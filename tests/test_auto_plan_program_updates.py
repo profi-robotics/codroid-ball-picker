@@ -185,7 +185,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
             robot_api = _FakeRobotAPI()
             result = await program.execute(robot_api)
 
-        self.assertEqual(result.status, ProgramStatus.COMPLETED)
+        self.assertEqual(result.status, ProgramStatus.STOPPED)
         self.assertEqual(len(robot_api.auto_socket_contexts), 1)
         socket_context = robot_api.auto_socket_contexts[0]
         self.assertTrue(socket_context.entered)
@@ -243,6 +243,8 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
                 "_local_source_ip_for:192.168.101.100",
                 "auto_socket_mode",
                 "stop_auto_socket_project",
+                "set_manual_mode",
+                "set_manual_mode",
                 "set_manual_mode",
             ],
             robot_api.calls,

@@ -55,7 +55,9 @@ from app.codroid_picker.auto_plan_state import (
     publish_auto_plan_snapshot,
     update_auto_plan_snapshot,
 )
-from app.codroid_picker.session import SESSION
+from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
+from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
+from app.codroid_picker.programs.auto_mode import restore_manual_mode
 
 LOGGER = logging.getLogger(__name__)
 
@@ -250,8 +252,7 @@ class AutoPickPlaceProgram(RobotProgram):
 
         try:
             self.update_message("Switching controller to Auto mode...")
-            await robot_api.set_auto_mode()
-            await self._apply_auto_speed(robot_api)
+            await self._enter_auto_mode(robot_api)
             await select_coordinate_and_wait_for_posture(
                 robot_api,
                 session,
@@ -371,28 +372,17 @@ class AutoPickPlaceProgram(RobotProgram):
     @staticmethod
     async def _apply_auto_speed(robot_api: "CodroidAPI") -> None:
         """Run auto-socket motion at full controller speed."""
-        SESSION.robot_speed_rate = 1.0
-        SESSION.robot_speed_last_set = time.time()
-        await robot_api.set_manual_move_rate(1.0)
+        await apply_full_auto_speed(robot_api)
+
+    @staticmethod
+    async def _enter_auto_mode(robot_api: "CodroidAPI") -> None:
+        """Switch to Auto mode with full robot speed."""
+        await enter_controller_auto_mode(robot_api)
 
     @staticmethod
     async def _restore_manual_mode(robot_api: "CodroidAPI") -> None:
         """Best-effort return from controller Auto mode after auto operation."""
-        try:
-            await robot_api.stop_command()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("Auto: stop_command before Manual mode failed: %s", exc)
-        try:
-            await robot_api.stop_auto_socket_project()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug(
-                "Auto: stop_auto_socket_project before Manual mode failed: %s",
-                exc,
-            )
-        try:
-            await robot_api.set_manual_mode()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Auto: failed to switch controller to Manual mode: %s", exc)
+        await restore_manual_mode(robot_api, logger=LOGGER, context="Auto")
 
     async def _run_auto_loop(
         self,
@@ -424,6 +414,7 @@ class AutoPickPlaceProgram(RobotProgram):
         self.update_message("Starting auto loop...")
         LOGGER.info("Auto: Entering main loop")
 
+        stopped = False
         try:
             while True:
                 # Check for pause/stop
@@ -760,7 +751,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 stage="stopped",
                 message="Auto program stopped.",
             )
-            pass
+            stopped = True
 
         message = f"Auto operation stopped. {cycles_completed} cycles completed, {cycles_failed} failed."
         update_auto_plan_snapshot(
@@ -772,9 +763,11 @@ class AutoPickPlaceProgram(RobotProgram):
             from app.codroid_picker.streaming import set_active_overlay_task
 
             set_active_overlay_task(None)
-        self.finish(status="idle", message=message)
+        result_status = ProgramStatus.STOPPED if stopped else ProgramStatus.COMPLETED
+        finish_status = "stopped" if stopped else "idle"
+        self.finish(status=finish_status, message=message)
         return ProgramResult(
-            status=ProgramStatus.COMPLETED,
+            status=result_status,
             message=message,
             data={"cycles_completed": cycles_completed,
                   "cycles_failed": cycles_failed},
