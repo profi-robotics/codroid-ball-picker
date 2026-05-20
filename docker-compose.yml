@@ -27,3 +27,17 @@ services:
         "--port",
         "8050",
       ]
+
+  updater:
+    image: containrrr/watchtower:latest
+    container_name: codroid-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      [
+        "--interval",
+        "${CODROID_WATCHTOWER_INTERVAL_SECONDS:-300}",
+        "--cleanup",
+        "codroid-ui",
+      ]

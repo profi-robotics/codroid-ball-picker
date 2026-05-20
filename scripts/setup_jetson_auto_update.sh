@@ -51,8 +51,8 @@ RemainAfterExit=true
 WorkingDirectory=${REPO_DIR}
 Environment=CODROID_COMPOSE_SERVICE=${COMPOSE_SERVICE}
 EnvironmentFile=-${ENV_FILE}
-ExecStartPre=-${DOCKER_BIN} compose pull \${CODROID_COMPOSE_SERVICE}
-ExecStart=${DOCKER_BIN} compose up -d \${CODROID_COMPOSE_SERVICE}
+ExecStartPre=-${DOCKER_BIN} compose pull
+ExecStart=${DOCKER_BIN} compose up -d
 ExecStop=${DOCKER_BIN} compose down
 TimeoutStartSec=0
 

@@ -16,15 +16,17 @@ Python 3.10 + CUDA 12.6 PyTorch dependency set.
    - `ghcr.io/profi-robotics/codroid-ball-picker:<tag>`
    - `ghcr.io/profi-robotics/codroid-ball-picker:latest`
    - `ghcr.io/profi-robotics/codroid-ball-picker:sha-<commit>`
-4. The Jetson systemd timer runs `scripts/jetson_auto_update_check.sh`.
+4. The `codroid-watchtower` compose service checks the `codroid-ui` image.
 5. The updater pulls the compose service image and recreates `codroid-ui` only
    when the pulled image ID differs from the running container image.
 
 Application code updates arrive through the container image. Changes to
 `docker-compose.yml`, systemd scripts, or this deployment guide require a
 manual `git pull` on the Jetson and rerunning `scripts/setup_jetson_auto_update.sh`.
-The installer also enables `codroid-ball-picker-compose.service`, which starts
-the compose service on boot before periodic update checks run.
+The compose file also sets Docker restart policies so containers come back after
+host reboot. If systemd management is preferred, the installer enables
+`codroid-ball-picker-compose.service`, which starts the compose service on boot
+before periodic update checks run.
 
 ## Prerequisites
 
@@ -53,6 +55,8 @@ docker compose up -d
 
 The UI will be reachable on `http://<jetson-ip>:8050`. When Tailscale is
 enabled, use `http://<tailscale-ip>:8050`.
+The same command starts `codroid-watchtower`, which checks every 300 seconds by
+default. Override the interval with `CODROID_WATCHTOWER_INTERVAL_SECONDS`.
 
 Check logs:
 
@@ -78,6 +82,17 @@ PY
 ```
 
 ## Automatic Updates
+
+The default updater is the `codroid-watchtower` compose service:
+
+```bash
+docker compose logs -f updater
+```
+
+It monitors only the `codroid-ui` container, pulls `latest`, recreates the UI
+container when the image changes, and removes old dangling images.
+
+## Optional Systemd Management
 
 Install the boot service and updater:
 

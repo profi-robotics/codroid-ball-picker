@@ -254,7 +254,8 @@ def _plate_calibration_point_pixels(
 
     result: list[tuple[tuple[int, int], str]] = []
     for idx, pt in enumerate(point_px, start=1):
-        center = tuple(np.round(pt).astype(int))
+        rounded = np.round(pt).astype(int)
+        center = (int(rounded[0]), int(rounded[1]))
         result.append((center, f"P{idx}"))
     return result
 
