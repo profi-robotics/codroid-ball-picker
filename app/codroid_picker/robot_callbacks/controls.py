@@ -8,6 +8,19 @@ from dash import Dash, Input, Output, State, callback_context, no_update
 from app.codroid_picker.i18n import t
 
 
+def _active_auto_control_api(active_program: object) -> object | None:
+    """Return the active auto-control robot API, if one is running."""
+    from app.codroid_picker.programs.auto_mode import AUTO_CONTROL_PROGRAMS
+
+    if active_program is None:
+        return None
+    if getattr(active_program, "name", None) not in AUTO_CONTROL_PROGRAMS:
+        return None
+    if not getattr(active_program, "is_running", False):
+        return None
+    return getattr(active_program, "robot_api", None)
+
+
 def register_controls_callbacks(app: Dash) -> None:
     """Register robot control callbacks."""
 
@@ -34,6 +47,7 @@ def register_controls_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("robot-speed-state", "data"),
+        Output("robot-speed-slider", "value", allow_duplicate=True),
         Input("robot-speed-slider", "value"),
         State("robot-connection-state", "data"),
         State("robot-uri", "value"),
@@ -45,33 +59,52 @@ def register_controls_callbacks(app: Dash) -> None:
         robot_state: Optional[dict],
         robot_uri: Optional[str],
         control_state: Optional[dict],
-    ) -> dict:
+    ) -> Tuple[dict, float]:
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.programs import get_registry
+        from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
 
         if value is None:
-            return no_update
+            return no_update, no_update
         if codroid_picker_module._robot_control_released(control_state):
             return {
                 "status": "released",
                 "value": value,
                 "error": t("Robot control is released. Acquire control first."),
                 "updated": time.time(),
-            }
+            }, no_update
         rate = max(0.0, min(1.0, float(value) / 100.0))
         now = time.time()
 
-        codroid_picker_module.SESSION.robot_speed_rate = rate
-
         registry = get_registry()
         active_program = registry.active_program
-        active_api = active_program.robot_api if active_program and active_program.robot_api else None
+        auto_api = _active_auto_control_api(active_program)
+        if auto_api is not None:
+            await apply_full_auto_speed(auto_api)
+            return {
+                "status": "locked_auto",
+                "value": 100.0,
+                "rate": 1.0,
+                "updated": time.time(),
+            }, 100.0
+
+        codroid_picker_module.SESSION.robot_speed_rate = rate
+        active_api = (
+            active_program.robot_api
+            if active_program and active_program.robot_api
+            else None
+        )
 
         if (robot_state or {}).get("status") != "online":
             codroid_picker_module.LOGGER.info(
                 "Robot speed requested: %.0f%% (robot offline)", value
             )
-            return {"status": "offline", "value": value, "rate": rate, "updated": now}
+            return {
+                "status": "offline",
+                "value": value,
+                "rate": rate,
+                "updated": now,
+            }, no_update
 
         async def _set_speed(api: codroid_picker_module.CodroidAPI) -> None:
             await api.set_manual_move_rate(rate)
@@ -87,7 +120,12 @@ def register_controls_callbacks(app: Dash) -> None:
             codroid_picker_module.SESSION.last_action = t("Robot speed set to {rate:.2f}", rate=rate)
             codroid_picker_module.LOGGER.info(
                 "Robot speed set to %.0f%%", value)
-            return {"status": "ok", "value": value, "rate": rate, "updated": now}
+            return {
+                "status": "ok",
+                "value": value,
+                "rate": rate,
+                "updated": now,
+            }, no_update
         except Exception as exc:  # noqa: BLE001
             codroid_picker_module.LOGGER.exception("Failed to set robot speed")
             return {
@@ -96,7 +134,7 @@ def register_controls_callbacks(app: Dash) -> None:
                 "rate": rate,
                 "error": str(exc),
                 "updated": now,
-            }
+            }, no_update
 
     @app.callback(
         Output("app-notifications", "children", allow_duplicate=True),

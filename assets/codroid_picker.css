@@ -8,9 +8,10 @@
   --brand-secondary: #c54246;
   --brand-accent: #f15b5f;
   --brand-soft: rgba(241, 91, 95, 0.16);
-  --app-header-height: 64px;
-  --app-footer-compact-height: 144px;
-  --app-footer-expanded-height: 244px;
+  --app-header-height: 76px;
+  --app-footer-compact-height: 174px;
+  --app-footer-expanded-height: 320px;
+  --sidebar-width: 360px;
 }
 
 html,
@@ -53,10 +54,15 @@ body {
 
 .header-actions {
   gap: 0.45rem;
+  min-width: 0;
 }
 
 .header-badges {
   gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: min(1120px, 72vw);
 }
 
 .app-shell {
@@ -71,8 +77,8 @@ body {
   border-bottom: 1px solid rgba(8, 105, 97, 0.12);
   box-shadow: 0 1px 3px rgba(18, 27, 38, 0.08);
   padding: 4px 14px;
-  height: 64px;
-  min-height: 64px;
+  height: var(--app-header-height);
+  min-height: var(--app-header-height);
   width: 100%;
   align-items: center;
   box-sizing: border-box;
@@ -99,7 +105,12 @@ body {
 }
 
 .app-footer.is-collapsed .footer-body {
-  display: none;
+  display: none !important;
+}
+
+.app-footer.is-collapsed .footer-status-group,
+.app-footer.is-collapsed .footer-body-grid {
+  display: none !important;
 }
 
 .app-footer:not(.is-collapsed) {
@@ -182,6 +193,10 @@ body {
   align-items: stretch;
 }
 
+.sidebar-resizer {
+  display: none;
+}
+
 .sidebar-toolbar {
   flex: 0 0 auto;
   min-height: 26px;
@@ -198,6 +213,37 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.pick-label-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 2px;
+  margin-bottom: 4px;
+  font-size: 0.875rem;
+}
+
+.pick-label-table th,
+.pick-label-table td {
+  border: 1px solid rgba(0, 16, 46, 0.16);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.pick-label-table th {
+  background: rgba(0, 16, 46, 0.04);
+  font-weight: 600;
+}
+
+.pick-label-table td:first-child {
+  font-weight: 600;
+}
+
+.pick-label-table th:last-child,
+.pick-label-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
 }
 
 .tabs-scroll-area {
@@ -283,6 +329,25 @@ body {
   display: block;
   max-width: 100%;
   object-fit: contain;
+}
+
+.camera-layered-feed {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
 }
 
 .camera-placeholder {
@@ -376,23 +441,28 @@ body {
   border: 1px solid rgba(8, 105, 97, 0.12);
   box-shadow: 0 1px 4px rgba(18, 27, 38, 0.08);
   border-radius: 10px;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   overflow: hidden;
-  padding: 6px;
+  padding: 8px 10px;
 }
 
 .footer-header {
   display: grid;
+  grid-template-areas: "stop auto program gripper speed status";
   grid-template-columns:
-    minmax(132px, max-content)
-    minmax(210px, max-content)
-    minmax(210px, max-content)
+    150px
+    minmax(190px, 0.8fr)
     minmax(300px, 1fr)
-    minmax(220px, 0.8fr)
-    minmax(360px, 1fr);
-  align-items: center;
-  gap: 12px;
+    minmax(240px, 0.85fr)
+    minmax(240px, 0.85fr)
+    minmax(110px, max-content);
+  align-items: start;
+  column-gap: 18px;
+  row-gap: 10px;
   margin-bottom: 0;
+  min-height: 126px;
 }
 
 .footer-header > * {
@@ -400,6 +470,7 @@ body {
 }
 
 .footer-stop-area {
+  grid-area: stop;
   min-width: 120px;
 }
 
@@ -412,10 +483,26 @@ body {
 
 .footer-auto-area,
 .footer-program-area {
-  justify-self: center;
+  justify-self: stretch;
 }
 
-.footer-gripper-area,
+.footer-auto-area {
+  grid-area: auto;
+}
+
+.footer-program-area {
+  grid-area: program;
+}
+
+.footer-gripper-area {
+  grid-area: gripper;
+  justify-self: stretch;
+}
+
+.footer-speed-area {
+  grid-area: speed;
+}
+
 .footer-speed-area {
   justify-self: stretch;
 }
@@ -424,18 +511,38 @@ body {
   min-width: 0;
 }
 
-.footer-gripper-width-control {
-  flex-wrap: nowrap !important;
-  min-width: 0;
+.footer-auto-controls {
+  width: 100%;
 }
 
-.footer-gripper-label {
-  min-width: 82px;
+.footer-primary-slider-control {
+  width: 100%;
+  max-width: 260px;
+  min-width: 220px;
+  justify-self: center;
+}
+
+.footer-primary-slider-label {
+  color: var(--app-ink);
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.footer-gripper-width-label {
+  color: #000000;
+}
+
+.footer-primary-slider-control .footer-slider-controls {
+  width: 100%;
+  justify-content: center;
 }
 
 .footer-status-actions {
+  grid-area: status;
   flex-wrap: nowrap !important;
   justify-content: flex-end;
+  align-self: center;
   min-width: 0;
   overflow: hidden;
 }
@@ -447,20 +554,48 @@ body {
 }
 
 .footer-body {
-  max-height: 116px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 0;
-  padding-top: 6px;
+  padding-top: 10px;
   padding-bottom: 0;
 }
 
 .footer-body-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
-  column-gap: 12px;
-  row-gap: 6px;
+  grid-template-areas:
+    "auto-test rescue status gripper-advanced"
+    "rescue-controls rescue-controls status gripper-advanced";
+  grid-template-columns:
+    minmax(220px, 0.7fr)
+    minmax(220px, 0.65fr)
+    minmax(420px, 1.2fr)
+    minmax(560px, 1.55fr);
+  column-gap: 18px;
+  row-gap: 12px;
   align-items: flex-start;
   width: 100%;
+}
+
+.footer-body-auto-test {
+  grid-area: auto-test;
+}
+
+.footer-body-rescue {
+  grid-area: rescue;
+}
+
+.footer-body-status {
+  grid-area: status;
+}
+
+.footer-body-rescue-controls {
+  grid-area: rescue-controls;
+}
+
+.footer-body-gripper-advanced {
+  grid-area: gripper-advanced;
 }
 
 .footer-fine-row {
@@ -468,6 +603,21 @@ body {
   grid-template-columns: 70px minmax(0, 1fr);
   gap: 6px;
   align-items: center;
+}
+
+.footer-gripper-controls {
+  width: 100%;
+}
+
+.footer-gripper-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(250px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.footer-gripper-controls-grid .footer-fine-row {
+  grid-template-columns: minmax(62px, max-content) minmax(0, 1fr);
 }
 
 .footer-slider-controls {
@@ -480,7 +630,9 @@ body {
     "Liberation Mono", "Courier New", monospace;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .footer-flange-block {
@@ -549,50 +701,94 @@ body {
   }
 }
 
+@media (max-width: 1500px) {
+  .footer-body-grid {
+    grid-template-areas:
+      "auto-test rescue"
+      "status gripper-advanced"
+      "rescue-controls gripper-advanced";
+    grid-template-columns: minmax(240px, 0.8fr) minmax(500px, 1.45fr);
+  }
+
+  .footer-gripper-controls-grid {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+}
+
 @media (max-width: 1200px) {
   :root {
-    --app-footer-compact-height: 214px;
-    --app-footer-expanded-height: 314px;
+    --app-header-height: 92px;
+    --app-footer-compact-height: 266px;
+    --app-footer-expanded-height: 430px;
   }
 
   .footer-header {
+    grid-template-areas:
+      "stop auto program"
+      "gripper speed status";
     grid-template-columns:
-      minmax(120px, max-content)
-      minmax(190px, 1fr)
-      minmax(190px, 1fr);
+      150px
+      minmax(260px, 1fr)
+      minmax(300px, 1fr);
     row-gap: 8px;
+    min-height: 206px;
   }
 
   .footer-status-actions {
-    grid-column: 1 / -1;
     justify-content: space-between;
     overflow: visible;
   }
 
-  .footer-body-grid {
-    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  .footer-primary-slider-control {
+    max-width: none;
+    min-width: 0;
   }
+
+  .footer-body-grid {
+    grid-template-areas:
+      "auto-test rescue"
+      "status gripper-advanced"
+      "rescue-controls gripper-advanced";
+    grid-template-columns: minmax(260px, 0.85fr) minmax(520px, 1.4fr);
+  }
+
+  .footer-gripper-controls-grid {
+    grid-template-columns: repeat(2, minmax(230px, 1fr));
+  }
+
 }
 
 @media (max-width: 760px) {
   :root {
-    --app-footer-compact-height: 292px;
-    --app-footer-expanded-height: 392px;
+    --app-header-height: 118px;
+    --app-footer-compact-height: 430px;
+    --app-footer-expanded-height: 620px;
   }
 
   .footer-header {
+    grid-template-areas:
+      "stop"
+      "auto"
+      "program"
+      "gripper"
+      "speed"
+      "status";
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
+    min-height: 350px;
   }
 
   .footer-auto-area,
-  .footer-program-area {
+  .footer-program-area,
+  .footer-gripper-area,
+  .footer-speed-area {
     justify-self: stretch;
   }
 
-  .footer-gripper-width-control {
-    align-items: flex-start;
-    flex-direction: column;
+  .footer-primary-slider-control {
+    max-width: 280px;
+    min-width: 0;
+    justify-self: center;
   }
 
   .footer-status-actions {
@@ -601,13 +797,66 @@ body {
   }
 
   .footer-body-grid {
+    grid-template-areas:
+      "auto-test"
+      "rescue"
+      "status"
+      "gripper-advanced"
+      "rescue-controls";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .footer-gripper-controls-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (min-width: 48em) {
+  .layout-grid > .mantine-Grid-inner {
+    display: grid;
+    grid-template-columns: minmax(280px, var(--sidebar-width)) 8px minmax(0, 1fr);
+  }
+
+  .layout-grid.sidebar-collapsed > .mantine-Grid-inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .layout-grid > .mantine-Grid-inner > .mantine-Grid-col {
+    flex: none !important;
+    max-width: none !important;
+    width: auto !important;
     height: 100%;
     min-height: 0;
+  }
+
+  .sidebar-resizer {
+    align-self: stretch;
+    display: block;
+    margin: 0 -2px;
+    min-height: 0;
+    position: relative;
+    touch-action: none;
+    cursor: col-resize;
+  }
+
+  .sidebar-resizer::before {
+    background: rgba(0, 16, 46, 0.14);
+    border-radius: 999px;
+    content: "";
+    inset: 10px 3px;
+    position: absolute;
+    transition: background 120ms ease, width 120ms ease;
+    width: 2px;
+  }
+
+  .sidebar-resizer:hover::before,
+  body.sidebar-resizing .sidebar-resizer::before {
+    background: rgba(241, 91, 95, 0.85);
+    width: 3px;
+  }
+
+  body.sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
   }
 }

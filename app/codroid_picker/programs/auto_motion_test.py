@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
 from app.codroid_picker.app_instance import registry
+from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
+from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
+from app.codroid_picker.programs.auto_mode import restore_manual_mode
 from app.codroid_picker.programs.base import (
     ProgramResult,
     ProgramStatus,
@@ -71,8 +74,6 @@ class AutoMotionTestProgram(RobotProgram):
 
     def check_prerequisites(self) -> Tuple[bool, str]:
         """Check whether the continuous motion test can start."""
-        from app.codroid_picker.session import SESSION
-
         session = registry().get_or_create_robot_session()
         if not session.posture_seen():
             return False, "Robot posture stream not available yet."
@@ -112,8 +113,7 @@ class AutoMotionTestProgram(RobotProgram):
 
         try:
             self.update_message("Auto motion test: switching controller to Auto mode.")
-            await robot_api.set_auto_mode()
-            await self._apply_auto_speed(robot_api)
+            await self._enter_auto_mode(robot_api)
             await self._select_coordinate_and_wait_for_posture(
                 robot_api,
                 session,
@@ -148,10 +148,11 @@ class AutoMotionTestProgram(RobotProgram):
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Auto motion test: failed to activate auto-socket motion")
             message = f"Auto socket motion setup failed: {exc}"
-            with suppress(Exception):
-                await robot_api.stop_auto_socket_project()
-            with suppress(Exception):
-                await robot_api.set_manual_mode()
+            await restore_manual_mode(
+                robot_api,
+                logger=LOGGER,
+                context="Auto motion test",
+            )
             return ProgramResult(status=ProgramStatus.ERROR, message=message)
 
         moves_completed = 0
@@ -184,8 +185,11 @@ class AutoMotionTestProgram(RobotProgram):
                 await robot_api.stop_command()
             with suppress(Exception):
                 await auto_socket_context.__aexit__(*exit_exc)
-            with suppress(Exception):
-                await robot_api.set_manual_mode()
+            await restore_manual_mode(
+                robot_api,
+                logger=LOGGER,
+                context="Auto motion test",
+            )
             LOGGER.info(
                 "Auto motion test stopped after %d moves and %.1fs.",
                 moves_completed,
@@ -294,11 +298,11 @@ class AutoMotionTestProgram(RobotProgram):
 
     async def _apply_auto_speed(self, robot_api: "CodroidAPI") -> None:
         """Apply full robot speed for auto-socket motion."""
-        from app.codroid_picker.session import SESSION
+        await apply_full_auto_speed(robot_api)
 
-        await robot_api.set_manual_move_rate(1.0)
-        SESSION.robot_speed_rate = 1.0
-        SESSION.robot_speed_last_set = time.time()
+    async def _enter_auto_mode(self, robot_api: "CodroidAPI") -> None:
+        """Switch to Auto mode with full robot speed."""
+        await enter_controller_auto_mode(robot_api)
 
     async def _stream_target(
         self,

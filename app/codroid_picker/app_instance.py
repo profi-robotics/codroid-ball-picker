@@ -125,7 +125,7 @@ class AppRegistry:
             workspace_path: Path to workspace definition.
             robot_calibration_path: Path to robot calibration JSON.
             model_dir: Path to model directory.
-            mjpeg_stream: MotionJPEGStream instance for overlayed frames.
+            mjpeg_stream: MotionJPEGStream instance for raw camera frames.
             raw_stream: MotionJPEGStream instance for raw frames.
             logger: Optional logger instance.
         """
@@ -300,7 +300,7 @@ class AppRegistry:
 
     @property
     def mjpeg_stream(self) -> Any:
-        """Get the MJPEG stream for overlayed frames."""
+        """Get the MJPEG stream for raw camera frames."""
         self._check_initialized()
         return self._mjpeg_stream
 

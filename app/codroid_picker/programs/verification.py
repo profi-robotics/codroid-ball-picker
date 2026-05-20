@@ -23,6 +23,7 @@ from app.codroid_picker.programs.base import (
     ProgramStatus,
     ProgramResult,
 )
+from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.exceptions import OperationPaused
 from app.codroid_picker.app_instance import registry
 from app.codroid_picker.robot_motion import (
@@ -412,7 +413,7 @@ class VerificationProgram(RobotProgram):
             self.update_message(
                 "Verification move: switching to Auto mode for fast pass."
             )
-            await robot_api.set_auto_mode()
+            await enter_controller_auto_mode(robot_api)
             await robot_api.set_current_coordinate_id(coord_id)
             auto_socket_context = robot_api.auto_socket_mode(
                 self._build_auto_socket_config(settings, robot_api)

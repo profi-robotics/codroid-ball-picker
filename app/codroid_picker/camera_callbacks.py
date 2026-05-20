@@ -21,6 +21,7 @@ from app.codroid_picker.i18n import t
 
 from app.codroid_picker.session import CALIBRATION_PROGRESS, SESSION
 from app.codroid_picker.streaming import (
+    AUTOFOCUS_SETTLE_S,
     OverlayResult,
     OverlayTask,
     FRAME_PROCESSOR,
@@ -334,8 +335,6 @@ def register_camera_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("camera-status-text", "children"),
-        Output("header-camera-badge", "children"),
-        Output("header-camera-badge", "color"),
         Output("camera-enable", "checked"),
         Output("camera-connection-state", "data"),
         Output("metrics-interval", "disabled"),
@@ -358,7 +357,7 @@ def register_camera_callbacks(app: Dash) -> None:
         width: Optional[float],
         height: Optional[float],
         fps: Optional[float],
-    ) -> Tuple[str, str, str, bool, dict, bool]:
+    ) -> Tuple[str, bool, dict, bool]:
         def _describe_stream() -> str:
             stream = SESSION.camera_stream
             if stream is None:
@@ -377,8 +376,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 no_update,
                 no_update,
                 no_update,
-                no_update,
-                no_update,
             )
 
         startup_triggers = {"hardware-init"}
@@ -387,16 +384,12 @@ def register_camera_callbacks(app: Dash) -> None:
             stopped = t("Camera stream stopped.")
             return (
                 stopped,
-                t("Camera: off"),
-                "gray",
                 False,
                 {"status": "off", "message": stopped},
                 True,
             )
         if trigger == "monitor-interval" and SESSION.camera_calibration_in_progress:
             return (
-                no_update,
-                no_update,
                 no_update,
                 no_update,
                 no_update,
@@ -418,15 +411,11 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_last_error_status = None
                 return (
                     status,
-                    t("Camera: live"),
-                    "brand",
                     True,
                     {"status": "live", "message": status},
                     False,
                 )
             return (
-                no_update,
-                no_update,
                 no_update,
                 no_update,
                 no_update,
@@ -444,25 +433,15 @@ def register_camera_callbacks(app: Dash) -> None:
                     status = _describe_stream()
                     return (
                         status,
-                        t("Camera: live"),
-                        "brand",
                         True,
                         {"status": "live", "message": status},
                         False,
                     )
                 if SESSION.camera_last_error_key or SESSION.camera_last_error_message:
                     last_status = SESSION.camera_last_error_status or "unavailable"
-                    badge_text = (
-                        t("Camera: unavailable")
-                        if last_status == "unavailable"
-                        else t("Camera: error")
-                    )
-                    badge_color = "orange" if last_status == "unavailable" else "yellow"
                     message = _resolve_camera_message(camera_state)
                     return (
                         message,
-                        badge_text,
-                        badge_color,
                         False,
                         {"status": last_status, "message": message},
                         True,
@@ -470,8 +449,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 stopped = t("Camera stream stopped.")
                 return (
                     stopped,
-                    t("Camera: off"),
-                    "gray",
                     False,
                     {"status": "off", "message": stopped},
                     True,
@@ -491,12 +468,6 @@ def register_camera_callbacks(app: Dash) -> None:
             # down and the toggle transitions to false.
             if SESSION.camera_last_error_key or SESSION.camera_last_error_message:
                 last_status = SESSION.camera_last_error_status or "unavailable"
-                badge_text = (
-                    t("Camera: unavailable")
-                    if last_status == "unavailable"
-                    else t("Camera: error")
-                )
-                badge_color = "orange" if last_status == "unavailable" else "yellow"
                 message = _resolve_camera_message(camera_state)
                 state_payload = {
                     "status": last_status,
@@ -507,8 +478,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     state_payload["message_params"] = SESSION.camera_last_error_params
                 return (
                     message,
-                    badge_text,
-                    badge_color,
                     False,
                     state_payload,
                     True,
@@ -527,8 +496,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_last_error_status = None
                 return (
                     status,
-                    t("Camera: live"),
-                    "brand",
                     True,
                     {"status": "live", "message": status},
                     False,
@@ -543,8 +510,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_last_error_status = "error"
                 return (
                     error,
-                    t("Camera: error"),
-                    "red",
                     True,
                     {
                         "status": "error",
@@ -570,8 +535,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     SESSION.camera_last_error_status = None
                     return (
                         status,
-                        t("Camera: live"),
-                        "brand",
                         True,
                         {"status": "live", "message": status},
                         False,
@@ -589,8 +552,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_last_error_status = None
                 return (
                     status,
-                    t("Camera: live"),
-                    "brand",
                     True,
                     {"status": "live", "message": status},
                     False,
@@ -615,8 +576,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 stop_camera_stream()
                 return (
                     error,
-                    t("Camera: unavailable"),
-                    "orange",
                     False,
                     {
                         "status": "unavailable",
@@ -638,8 +597,6 @@ def register_camera_callbacks(app: Dash) -> None:
                 SESSION.camera_last_error_status = "error"
                 return (
                     error,
-                    t("Camera: error"),
-                    "yellow",
                     False,
                     {
                         "status": "error",
@@ -658,10 +615,76 @@ def register_camera_callbacks(app: Dash) -> None:
         stopped = t("Camera stream stopped.")
         return (
             stopped,
-            t("Camera: off"),
-            "gray",
             False,
             {"status": "off", "message": stopped},
+            True,
+        )
+
+    @app.callback(
+        Output("camera-status-text", "children", allow_duplicate=True),
+        Output("camera-connection-state", "data", allow_duplicate=True),
+        Output("metrics-interval", "disabled", allow_duplicate=True),
+        Output("camera-lock-af", "checked"),
+        Input("footer-refocus-lock", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _refocus_and_lock_camera(
+        n_clicks: Optional[int],
+    ) -> Tuple[str, dict, bool, bool]:
+        """Refocus the live camera briefly, then lock at the current lens."""
+
+        if not n_clicks:
+            return (
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
+
+        stream = SESSION.camera_stream
+        if stream is None or not stream.is_running():
+            message = t("Camera stream is not running.")
+            return (
+                message,
+                {"status": "off", "message": message},
+                True,
+                no_update,
+            )
+
+        try:
+            position = stream.refocus_and_lock(AUTOFOCUS_SETTLE_S)
+        except Exception as exc:  # noqa: BLE001
+            error_key = "Camera focus control error: {error}"
+            error_params = {"error": str(exc)}
+            error = t(error_key, **error_params)
+            SESSION.camera_last_error_message = error
+            SESSION.camera_last_error_key = error_key
+            SESSION.camera_last_error_params = error_params
+            SESSION.camera_last_error_status = "error"
+            return (
+                error,
+                {
+                    "status": "error",
+                    "message": error,
+                    "message_key": error_key,
+                    "message_params": error_params,
+                },
+                False,
+                no_update,
+            )
+
+        status = t(
+            "Camera refocused and locked at lens position {position}.",
+            position=position,
+        )
+        SESSION.camera_last_error_message = None
+        SESSION.camera_last_error_key = None
+        SESSION.camera_last_error_params = {}
+        SESSION.camera_last_error_status = None
+        return (
+            status,
+            {"status": "live", "message": status},
+            False,
             True,
         )
 
@@ -685,10 +708,20 @@ def register_camera_callbacks(app: Dash) -> None:
 
         if status == "live":
             # Camera is connected - show the video feed
-            return html.Img(
-                id="camera-feed",
-                src="/video_feed",
-                className="camera-feed",
+            return html.Div(
+                [
+                    html.Img(
+                        id="camera-feed",
+                        src="/video_feed",
+                        className="camera-feed",
+                    ),
+                    html.Canvas(
+                        id="camera-overlay-canvas",
+                        className="camera-overlay-canvas",
+                    ),
+                ],
+                id="camera-layered-feed",
+                className="camera-layered-feed",
             )
         else:
             # Camera not connected - show placeholder
@@ -1090,8 +1123,8 @@ def register_camera_callbacks(app: Dash) -> None:
         from app.codroid_picker import state
         plate_state = state.get_plate_status_snapshot()
 
-        # Note: MJPEG_STREAM is now fed directly by FrameProcessor._worker(),
-        # so we no longer need to push frames from this callback.
+        # Note: MJPEG streaming is fed from the camera frame hook. Overlay
+        # metrics come from the background processor's browser-rendered state.
 
         if tab == "calibration":
             if calibration_step == 0:

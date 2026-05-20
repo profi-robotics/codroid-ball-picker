@@ -103,17 +103,22 @@ def _build_pipeline(
     enable_depth: bool = True,
     fast_depth: bool = True,
     lock_af: bool = False,
+    manual_focus_position: Optional[int] = None,
 ) -> tuple[dai.Node.Output, Optional[dai.Node.Output], Optional[object]]:
     """Create the Luxonis template-aligned capture pipeline."""
 
     color = pipeline.create(dai.node.Camera).build(sockets.color)
     if lock_af:
         try:
+            focus_position = 130 if manual_focus_position is None else int(
+                manual_focus_position
+            )
+            focus_position = max(0, min(255, focus_position))
             ctrl = color.initialControl
             ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             if hasattr(ctrl, "setAutoFocusEnable"):
                 ctrl.setAutoFocusEnable(False)
-            ctrl.setManualFocus(130)
+            ctrl.setManualFocus(focus_position)
         except Exception as exc:  # noqa: BLE001
             logging.warning(
                 "Unable to lock autofocus; continuing with defaults: %s", exc
@@ -175,6 +180,7 @@ def build_pipeline(
     enable_depth: bool = True,
     fast_depth: bool = True,
     lock_af: bool = False,
+    manual_focus_position: Optional[int] = None,
 ) -> tuple[dai.Node.Output, Optional[dai.Node.Output], Optional[object]]:
     """Public wrapper for building the shared DepthAI pipeline."""
 
@@ -186,6 +192,7 @@ def build_pipeline(
         enable_depth=enable_depth,
         fast_depth=fast_depth,
         lock_af=lock_af,
+        manual_focus_position=manual_focus_position,
     )
 
 

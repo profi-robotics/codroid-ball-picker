@@ -190,6 +190,7 @@ def register_safety_callbacks(app: Dash) -> None:
                     SESSION.detection_max,
                     SESSION.detection_classes,
                     crop_to_workspace=(zone != "full_frame"),
+                    apply_pick_filter=False,
                 )
                 SESSION.detections = detections
                 SESSION.auto_detection_updated_at = time.monotonic()

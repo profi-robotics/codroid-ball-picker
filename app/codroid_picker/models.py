@@ -81,6 +81,23 @@ def _model_options() -> list[dict]:
     return options
 
 
+def _extract_model_labels(model: object) -> list[str]:
+    """Return display labels exposed by an Ultralytics model."""
+    names = getattr(model, "names", None)
+    if isinstance(names, dict):
+        def _sort_key(item: tuple[object, object]) -> tuple[int, str]:
+            try:
+                return (0, f"{int(item[0]):08d}")
+            except (TypeError, ValueError):
+                return (1, str(item[0]))
+
+        pairs = sorted(names.items(), key=_sort_key)
+        return [str(label) for _idx, label in pairs]
+    if isinstance(names, (list, tuple)):
+        return [str(label) for label in names]
+    return []
+
+
 def download_default_model(output_dir: Path = DEFAULT_MODEL_DIR) -> Optional[Path]:
     """Download the default YOLOv8n model if no models are available.
 
@@ -174,17 +191,20 @@ def activate_model(model_path: Optional[Path]) -> str:
         SESSION.active_model_path = None
         SESSION.yolo_model = None
         SESSION.model_loaded = False
+        SESSION.model_labels = []
         _commit_settings(last_model=None, active_model=None)
         return "No model selected."
     if not model_path.exists():
         SESSION.active_model_path = None
         SESSION.yolo_model = None
         SESSION.model_loaded = False
+        SESSION.model_labels = []
         raise FileNotFoundError(f"Model not found: {model_path}")
     SESSION.active_model_path = model_path
     try:
         SESSION.yolo_model = _load_ultralytics_model(model_path)
         SESSION.model_loaded = True
+        SESSION.model_labels = _extract_model_labels(SESSION.yolo_model)
         SESSION.last_detection_error = None
         _commit_settings(last_model=str(model_path),
                          active_model=str(model_path))
@@ -193,6 +213,7 @@ def activate_model(model_path: Optional[Path]) -> str:
     except Exception as exc:
         SESSION.yolo_model = None
         SESSION.model_loaded = False
+        SESSION.model_labels = []
         SESSION.last_detection_error = str(exc)
         return f"Model ready but not loaded: {exc}"
 

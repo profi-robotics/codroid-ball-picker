@@ -45,9 +45,9 @@ robot motion commands.
    ```bash
    python run_codroid_picker.py --debug
    ```
-Use the Setup drawer to review camera status, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. The UI shell is rendered before camera, robot, gripper, or YOLO startup so Raspberry Pi Chromium clients get a fast first paint. By default, camera/robot/gripper and the remembered YOLO model auto-start after first paint; set `camera_auto_start`, `model_auto_load`, `robot_auto_connect_after_first_paint`, or `gripper_auto_connect_after_first_paint` to `false` in `data/app_settings.json` or via `CODROID_` environment overrides to keep hardware fully manual. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup enables depth so camera calibration can capture the required depth snapshot from the live stream without stopping or restarting the DepthAI pipeline. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_RGB_MAX_FPS_WITH_DEPTH` (default `15`), and `CODROID_MJPEG_MAX_FPS` (default `30`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
+Use the Setup drawer to review camera status, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. The UI shell is rendered before camera, robot, gripper, or YOLO startup so Raspberry Pi Chromium clients get a fast first paint. By default, camera/robot/gripper and the remembered YOLO model auto-start after first paint; set `camera_auto_start`, `model_auto_load`, `robot_auto_connect_after_first_paint`, or `gripper_auto_connect_after_first_paint` to `false` in `data/app_settings.json` or via `CODROID_` environment overrides to keep hardware fully manual. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup enables depth so camera calibration can capture the required depth snapshot from the live stream without stopping or restarting the DepthAI pipeline. Use **Refocus & lock** in the footer to let autofocus settle briefly, then freeze the current OAK-D lens position; starting the camera with **Lock autofocus** enabled uses the same settle-then-lock flow instead of a guessed focus value. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_RGB_MAX_FPS_WITH_DEPTH` (default `15`), `CODROID_MJPEG_MAX_FPS` (default `30`), `CODROID_OVERLAY_MAX_FPS` (default `5`), `CODROID_OVERLAY_EMPTY_HOLD_S` (default `1.0`), and `CODROID_AUTOFOCUS_SETTLE_S` (default `1.5`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 The robot and gripper connections auto-start after first paint when enabled. Use **Test robot connection** or **Acquire robot control** in Setup to retry manually after a connection failure or after releasing robot control. Robot connection attempts show a loading state and time out after 10 seconds so a missing or unreachable controller does not leave the UI looking idle.
-YOLO models are remembered across restarts and loaded from `active_model`/`last_model` after the initial UI paint when `model_auto_load` is enabled. Open the Detection/Pick view and click **Load selected model** to retry manually after a load failure.
+YOLO models are remembered across restarts and loaded from `active_model`/`last_model` after the initial UI paint when `model_auto_load` is enabled. Open the Detection/Pick view and click **Load selected model** to retry manually after a load failure. After a model loads, the pick-label selector is populated from that model's labels; the default pick list contains `orange` at confidence `0.10`, and each selected label can use its own threshold.
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
@@ -105,6 +105,10 @@ camera, detection, and robot flows together. It provides:
 - A live camera view with overlays for ChArUco detection, workspace markers,
   YOLO detections, drop marker, and an auto-planning overlay that shows the
   next target/approach/drop intent during Auto Pick & Place.
+- Camera overlays are browser-rendered: `/video_feed` remains raw MJPEG, while
+  `/overlay_state.json` provides the latest overlay primitives for the canvas
+  layer. The browser holds the last meaningful overlay briefly through empty
+  polls so transient missed detections do not blink the overlay off.
 - A Monitoring dashboard with KPI cards and trend charts (detections + cycle
   timing), plus a live auto-plan summary panel.
 - A guided robot calibration modal with a verification move; the calibration
@@ -144,6 +148,10 @@ See `docs/deploy_jetson_docker.md` for Jetson prerequisites, device mappings, an
 The provided compose file uses host networking so the UI can be opened via a
 Tailscale IP (for example `100.x.x.x:8050`) while backend services still reach
 local robot/gripper IPs such as `192.168.101.95`.
+The Docker image targets Jetson Orin Nano on JetPack 6 / L4T R36.x and is built
+from the NVIDIA L4T JetPack base image with the Jetson AI Lab `jp6/cu126`
+PyTorch stack installed during CI. The original Jetson Nano / JetPack 4 stack is
+not compatible with this image.
 
 For native Jetson bring-up without Docker, run the base `uv sync`/`uv run`
 workflow with Python 3.10 when YOLO inference is needed. Python 3.11+ is valid
@@ -154,10 +162,15 @@ stack.
 GitHub Actions publishes releases and container images automatically for pushes to `master`:
 - Computes the next `vX.Y.Z` tag from existing git tags (patch increment).
 - Creates and pushes the new tag.
-- Builds and publishes the ARM64 image (`linux/arm64/v8`) on a native ARM GitHub runner (`ubuntu-24.04-arm`) to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
+- Builds and publishes the Jetson ARM64 image (`linux/arm64/v8`) on a native ARM GitHub runner (`ubuntu-24.04-arm`) to `ghcr.io/profi-robotics/codroid-ball-picker` with `<tag>`, `latest`, and `sha-<commit>` tags.
 - Creates a GitHub release for the new tag.
 
 If `codroid-api` and `onrobot-api` are private in your organization, add a repository secret named `CI_REPO_READ_TOKEN` with read access to those repos.
+
+On the Jetson, install `scripts/setup_jetson_auto_update.sh` once. The systemd
+timer pulls the compose image and recreates the `codroid-ui` container when CI
+publishes a new `latest` image. Pin or override the image via
+`/etc/codroid-ball-picker-auto-update.env`.
 
 YOLO inference is part of the base dependency set. Run `uv sync` after pulling
 dependency changes so uploaded `.pt`/`.onnx` models can load.

@@ -25,7 +25,6 @@ def register_settings_callbacks(app: Dash) -> None:
         Output("settings-calib-path", "value"),
         Output("settings-workspace-path", "value"),
         Output("settings-robot-calib-path", "value"),
-        Output("settings-auto-target-label", "value"),
         Output("settings-auto-drop-ignore-radius", "value"),
         Output("settings-auto-intrusion-match", "value"),
         Output("settings-auto-detection-stale", "value"),
@@ -65,7 +64,6 @@ def register_settings_callbacks(app: Dash) -> None:
         State("settings-calib-path", "value"),
         State("settings-workspace-path", "value"),
         State("settings-robot-calib-path", "value"),
-        State("settings-auto-target-label", "value"),
         State("settings-auto-drop-ignore-radius", "value"),
         State("settings-auto-intrusion-match", "value"),
         State("settings-auto-detection-stale", "value"),
@@ -106,7 +104,6 @@ def register_settings_callbacks(app: Dash) -> None:
         calib_path: Optional[str],
         workspace_path: Optional[str],
         robot_calib_path: Optional[str],
-        auto_target_label: Optional[str],
         auto_drop_ignore_radius: Optional[float],
         auto_intrusion_match: Optional[float],
         auto_detection_stale: Optional[float],
@@ -155,7 +152,6 @@ def register_settings_callbacks(app: Dash) -> None:
             codroid_picker_module.DEFAULT_ROBOT_CALIBRATION_PATH)
         default_gripper_ip = app_settings.DEFAULT_GRIPPER_IP
         default_gripper_type = DEFAULT_GRIPPER_TYPE
-        default_auto_target_label = app_settings._BASE_AUTO_TARGET_LABEL
         default_auto_drop_ignore_radius = app_settings._BASE_AUTO_DROP_IGNORE_RADIUS_MM
         default_auto_intrusion_match = app_settings._BASE_AUTO_INTRUSION_MATCH_MM
         default_auto_detection_stale = app_settings._BASE_AUTO_DETECTION_STALE_S
@@ -197,7 +193,6 @@ def register_settings_callbacks(app: Dash) -> None:
             calib_path_val = default_calib
             workspace_path_val = default_workspace
             robot_calib_path_val = default_robot_calib
-            target_label_val = default_auto_target_label
             drop_ignore_radius_val = default_auto_drop_ignore_radius
             intrusion_match_val = default_auto_intrusion_match
             detection_stale_val = default_auto_detection_stale
@@ -240,8 +235,6 @@ def register_settings_callbacks(app: Dash) -> None:
                 workspace_path or "").strip() or default_workspace
             robot_calib_path_val = (
                 robot_calib_path or "").strip() or default_robot_calib
-            target_label_val = (auto_target_label or "").strip(
-            ) or default_auto_target_label
             drop_ignore_radius_val = codroid_picker_module._safe_float(
                 auto_drop_ignore_radius, default_auto_drop_ignore_radius
             )
@@ -330,7 +323,6 @@ def register_settings_callbacks(app: Dash) -> None:
             calibration_bundle_path=calib_path_val,
             workspace_path=workspace_path_val,
             robot_calibration_path=robot_calib_path_val,
-            auto_target_label=target_label_val,
             auto_drop_ignore_radius_mm=drop_ignore_radius_val,
             auto_intrusion_match_mm=intrusion_match_val,
             auto_detection_stale_s=detection_stale_val,
@@ -399,7 +391,6 @@ def register_settings_callbacks(app: Dash) -> None:
             calib_path_val,
             workspace_path_val,
             robot_calib_path_val,
-            target_label_val,
             drop_ignore_radius_val,
             intrusion_match_val,
             detection_stale_val,

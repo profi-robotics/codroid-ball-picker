@@ -6,7 +6,10 @@
  */
 (function initFullscreen() {
   function cameraFeed() {
-    return document.getElementById("camera-feed");
+    return (
+      document.getElementById("camera-layered-feed") ||
+      document.getElementById("camera-feed")
+    );
   }
 
   function requestFullscreen() {
@@ -50,7 +53,10 @@
 
   document.addEventListener("dblclick", (event) => {
     const target = event.target;
-    if (!(target instanceof Element) || !target.closest("#camera-feed")) {
+    if (
+      !(target instanceof Element) ||
+      !target.closest("#camera-layered-feed, #camera-feed")
+    ) {
       return;
     }
     event.preventDefault();

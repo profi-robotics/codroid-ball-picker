@@ -4,9 +4,9 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 LOCK_FILE="/tmp/codroid-ball-picker-auto-update.lock"
-SERVICE_NAME="ui"
-CONTAINER_NAME="codroid-ui"
-IMAGE_REF="ghcr.io/profi-robotics/codroid-ball-picker:latest"
+SERVICE_NAME="${CODROID_COMPOSE_SERVICE:-ui}"
+CONTAINER_NAME="${CODROID_CONTAINER_NAME:-codroid-ui}"
+IMAGE_REF="${CODROID_IMAGE:-ghcr.io/profi-robotics/codroid-ball-picker:latest}"
 
 log() {
   printf '[auto-update] %s\n' "$*"
@@ -27,12 +27,17 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! docker compose config --services | grep -Fxq "${SERVICE_NAME}"; then
+  log "Compose service '${SERVICE_NAME}' was not found in ${REPO_DIR}/docker-compose.yml."
+  exit 1
+fi
+
 old_container_image=""
 if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
   old_container_image=$(docker inspect -f '{{.Image}}' "${CONTAINER_NAME}")
 fi
 
-log "Pulling latest image for ${SERVICE_NAME}..."
+log "Pulling latest image for ${SERVICE_NAME} (${IMAGE_REF})..."
 if ! docker compose pull "${SERVICE_NAME}"; then
   log "Image pull failed. If the GHCR package is private, run: docker login ghcr.io"
   exit 1
@@ -43,6 +48,7 @@ new_tagged_image_id=$(docker image inspect "${IMAGE_REF}" --format '{{.Id}}' 2>/
 if [ -z "${old_container_image}" ]; then
   log "Container not found. Creating service container."
   docker compose up -d "${SERVICE_NAME}"
+  docker image prune -f >/dev/null 2>&1 || true
   exit 0
 fi
 
@@ -50,6 +56,7 @@ if [ -n "${new_tagged_image_id}" ] && [ "${old_container_image}" != "${new_tagge
   log "New image detected. Recreating container."
   docker compose up -d --force-recreate "${SERVICE_NAME}"
   log "Container updated to ${new_tagged_image_id}."
+  docker image prune -f >/dev/null 2>&1 || true
   exit 0
 fi
 

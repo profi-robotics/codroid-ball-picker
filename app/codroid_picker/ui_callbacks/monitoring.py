@@ -226,7 +226,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("auto-config-state", "data"),
-        Input("auto-target-class", "value"),
+        Input("pick-label-config-state", "data"),
         Input("auto-drop-ignore-radius", "value"),
         Input("plate-test-approach-height", "value"),
         Input("plate-test-pick-height", "value"),
@@ -237,7 +237,7 @@ def register_monitoring_callbacks(app: Dash) -> None:
         Input("shared-segment-fraction", "value"),
     )
     def _update_auto_config(
-        target_label: Optional[str],
+        pick_label_config: Optional[list],
         drop_ignore_radius: Optional[float],
         approach_height: Optional[float],
         pick_height: Optional[float],
@@ -251,10 +251,19 @@ def register_monitoring_callbacks(app: Dash) -> None:
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.session import SESSION
 
+        target_labels = []
+        for item in pick_label_config or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if label:
+                target_labels.append(label)
+        if not target_labels:
+            target_labels = [codroid_picker_module.SETTINGS.auto_target_label]
+
         config = {
-            "target_label": (
-                target_label or codroid_picker_module.SETTINGS.auto_target_label
-            ),
+            "target_label": target_labels[0],
+            "target_labels": target_labels,
             "drop_ignore_radius_mm": codroid_picker_module._safe_float(
                 drop_ignore_radius, codroid_picker_module.SETTINGS.auto_drop_ignore_radius_mm
             ),

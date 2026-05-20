@@ -37,6 +37,7 @@ class StreamConfig:
     enable_depth: bool = True
     fast_depth: bool = True
     lock_af: bool = False
+    manual_focus_position: Optional[int] = None
 
 
 class DepthAIFrameStream:
@@ -129,6 +130,11 @@ class DepthAIFrameStream:
 
     def get_fps(self) -> float:
         return self._fps
+
+    def get_focus_position(self) -> Optional[int]:
+        """Return the latest lens position reported by the color camera."""
+        with self._lock:
+            return self._last_lens_pos
 
     def set_frame_hook(self, hook: Optional[Callable[[np.ndarray], None]]) -> None:
         self._frame_hook = hook
@@ -231,6 +237,7 @@ class DepthAIFrameStream:
                 enable_depth=self.config.enable_depth,
                 fast_depth=self.config.fast_depth,
                 lock_af=self.config.lock_af,
+                manual_focus_position=self.config.manual_focus_position,
             )
             logging.info("Built pipeline, creating queues")
             self._color_queue = color_out.createOutputQueue(
@@ -289,20 +296,24 @@ class DepthAIFrameStream:
             raise RuntimeError("Camera control input not available on this device.")
 
         ctrl = dai.CameraControl()
+        manual_position: Optional[int] = None
         if lock:
             pos = lens_position
             if pos is None:
                 with self._lock:
                     pos = self._last_lens_pos
             if pos is None:
+                pos = self.config.manual_focus_position
+            if pos is None:
                 pos = 130
+            manual_position = max(0, min(255, int(pos)))
             with suppress(Exception):
                 ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             if hasattr(ctrl, "setAutoFocusEnable"):
                 with suppress(Exception):
                     ctrl.setAutoFocusEnable(False)
             with suppress(Exception):
-                ctrl.setManualFocus(int(pos))
+                ctrl.setManualFocus(manual_position)
         else:
             with suppress(Exception):
                 ctrl.setAutoFocusMode(
@@ -312,6 +323,28 @@ class DepthAIFrameStream:
                 with suppress(Exception):
                     ctrl.setAutoFocusEnable(True)
         self._control_queue.send(ctrl)
+        self.config.lock_af = bool(lock)
+        if manual_position is not None:
+            self.config.manual_focus_position = manual_position
+
+    def refocus_and_lock(self, settle_s: float = 1.5) -> int:
+        """Let autofocus settle briefly, then lock the current lens position."""
+
+        self.set_focus_lock(False)
+        deadline = time.monotonic() + max(0.0, settle_s)
+        while self._running and time.monotonic() < deadline:
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if not self._running:
+            raise RuntimeError("Camera stream stopped before focus could lock.")
+
+        position = self.get_focus_position()
+        if position is None:
+            position = self.config.manual_focus_position
+        if position is None:
+            position = 130
+        position = max(0, min(255, int(position)))
+        self.set_focus_lock(True, position)
+        return position
 
     @staticmethod
     def _resolve_device_id(device: dai.Device) -> Optional[str]:

@@ -112,6 +112,90 @@ def build_tracking_mode_controls() -> dmc.Group:
     )
 
 
+def _build_pick_label_controls() -> list:
+    """Build the editable auto-pick label controls."""
+    return [
+        dmc.Text(t("Pick labels"), fw=600, size="md"),
+        dmc.Group(
+            [
+                dmc.Select(
+                    id="pick-label-add-select",
+                    label=t("Label"),
+                    data=[],
+                    placeholder=t("Load a model to choose labels"),
+                    searchable=True,
+                ),
+                dmc.NumberInput(
+                    id="pick-label-add-confidence",
+                    label=t("Confidence"),
+                    value=0.1,
+                    min=0.0,
+                    max=1.0,
+                    step=0.05,
+                ),
+            ],
+            grow=True,
+        ),
+        dmc.Button(
+            t("Add label"),
+            id="pick-label-add",
+            variant="light",
+            style={"marginTop": "8px", "marginBottom": "12px"},
+        ),
+        html.Table(
+            id="pick-label-config-list",
+            children=[
+                html.Thead(
+                    [
+                        html.Tr(
+                            [
+                                html.Th(t("Label")),
+                                html.Th(t("Confidence")),
+                                html.Th(""),
+                            ]
+                        ),
+                    ]
+                ),
+                html.Tbody(
+                    [
+                        html.Tr(
+                            [
+                                html.Td(SETTINGS.auto_target_label),
+                                html.Td(
+                                    dmc.NumberInput(
+                                        id={
+                                            "type": "pick-label-confidence",
+                                            "label": SETTINGS.auto_target_label,
+                                        },
+                                        value=0.1,
+                                        min=0.0,
+                                        max=1.0,
+                                        step=0.05,
+                                        w=130,
+                                    )
+                                ),
+                                html.Td(
+                                    dmc.Button(
+                                        t("Remove"),
+                                        id={
+                                            "type": "pick-label-remove",
+                                            "label": SETTINGS.auto_target_label,
+                                        },
+                                        variant="subtle",
+                                        color="red",
+                                        size="xs",
+                                    )
+                                ),
+                            ]
+                        ),
+                    ]
+                ),
+            ],
+            className="pick-label-table",
+        ),
+    ]
+
+
 def build_detection_tab() -> dmc.Stack:
     """Build the detection tab with GPU status, model loader, and detection controls."""
     gpu_card = _panel_card(
@@ -161,55 +245,10 @@ def build_detection_tab() -> dmc.Stack:
         className="panel-card",
     )
 
-    detection_card = dmc.Card(
+    detections_card = dmc.Card(
         [
-            dmc.Text(t("Detection Controls"), fw=600, size="lg"),
-            dmc.Text(t("Detection runs after a model is loaded and this view is active."),
-                     size="sm", c="dimmed", style={"marginBottom": "10px"}),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="detection-confidence",
-                        label=t("Confidence"),
-                        value=0.4,
-                        min=0.0,
-                        max=1.0,
-                        step=0.05,
-                    ),
-                    dmc.NumberInput(
-                        id="detection-iou",
-                        label=t("IOU"),
-                        value=0.45,
-                        min=0.0,
-                        max=1.0,
-                        step=0.05,
-                    ),
-                ],
-                grow=True,
-            ),
-            dmc.Group(
-                [
-                    dmc.NumberInput(
-                        id="detection-max",
-                        label=t("Max detections"),
-                        value=10,
-                        min=1,
-                        max=200,
-                    ),
-                    dmc.TextInput(
-                        id="detection-classes",
-                        label=t("Class filter (comma IDs)"),
-                        placeholder=t("e.g. 0, 32"),
-                    ),
-                ],
-                grow=True,
-            ),
-            dmc.Button(
-                t("Run detection"),
-                id="run-detection",
-                variant="light",
-            ),
-            dmc.Text(id="detection-status", size="sm", c="dimmed"),
+            dmc.Text(t("Detected Objects"), fw=600, size="lg"),
+            dmc.Stack(id="detection-list", gap="xs"),
             dmc.Text(id="detection-metrics", size="sm"),
         ],
         withBorder=True,
@@ -217,17 +256,7 @@ def build_detection_tab() -> dmc.Stack:
         className="panel-card",
     )
 
-    detections_card = dmc.Card(
-        [
-            dmc.Text(t("Detected Objects"), fw=600, size="lg"),
-            dmc.Stack(id="detection-list", gap="xs"),
-        ],
-        withBorder=True,
-        radius="lg",
-        className="panel-card",
-    )
-
-    return dmc.Stack([gpu_card, model_card, detection_card, detections_card], gap="md")
+    return dmc.Stack([gpu_card, model_card, detections_card], gap="md")
 
 
 def build_pick_place_tab() -> dmc.Stack:
@@ -392,14 +421,9 @@ def build_pick_place_tab() -> dmc.Stack:
                 size="sm",
                 c="dimmed",
             ),
+            *_build_pick_label_controls(),
             dmc.Group(
                 [
-                    dmc.TextInput(
-                        id="auto-target-class",
-                        label=t("Target class"),
-                        value=SETTINGS.auto_target_label,
-                        description=t("YOLO label to pick (case-insensitive)."),
-                    ),
                     dmc.NumberInput(
                         id="auto-drop-ignore-radius",
                         label=t("Drop ignore radius (mm)"),

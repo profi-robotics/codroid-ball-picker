@@ -43,18 +43,22 @@ def render_main_tab(
     return build_application_tab(_application_value(application_state)), False, True, True
 
 
-def sidebar_layout_state(collapsed: bool) -> tuple[dict, dict, str]:
-    """Return sidebar style, camera span, and toggle label for a visibility state."""
+def sidebar_layout_state(collapsed: bool) -> tuple[dict, dict, dict, str, str]:
+    """Return sidebar styles and labels for a visibility state."""
     if collapsed:
         return (
             {"display": "none"},
+            {"display": "none"},
             {"base": 12, "md": 12, "lg": 12},
             t("Show controls"),
+            "layout-grid sidebar-collapsed",
         )
     return (
         {},
+        {},
         {"base": 12, "md": 8, "lg": 9},
         t("Hide controls"),
+        "layout-grid",
     )
 
 
@@ -109,8 +113,10 @@ def register_lazy_layout_callbacks(app: Dash) -> None:
     @app.callback(
         Output("sidebar-visibility", "data"),
         Output("tabs-sidebar", "style"),
+        Output("sidebar-resizer", "style"),
         Output("camera-grid-column", "span"),
         Output("sidebar-toggle", "children"),
+        Output("main-layout-grid", "className"),
         Input("sidebar-toggle", "n_clicks"),
         State("sidebar-visibility", "data"),
         prevent_initial_call=False,
@@ -118,10 +124,19 @@ def register_lazy_layout_callbacks(app: Dash) -> None:
     def _toggle_sidebar_visibility(
         n_clicks: Optional[int],
         state: Optional[dict],
-    ) -> tuple[dict, dict, dict, str]:
+    ) -> tuple[dict, dict, dict, dict, str, str]:
         """Collapse the left control rail while keeping camera controls visible."""
         collapsed = bool((state or {}).get("collapsed", False))
         if callback_context.triggered_id == "sidebar-toggle" and n_clicks:
             collapsed = not collapsed
-        sidebar_style, camera_span, label = sidebar_layout_state(collapsed)
-        return {"collapsed": collapsed}, sidebar_style, camera_span, label
+        sidebar_style, resizer_style, camera_span, label, grid_class = sidebar_layout_state(
+            collapsed
+        )
+        return (
+            {"collapsed": collapsed},
+            sidebar_style,
+            resizer_style,
+            camera_span,
+            label,
+            grid_class,
+        )

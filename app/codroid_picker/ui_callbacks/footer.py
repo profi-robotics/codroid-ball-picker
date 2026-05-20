@@ -11,8 +11,8 @@ from dash import Dash, Input, Output, State, callback_context
 from app.codroid_picker.i18n import t
 
 
-COMPACT_FOOTER_HEIGHT = 144
-EXPANDED_FOOTER_HEIGHT = 244
+COMPACT_FOOTER_HEIGHT = 174
+EXPANDED_FOOTER_HEIGHT = 320
 
 
 def register_footer_callbacks(app: Dash) -> None:

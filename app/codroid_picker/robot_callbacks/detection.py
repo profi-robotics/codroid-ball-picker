@@ -1,122 +1,188 @@
-"""Detection callbacks - YOLO model detection parameters and display."""
+"""Detection callbacks - YOLO label selection and display."""
 
 from typing import Optional, Tuple
 
-from dash import Dash, Input, Output, State, no_update
+import dash_mantine_components as dmc
+from dash import ALL, Dash, Input, Output, State, callback_context, html, no_update
 from app.codroid_picker.i18n import t
+
+
+def _normalize_pick_config(raw_config: Optional[list]) -> list[dict]:
+    """Normalize persisted pick label thresholds for UI and inference."""
+    config = []
+    seen = set()
+    for item in raw_config or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label or label.lower() in seen:
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.1))
+        except (TypeError, ValueError):
+            confidence = 0.1
+        confidence = max(0.0, min(1.0, confidence))
+        config.append({"label": label, "confidence": confidence})
+        seen.add(label.lower())
+    if not config:
+        config.append({"label": "orange", "confidence": 0.1})
+    return config
+
+
+def _sync_pick_config_to_session(config: list[dict]) -> None:
+    """Make the pick label UI config available to detection and auto-pick."""
+    import app.codroid_picker as codroid_picker_module
+
+    normalized = _normalize_pick_config(config)
+    labels = [item["label"] for item in normalized]
+    codroid_picker_module.SESSION.pick_label_confidences = {
+        item["label"]: item["confidence"] for item in normalized
+    }
+    codroid_picker_module.SESSION.auto_config.update(
+        {
+            "target_label": labels[0] if labels else "",
+            "target_labels": labels,
+        }
+    )
+    codroid_picker_module.SESSION.detections = []
+    codroid_picker_module.SESSION.auto_detection_updated_at = 0.0
+
+
+def _pick_label_table_children(config: list[dict]) -> list:
+    """Build table content for selected pick labels."""
+    rows = [
+        html.Thead(
+            [
+                html.Tr(
+                    [
+                        html.Th(t("Label")),
+                        html.Th(t("Confidence")),
+                        html.Th(""),
+                    ]
+                )
+            ]
+        )
+    ]
+    body_rows = []
+    for item in _normalize_pick_config(config):
+        label = item["label"]
+        body_rows.append(
+            html.Tr(
+                [
+                    html.Td(label),
+                    html.Td(
+                        dmc.NumberInput(
+                            id={"type": "pick-label-confidence", "label": label},
+                            value=item["confidence"],
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            w=130,
+                        )
+                    ),
+                    html.Td(
+                        dmc.Button(
+                            t("Remove"),
+                            id={"type": "pick-label-remove", "label": label},
+                            variant="subtle",
+                            color="red",
+                            size="xs",
+                        )
+                    ),
+                ]
+            )
+        )
+    rows.append(html.Tbody(body_rows))
+    return rows
+
+
+def _model_label_options() -> list[dict]:
+    """Build select options from the active model's labels."""
+    import app.codroid_picker as codroid_picker_module
+
+    labels = codroid_picker_module.SESSION.model_labels or []
+    return [{"label": label, "value": label} for label in labels]
 
 
 def register_detection_callbacks(app: Dash) -> None:
     """Register detection-related callbacks."""
 
     @app.callback(
-        Output("detection-confidence", "value"),
-        Input("detection-confidence", "value"),
-        Input("detection-iou", "value"),
-        Input("detection-max", "value"),
-        Input("detection-classes", "value"),
-        State("detection-confidence", "value"),
+        Output("pick-label-add-select", "data"),
+        Input("model-load-state", "data"),
+        Input("application-ui-interval", "n_intervals"),
         prevent_initial_call=True,
     )
-    def _update_detection_parameters(
-        confidence: Optional[float],
-        iou: Optional[float],
-        max_detections: Optional[float],
-        class_filter: Optional[str],
-        current_confidence: Optional[float],
-    ) -> float:
-        """Store detection parameters when they change."""
-        import app.codroid_picker as codroid_picker_module
-
-        SESSION = codroid_picker_module.SESSION
-        _safe_float = codroid_picker_module._safe_float
-        _safe_int = codroid_picker_module._safe_int
-        normalize_confidence = codroid_picker_module._normalize_detection_confidence
-        normalize_iou = codroid_picker_module._normalize_detection_iou
-        normalize_max = codroid_picker_module._normalize_max_detections
-
-        fallback_confidence = _safe_float(current_confidence, SESSION.detection_confidence)
-        SESSION.detection_confidence = normalize_confidence(
-            _safe_float(confidence, fallback_confidence),
-            fallback_confidence,
-        )
-        SESSION.detection_iou = normalize_iou(_safe_float(iou, 0.45))
-        SESSION.detection_max = normalize_max(_safe_int(max_detections, 10))
-        SESSION.detection_classes = class_filter
-        SESSION.detections = []
-        SESSION.auto_detection_updated_at = 0.0
-        return SESSION.detection_confidence
+    def _populate_pick_label_options(
+        _model_load_state: Optional[dict],
+        _n: int,
+    ) -> list[dict]:
+        """Populate labels exposed by the active model."""
+        return _model_label_options()
 
     @app.callback(
-        Output("detection-status", "children"),
-        Output("detection-list", "children", allow_duplicate=True),
-        Output("pick-detection-select", "data", allow_duplicate=True),
-        Output("pick-detection-select", "value"),
-        Input("run-detection", "n_clicks"),
-        State("detection-confidence", "value"),
-        State("detection-iou", "value"),
-        State("detection-max", "value"),
-        State("detection-classes", "value"),
+        Output("pick-label-config-state", "data"),
+        Output("pick-label-config-list", "children"),
+        Input("pick-label-add", "n_clicks"),
+        Input({"type": "pick-label-remove", "label": ALL}, "n_clicks"),
+        Input({"type": "pick-label-confidence", "label": ALL}, "value"),
+        State("pick-label-add-select", "value"),
+        State("pick-label-add-confidence", "value"),
+        State("pick-label-config-state", "data"),
+        State({"type": "pick-label-confidence", "label": ALL}, "id"),
         prevent_initial_call=True,
     )
-    def _run_detection_action(
-        _clicks: int,
-        confidence: Optional[float],
-        iou: Optional[float],
-        max_detections: Optional[float],
-        class_filter: Optional[str],
-    ) -> Tuple[str, list, list, Optional[str]]:
-        """Run object detection on the current camera frame."""
-        import app.codroid_picker as codroid_picker_module
+    def _update_pick_label_config(
+        _add_clicks: Optional[int],
+        _remove_clicks: list,
+        confidence_values: list,
+        selected_label: Optional[str],
+        add_confidence: Optional[float],
+        current_config: Optional[list],
+        confidence_ids: list,
+    ) -> Tuple[list[dict], list]:
+        """Add, remove, and edit pick labels."""
+        config = _normalize_pick_config(current_config)
+        triggered = callback_context.triggered_id
 
-        SESSION = codroid_picker_module.SESSION
-        get_latest_frame = codroid_picker_module.get_latest_frame
-        _safe_float = codroid_picker_module._safe_float
-        _safe_int = codroid_picker_module._safe_int
-        normalize_confidence = codroid_picker_module._normalize_detection_confidence
-        normalize_iou = codroid_picker_module._normalize_detection_iou
-        normalize_max = codroid_picker_module._normalize_max_detections
-        _run_detection = codroid_picker_module._run_detection
-        _format_detection_list = codroid_picker_module._format_detection_list
+        if triggered == "pick-label-add" and selected_label:
+            label = selected_label.strip()
+            try:
+                confidence = float(add_confidence)
+            except (TypeError, ValueError):
+                confidence = 0.1
+            confidence = max(0.0, min(1.0, confidence))
+            config = [
+                item
+                for item in config
+                if item["label"].lower() != label.lower()
+            ]
+            config.append({"label": label, "confidence": confidence})
+        elif (
+            isinstance(triggered, dict)
+            and triggered.get("type") == "pick-label-remove"
+        ):
+            label = str(triggered.get("label") or "")
+            config = [item for item in config if item["label"] != label]
+        else:
+            by_label = {item["label"]: item for item in config}
+            for control_id, value in zip(
+                confidence_ids or [],
+                confidence_values or [],
+            ):
+                label = str((control_id or {}).get("label") or "")
+                if label not in by_label:
+                    continue
+                try:
+                    confidence = float(value)
+                except (TypeError, ValueError):
+                    confidence = by_label[label]["confidence"]
+                by_label[label]["confidence"] = max(0.0, min(1.0, confidence))
+            config = list(by_label.values())
 
-        frame, _depth = get_latest_frame()
-        if frame is None:
-            return (
-                t("Camera stream is not running."),
-                _format_detection_list([]),
-                [],
-                None,
-            )
-        conf_value = normalize_confidence(_safe_float(confidence, 0.4))
-        iou_value = normalize_iou(_safe_float(iou, 0.45))
-        max_value = normalize_max(_safe_int(max_detections, 10))
-        try:
-            detections = _run_detection(
-                frame, conf_value, iou_value, max_value, class_filter)
-            SESSION.detections = detections
-            SESSION.last_detection_error = None
-            SESSION.last_action = t("Detection run completed.")
-        except Exception as exc:
-            SESSION.detections = []
-            SESSION.last_detection_error = str(exc)
-            return (
-                t("Detection failed: {error}", error=exc),
-                _format_detection_list([]),
-                [],
-                None,
-            )
-
-        options = []
-        for idx, det in enumerate(detections):
-            label = det.get("label", t("object"))
-            options.append({"value": str(idx), "label": f"{idx + 1}: {label}"})
-        selected = options[0]["value"] if options else None
-        return (
-            t("Detection complete: {count} object(s).", count=len(detections)),
-            _format_detection_list(detections),
-            options,
-            selected,
-        )
+        config = _normalize_pick_config(config)
+        _sync_pick_config_to_session(config)
+        return config, _pick_label_table_children(config)
 
     @app.callback(
         Output("detection-list", "children", allow_duplicate=True),

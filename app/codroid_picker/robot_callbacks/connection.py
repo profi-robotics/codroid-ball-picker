@@ -95,8 +95,6 @@ def register_connection_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("robot-status-text", "children"),
-        Output("header-robot-badge", "children"),
-        Output("header-robot-badge", "color"),
         Output("robot-connection-state", "data"),
         Output("robot-control-state", "data"),
         Input("robot-test", "n_clicks"),
@@ -121,7 +119,7 @@ def register_connection_callbacks(app: Dash) -> None:
         _monitor: int,
         uri: str,
         control_state: Optional[dict],
-    ) -> Tuple[str, str, str, dict, dict]:
+    ) -> Tuple[str, dict, dict]:
         import app.codroid_picker as codroid_picker_module
 
         trigger = _resolve_trigger_id()
@@ -135,12 +133,12 @@ def register_connection_callbacks(app: Dash) -> None:
 
         startup_triggers = {"hardware-init"}
         if trigger in startup_triggers and control_released:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
         if (
             trigger in startup_triggers
             and not SETTINGS.robot_auto_connect_after_first_paint
         ):
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         if trigger == "robot-release-control":
             try:
@@ -162,8 +160,6 @@ def register_connection_callbacks(app: Dash) -> None:
                 ui_session.robot_last_probe_started_at = 0.0
                 return (
                     error,
-                    t("Robot: error"),
-                    "yellow",
                     {"status": "error", "message": error},
                     _control_state_payload(mode="acquired", message=error),
                 )
@@ -184,13 +180,11 @@ def register_connection_callbacks(app: Dash) -> None:
             status = t("Robot control released. Acquire control to reconnect.")
             return (
                 status,
-                t("Robot: released"),
-                "yellow",
                 {"status": "offline", "message": status},
                 _control_state_payload(mode="released", message=status, released_at=now),
             )
         if trigger == "monitor-interval" and control_released:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
         if trigger == "monitor-interval":
             if session.is_connected(resolved_uri):
                 target = session.resolve_robot_target(resolved_uri)
@@ -199,26 +193,22 @@ def register_connection_callbacks(app: Dash) -> None:
                 ui_session.robot_last_connection_error = None
                 return (
                     status,
-                    t("Robot: online"),
-                    "brand",
                     {"status": "online", "message": status},
                     _control_state_payload(mode="acquired"),
                 )
             if not ui_session.robot_connection_attempted:
-                return no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update
             status = (
                 ui_session.robot_last_connection_error
                 or t("Robot disconnected. Acquire control to reconnect.")
             )
             return (
                 status,
-                t("Robot: error"),
-                "yellow",
                 {"status": "error", "message": status},
                 _control_state_payload(mode="acquired"),
             )
         if trigger not in {"robot-acquire-control", "robot-test", *startup_triggers}:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
             if _probe_stale(ui_session.robot_last_probe_started_at):
                 codroid_picker_module.LOGGER.warning(
@@ -231,8 +221,6 @@ def register_connection_callbacks(app: Dash) -> None:
                 status = t("Robot connection check already in progress.")
                 return (
                     status,
-                    t("Robot: probing"),
-                    "yellow",
                     {"status": "probing", "message": status},
                     _control_state_payload(mode="acquired"),
                 )
@@ -257,8 +245,6 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_last_connection_error = None
             return (
                 status,
-                t("Robot: online"),
-                "brand",
                 {"status": "online", "message": status},
                 _control_state_payload(mode="acquired"),
             )
@@ -271,8 +257,6 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_last_connection_error = error
             return (
                 error,
-                t("Robot: error"),
-                "yellow",
                 {"status": "error", "message": error},
                 _control_state_payload(mode="acquired"),
             )
@@ -282,8 +266,6 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_last_connection_error = error
             return (
                 error,
-                t("Robot: error"),
-                "yellow",
                 {"status": "error", "message": error},
                 _control_state_payload(mode="acquired"),
             )
@@ -293,8 +275,6 @@ def register_connection_callbacks(app: Dash) -> None:
     @app.callback(
         Output("gripper-status-text", "children"),
         Output("gripper-device-info", "children"),
-        Output("header-gripper-badge", "children"),
-        Output("header-gripper-badge", "color"),
         Output("gripper-connection-state", "data"),
         Input("gripper-test", "n_clicks"),
         Input("gripper-enable", "checked"),
@@ -307,18 +287,18 @@ def register_connection_callbacks(app: Dash) -> None:
         enabled: bool,
         _init: int,
         cb_ip: str,
-    ) -> Tuple[str, html.Div, str, str, dict]:
+    ) -> Tuple[str, html.Div, dict]:
         """Handle gripper connection and testing."""
         import app.codroid_picker as codroid_picker_module
 
         trigger = callback_context.triggered_id
 
         if trigger is None:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         if trigger == "hardware-init":
             if not SETTINGS.gripper_auto_connect_after_first_paint:
-                return no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update
             enabled = True
 
         if not enabled and trigger == "gripper-enable":
@@ -329,13 +309,11 @@ def register_connection_callbacks(app: Dash) -> None:
             return (
                 t("Gripper disabled"),
                 html.Div(),
-                t("Gripper: off"),
-                "gray",
                 {"status": "disabled", "message": t("Gripper disabled")},
             )
 
         if not enabled:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         # Enable or test gripper
         try:
@@ -356,8 +334,6 @@ def register_connection_callbacks(app: Dash) -> None:
                                 color="yellow",
                             )
                         ),
-                        t("Gripper: error"),
-                        "yellow",
                         {
                             "status": "error",
                             "message": t("Failed to connect to Compute Box at {ip}", ip=cb_ip),
@@ -385,8 +361,6 @@ def register_connection_callbacks(app: Dash) -> None:
                             color="yellow",
                         )
                     ),
-                    t("Gripper: error"),
-                    "yellow",
                     {
                         "status": "error",
                         "message": t("Failed to query gripper at {ip}: {error}", ip=cb_ip, error=exc),
@@ -403,8 +377,6 @@ def register_connection_callbacks(app: Dash) -> None:
                             color="yellow",
                         )
                     ),
-                    t("Gripper: error"),
-                    "yellow",
                     {
                         "status": "error",
                         "message": t("No 2FG7 gripper detected at Compute Box {ip}", ip=cb_ip),
@@ -479,8 +451,6 @@ def register_connection_callbacks(app: Dash) -> None:
             return (
                 status_text,
                 info_card,
-                t("Gripper: online"),
-                "brand",
                 {"status": "online", "message": status_text},
             )
 
@@ -496,8 +466,6 @@ def register_connection_callbacks(app: Dash) -> None:
                         color="red",
                     )
                 ),
-                t("Gripper: error"),
-                "red",
                 {"status": "error", "message": t("Gripper error: {error}", error=exc)},
             )
 

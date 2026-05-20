@@ -266,16 +266,6 @@ def build_setup_drawer() -> dmc.Drawer:
                 dmc.Grid(
                     [
                         dmc.GridCol(
-                            dmc.TextInput(
-                                id="settings-auto-target-label",
-                                label=t("Target label"),
-                                value=SETTINGS.auto_target_label,
-                                size="sm",
-                                description=t("YOLO label the auto routine should pick."),
-                            ),
-                            span=12,
-                        ),
-                        dmc.GridCol(
                             dmc.NumberInput(
                                 id="settings-auto-drop-ignore-radius",
                                 label=t("Drop ignore radius (mm)"),
@@ -676,6 +666,15 @@ def build_layout() -> dmc.MantineProvider:
                     data={"status": "idle", "message": "", "model": None},
                 ),
                 dcc.Store(
+                    id="pick-label-config-state",
+                    data=[
+                        {
+                            "label": SETTINGS.auto_target_label,
+                            "confidence": 0.1,
+                        }
+                    ],
+                ),
+                dcc.Store(
                     id="sidebar-visibility",
                     data={"collapsed": False},
                 ),
@@ -712,6 +711,7 @@ def build_layout() -> dmc.MantineProvider:
                     id="auto-config-state",
                     data={
                         "target_label": SETTINGS.auto_target_label,
+                        "target_labels": list(SETTINGS.auto_target_labels),
                         "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
                         "approach_mm": SETTINGS.auto_approach_mm,
                         "pick_mm": SETTINGS.auto_pick_mm,
@@ -819,8 +819,8 @@ def build_layout() -> dmc.MantineProvider:
                     id="app-shell",
                     padding="xs",
                     className="app-shell",
-                    header={"height": 64},
-                    footer={"height": 144},
+                    header={"height": 76},
+                    footer={"height": 174},
                     children=[
                         build_header(),
                         dmc.AppShellMain(
@@ -889,6 +889,15 @@ def build_layout() -> dmc.MantineProvider:
                                                 span={"base": 12, "md": 4, "lg": 3},
                                                 className="tabs-column",
                                             ),
+                                            html.Div(
+                                                id="sidebar-resizer",
+                                                className="sidebar-resizer",
+                                                role="separator",
+                                                **{
+                                                    "aria-label": t("Resize controls"),
+                                                    "aria-orientation": "vertical",
+                                                },
+                                            ),
                                             dmc.GridCol(
                                                 dmc.Stack(
                                                     [build_camera_panel()],
@@ -901,6 +910,7 @@ def build_layout() -> dmc.MantineProvider:
                                             ),
                                         ],
                                         gutter="xs",
+                                        id="main-layout-grid",
                                         className="layout-grid",
                                     ),
                                 ],

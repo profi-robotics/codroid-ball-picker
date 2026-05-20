@@ -1,7 +1,7 @@
 """Application layout components - header and footer.
 
 This module contains the main application shell components:
-- Header with branding and connection badges
+- Header with branding and automation readiness badges
 - Footer with robot controls, telemetry, and gripper controls
 """
 
@@ -103,17 +103,12 @@ def _create_control_row(
 
 
 def build_header() -> dmc.AppShellHeader:
-    """Build the application header with branding and connection badges."""
+    """Build the application header with branding and primary actions."""
     branding = dmc.Text(t("header.title"), className="app-title")
-    badges = dmc.Group(
-        [
-            dmc.Badge(t("header.badge.camera_off"), id="header-camera-badge",
-                      color="gray", variant="light", size="sm"),
-            dmc.Badge(t("header.badge.robot_idle"), id="header-robot-badge",
-                      color="gray", variant="light", size="sm"),
-            dmc.Badge(t("header.badge.gripper_off"), id="header-gripper-badge",
-                      color="gray", variant="light", size="sm"),
-        ],
+    readiness_badges = dmc.Group(
+        [],
+        id="auto-prereq-badges",
+        gap=4,
         className="header-badges",
     )
     language_select = dmc.Select(
@@ -132,7 +127,7 @@ def build_header() -> dmc.AppShellHeader:
     actions = dmc.Group(
         [
             language_select,
-            badges,
+            readiness_badges,
             dmc.Button(t("header.setup"), id="open-setup", variant="filled",
                        color="brand", radius="md", size="xs"),
         ],
@@ -164,13 +159,13 @@ def build_header() -> dmc.AppShellHeader:
         ),
         className="app-header",
         px="md",
-        h=64,
+        h=76,
         id="app-header",
         style={
             "display": "flex",
             "alignItems": "center",
-            "minHeight": "64px",
-            "height": "64px",
+            "minHeight": "76px",
+            "height": "76px",
         },
     )
 
@@ -259,23 +254,19 @@ def _build_auto_control_column() -> dmc.Stack:
             "minWidth": "86px",
         },
     )
-    prereq_summary = dmc.Stack(
-        [],
-        id="auto-prereq-badges",
-        gap=2,
-        align="center",
-    )
     return dmc.Stack(
         [
             dmc.Text(t("Auto pick & place"), fw=700, size="xs", c="blue"),
             dmc.Group(
                 [auto_start_button, auto_stop_button],
                 gap="xs",
+                justify="center",
+                style={"width": "100%"},
             ),
-            prereq_summary,
         ],
         gap=3,
         align="center",
+        className="footer-auto-controls",
     )
 
 
@@ -381,12 +372,17 @@ def _build_robot_speed_block() -> dmc.Stack:
 
     return dmc.Stack(
         [
-            dmc.Text(t("Robot speed"), fw=600, size="xs"),
+            dmc.Text(
+                t("Robot speed"),
+                fw=600,
+                size="xs",
+                className="footer-primary-slider-label",
+            ),
             robot_speed_controls,
         ],
         gap=3,
-        align="flex-start",
-        className="footer-speed-block",
+        align="center",
+        className="footer-speed-block footer-primary-slider-control",
     )
 
 
@@ -422,6 +418,7 @@ def _build_rescue_mode_block() -> dmc.Stack:
         ],
         gap=4,
         align="flex-start",
+        className="footer-body-rescue",
     )
 
 
@@ -458,11 +455,12 @@ def _build_auto_motion_test_block() -> dmc.Stack:
         ],
         gap=4,
         align="flex-start",
+        className="footer-body-auto-test",
     )
 
 
-def _build_gripper_width_control() -> dmc.Group:
-    """Build the gripper width control for the footer header (most frequently used)."""
+def _build_gripper_width_control() -> dmc.Stack:
+    """Build the primary gripper width control for the footer header."""
     width_controls = _create_slider_with_controls(
         slider_id="footer-gripper-width",
         min_val=0,
@@ -472,28 +470,27 @@ def _build_gripper_width_control() -> dmc.Group:
         decrease_id="footer-gripper-width-decrease",
         increase_id="footer-gripper-width-increase",
     )
-    return dmc.Group(
+    return dmc.Stack(
         [
-            dmc.Stack(
-                [
-                    dmc.Text(t("Gripper width"), fw=700, size="xs", c="teal"),
-                    dmc.Text(id="footer-gripper-status", size="xs", c="dimmed"),
-                ],
-                gap=1,
-                align="flex-start",
-                className="footer-gripper-label",
+            dmc.Text(
+                t("Gripper width"),
+                fw=700,
+                size="xs",
+                className=(
+                    "footer-primary-slider-label footer-gripper-width-label"
+                ),
             ),
             width_controls,
+            dmc.Text(id="footer-gripper-status", size="xs", c="dimmed"),
         ],
-        gap="xs",
+        gap=3,
         align="center",
-        wrap="nowrap",
-        className="footer-gripper-width-control",
+        className="footer-gripper-width-control footer-primary-slider-control",
     )
 
 
 def _build_gripper_advanced_block() -> dmc.Stack:
-    """Build the gripper advanced controls block (Force & Speed) for footer body."""
+    """Build expanded gripper force and speed controls."""
     force_controls = _create_slider_with_controls(
         slider_id="footer-gripper-force",
         min_val=GRIPPER_FORCE_MIN,
@@ -522,22 +519,17 @@ def _build_gripper_advanced_block() -> dmc.Stack:
                 gap="xs",
                 align="center",
             ),
-            dmc.Grid(
+            html.Div(
                 [
-                    dmc.GridCol(
-                        _create_control_row(t("Force (N)"), force_controls),
-                        span=6,
-                    ),
-                    dmc.GridCol(
-                        _create_control_row(t("Speed (%)"), speed_controls),
-                        span=6,
-                    ),
+                    _create_control_row(t("Force (N)"), force_controls),
+                    _create_control_row(t("Speed (%)"), speed_controls),
                 ],
-                gutter="xs",
+                className="footer-gripper-controls-grid",
             ),
         ],
         gap=4,
-        align="flex-start",
+        align="stretch",
+        className="footer-gripper-controls footer-body-gripper-advanced",
     )
 
 
@@ -577,6 +569,7 @@ def _build_rescue_controls() -> dmc.Stack:
         id="robot-controls-rescue",
         gap=6,
         align="flex-start",
+        className="footer-body-rescue-controls",
         style={"display": "none"},
     )
 
@@ -619,7 +612,7 @@ def _build_status_group() -> dmc.Group:
         [telemetry_block, flange_block],
         gap="md",
         align="center",
-        className="footer-status-group",
+        className="footer-status-group footer-body-status",
         wrap="wrap",
     )
 
@@ -645,13 +638,22 @@ def build_footer() -> dmc.AppShellFooter:
         size="xs",
         radius="xl",
     )
+    refocus_lock = dmc.Button(
+        t("Refocus & lock"),
+        id="footer-refocus-lock",
+        variant="light",
+        color="teal",
+        size="xs",
+        radius="xl",
+    )
 
     footer_grid = html.Div(
         [
-            gripper_advanced_block,
             auto_motion_test_block,
             rescue_mode_block,
+            status_group,
             rescue_controls,
+            gripper_advanced_block,
         ],
         className="footer-body-grid",
     )
@@ -664,7 +666,7 @@ def build_footer() -> dmc.AppShellFooter:
             html.Div(gripper_width_control, className="footer-gripper-area"),
             html.Div(robot_speed_block, className="footer-speed-area"),
             dmc.Group(
-                [status_group, footer_toggle],
+                [refocus_lock, footer_toggle],
                 gap="xs",
                 align="center",
                 wrap="wrap",
@@ -678,6 +680,7 @@ def build_footer() -> dmc.AppShellFooter:
         footer_grid,
         className="footer-body",
         id="footer-body",
+        style={"display": "none"},
     )
 
     return dmc.AppShellFooter(

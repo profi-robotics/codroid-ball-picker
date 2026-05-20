@@ -198,7 +198,7 @@ If your network requires authentication/VPN to reach the Compute Box, configure 
 
 **Symptoms:**
 - "No 2FG7 gripper detected" error
-- Gripper badge shows "error" (yellow/red)
+- Setup status reports a gripper error
 
 **Solutions:**
 1. Verify physical connection between gripper and Compute Box

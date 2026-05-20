@@ -73,6 +73,72 @@ def _normalize_max_detections(value: int, fallback: int = 10) -> int:
     return max(1, normalized)
 
 
+def _pick_label_confidences() -> dict[str, float]:
+    """Return normalized per-label pick confidence thresholds."""
+    thresholds: dict[str, float] = {}
+    raw = getattr(SESSION, "pick_label_confidences", {}) or {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    else:
+        items = []
+    for label, confidence in items:
+        normalized_label = str(label or "").strip()
+        if not normalized_label:
+            continue
+        thresholds[normalized_label] = _normalize_detection_confidence(
+            confidence, 0.1
+        )
+    return thresholds
+
+
+def _effective_detection_confidence(confidence: float) -> float:
+    """Use the lowest selected pick threshold so low-confidence labels can pass."""
+    base_confidence = _normalize_detection_confidence(confidence)
+    thresholds = _pick_label_confidences()
+    if not thresholds:
+        return base_confidence
+    return min(base_confidence, min(thresholds.values()))
+
+
+def _passes_pick_label_filter(
+    label: str,
+    confidence: float,
+    thresholds: dict[str, float],
+) -> bool:
+    """Return whether a detection is selected for picking."""
+    if not thresholds:
+        return True
+    normalized_label = str(label or "").strip().lower()
+    for target_label, threshold in thresholds.items():
+        if normalized_label == target_label.strip().lower():
+            return confidence >= threshold
+    return False
+
+
+def _pick_label_class_ids(
+    model: object,
+    thresholds: dict[str, float],
+) -> Optional[list[int]]:
+    """Map selected pick labels to YOLO class IDs when model names are available."""
+    if not thresholds:
+        return None
+    wanted = {label.strip().lower() for label in thresholds if label.strip()}
+    names = getattr(model, "names", None)
+    class_ids: list[int] = []
+    if isinstance(names, dict):
+        for class_id, label in names.items():
+            if str(label).strip().lower() not in wanted:
+                continue
+            try:
+                class_ids.append(int(class_id))
+            except (TypeError, ValueError):
+                continue
+    elif isinstance(names, (list, tuple)):
+        for class_id, label in enumerate(names):
+            if str(label).strip().lower() in wanted:
+                class_ids.append(class_id)
+    return sorted(class_ids) or None
+
 
 # ---------------------------------------------------------------------------
 # Lazy imports to avoid circular dependencies
@@ -168,18 +234,24 @@ def _run_detection(
     class_filter: Optional[str],
     *,
     crop_to_workspace: bool = True,
+    apply_pick_filter: bool = True,
 ) -> list[dict]:
     """Run YOLO detection on a frame."""
     if SESSION.yolo_model is None:
         raise RuntimeError(
             "No YOLO model loaded. Upload a model or install ultralytics.")
     confidence = _normalize_detection_confidence(confidence)
+    pick_thresholds = _pick_label_confidences() if apply_pick_filter else {}
+    if apply_pick_filter:
+        confidence = _effective_detection_confidence(confidence)
     iou = _normalize_detection_iou(iou)
     max_detections = _normalize_max_detections(max_detections)
     classes = None
     if class_filter:
         classes = [int(val.strip())
                    for val in class_filter.split(",") if val.strip().isdigit()]
+    elif apply_pick_filter:
+        classes = _pick_label_class_ids(SESSION.yolo_model, pick_thresholds)
 
     # Crop to workspace region only when both workspace and calibration are available.
     crop_offset_x = 0
@@ -243,11 +315,18 @@ def _run_detection(
             label = str(int(cls_idx))
             if hasattr(SESSION.yolo_model, "names"):
                 label = SESSION.yolo_model.names.get(int(cls_idx), label)
+            confidence_value = float(conf)
+            if not _passes_pick_label_filter(
+                label,
+                confidence_value,
+                pick_thresholds,
+            ):
+                continue
             detection = {
                 "bbox": (x1, y1, x2, y2),
                 "center": center,
                 "label": label,
-                "confidence": float(conf),
+                "confidence": confidence_value,
             }
             if SESSION.workspace_definition is not None:
                 try:
@@ -267,6 +346,7 @@ def _run_detection_serialized(
     class_filter: Optional[str],
     *,
     crop_to_workspace: bool = True,
+    apply_pick_filter: bool = True,
 ) -> list[dict]:
     """Run detection with a non-blocking process-wide lock.
 
@@ -283,6 +363,7 @@ def _run_detection_serialized(
             max_detections,
             class_filter,
             crop_to_workspace=crop_to_workspace,
+            apply_pick_filter=apply_pick_filter,
         )
         SESSION.detection_inference_total += 1
         now = time.monotonic()

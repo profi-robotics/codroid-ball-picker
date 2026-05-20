@@ -11,8 +11,8 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
-from typing import Callable, Deque, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Deque, Optional
 
 import cv2
 import numpy as np
@@ -27,6 +27,9 @@ _CAMERA_START_RETRY_DELAY_S = 2.0
 _RGB_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS", "30"))
 _RGB_WITH_DEPTH_MAX_FPS = float(os.getenv("CODROID_RGB_MAX_FPS_WITH_DEPTH", "15"))
 _MJPEG_MAX_FPS = float(os.getenv("CODROID_MJPEG_MAX_FPS", "30"))
+_OVERLAY_MAX_FPS = float(os.getenv("CODROID_OVERLAY_MAX_FPS", "5"))
+_OVERLAY_EMPTY_HOLD_S = float(os.getenv("CODROID_OVERLAY_EMPTY_HOLD_S", "1.0"))
+AUTOFOCUS_SETTLE_S = float(os.getenv("CODROID_AUTOFOCUS_SETTLE_S", "1.5"))
 _RETRYABLE_CAMERA_ERROR_SUBSTRINGS = (
     "no available devices",
     "device already closed or disconnected",
@@ -43,6 +46,8 @@ class OverlayResult:
     vis: np.ndarray
     status: str
     metric: str
+    primitives: list[dict[str, Any]] = field(default_factory=list)
+    has_targets: bool = False
 
 
 @dataclass
@@ -50,6 +55,43 @@ class OverlayTask:
     """Task for background overlay processing."""
     key: str
     runner: Callable[[np.ndarray], OverlayResult]
+
+
+@dataclass(frozen=True)
+class OverlayTaskSnapshot:
+    """Active overlay task plus the generation it belongs to."""
+    task: OverlayTask
+    generation: int
+
+
+@dataclass
+class OverlayState:
+    """Browser-rendered overlay state for a task."""
+    key: str
+    generation: int
+    frame_width: int
+    frame_height: int
+    updated_at: float
+    status: str
+    metric: str
+    primitives: list[dict[str, Any]]
+    has_targets: bool
+    stale: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe overlay state payload."""
+        return {
+            "key": self.key,
+            "generation": self.generation,
+            "frame_width": self.frame_width,
+            "frame_height": self.frame_height,
+            "updated_at": self.updated_at,
+            "status": self.status,
+            "metric": self.metric,
+            "primitives": self.primitives,
+            "has_targets": self.has_targets,
+            "stale": self.stale,
+        }
 
 
 class MotionJPEGStream:
@@ -123,32 +165,110 @@ class FrameProcessor:
     """Background processor that keeps only the newest request and result."""
 
     def __init__(self, max_queue: int = 2) -> None:
-        self._queue: Deque[tuple[str, np.ndarray,
+        self._queue: Deque[tuple[str, int, np.ndarray,
                                  Callable[[np.ndarray], OverlayResult]]]
         self._queue = deque(maxlen=max_queue)
         self._lock = threading.Lock()
-        self._latest: dict[str, OverlayResult] = {}
+        self._latest: dict[str, OverlayState] = {}
+        self._busy = False
+        self._last_submit_ts = 0.0
+        self._min_submit_interval_s = (
+            1.0 / _OVERLAY_MAX_FPS if _OVERLAY_MAX_FPS > 0 else 0.0
+        )
         self._running = True
         self._thread = threading.Thread(
             target=self._worker, name="FrameProcessor", daemon=True
         )
         self._thread.start()
 
-    def submit(self, task: OverlayTask, frame: np.ndarray) -> None:
-        """Submit a frame processing task."""
-        # Drop older pending tasks and keep the newest request only.
+    def submit(self, task: OverlayTaskSnapshot, frame: np.ndarray) -> bool:
+        """Submit a frame processing task when the worker can accept one."""
+        now = time.monotonic()
         with self._lock:
+            if self._busy:
+                return False
+            if now - self._last_submit_ts < self._min_submit_interval_s:
+                return False
+            self._busy = True
+            self._last_submit_ts = now
             self._queue.clear()
-            self._queue.append((task.key, frame.copy(), task.runner))
+            self._queue.append(
+                (task.task.key, task.generation, frame.copy(), task.task.runner)
+            )
+        return True
 
     def get_latest(self, key: str) -> Optional[OverlayResult]:
         """Get the latest processing result for a given key."""
         with self._lock:
-            result = self._latest.get(key)
-            if result is None:
+            state = self._latest.get(key)
+            if state is None:
                 return None
-            # Copy the image so callers cannot mutate internal state.
-            return OverlayResult(result.vis.copy(), result.status, result.metric)
+            return OverlayResult(
+                vis=np.zeros((1, 1, 3), dtype=np.uint8),
+                status=state.status,
+                metric=state.metric,
+                primitives=[dict(item) for item in state.primitives],
+                has_targets=state.has_targets,
+            )
+
+    def get_latest_state(self, key: str) -> Optional[OverlayState]:
+        """Return the latest overlay state for a key."""
+        with self._lock:
+            state = self._latest.get(key)
+            if state is None:
+                return None
+            return OverlayState(
+                key=state.key,
+                generation=state.generation,
+                frame_width=state.frame_width,
+                frame_height=state.frame_height,
+                updated_at=state.updated_at,
+                status=state.status,
+                metric=state.metric,
+                primitives=[dict(item) for item in state.primitives],
+                has_targets=state.has_targets,
+                stale=state.stale,
+            )
+
+    def get_active_state_payload(self) -> dict[str, Any]:
+        """Return the current active overlay state payload."""
+        snapshot = get_active_overlay_task()
+        if snapshot is None:
+            return _empty_overlay_payload()
+        state = self.get_latest_state(snapshot.task.key)
+        if state is None or state.generation != snapshot.generation:
+            payload = _empty_overlay_payload(snapshot.task.key, snapshot.generation)
+            payload["status"] = "Overlay processing..."
+            payload["metric"] = "--"
+            return payload
+        payload = state.to_dict()
+        payload["stale"] = (time.time() - state.updated_at) > _OVERLAY_EMPTY_HOLD_S
+        return payload
+
+    def clear(self) -> None:
+        """Clear all overlay states and pending work."""
+        with self._lock:
+            self._queue.clear()
+            self._latest.clear()
+            self._busy = False
+
+    def store_latest(self, key: str, generation: int, frame: np.ndarray,
+                     result: OverlayResult) -> None:
+        """Store the latest overlay state and metrics."""
+        height, width = frame.shape[:2]
+        state = OverlayState(
+            key=key,
+            generation=generation,
+            frame_width=int(width),
+            frame_height=int(height),
+            updated_at=time.time(),
+            status=result.status,
+            metric=result.metric,
+            primitives=[dict(item) for item in result.primitives],
+            has_targets=bool(result.has_targets),
+        )
+        with self._lock:
+            self._latest[key] = state
 
     def stop(self) -> None:
         """Stop the frame processor."""
@@ -159,11 +279,11 @@ class FrameProcessor:
     def _worker(self) -> None:
         """Background worker thread for processing frames.
 
-        After computing the overlay, this worker pushes the result directly
-        to MJPEG_STREAM, decoupling video streaming from Dash callback timing.
+        After computing the overlay, this worker stores JSON-ready overlay
+        primitives. MJPEG streaming remains raw and independent.
         """
         while self._running:
-            task: Optional[tuple[str, np.ndarray,
+            task: Optional[tuple[str, int, np.ndarray,
                                  Callable[[np.ndarray], OverlayResult]]] = None
             with self._lock:
                 if self._queue:
@@ -172,17 +292,20 @@ class FrameProcessor:
             if task is None:
                 time.sleep(0.003)
                 continue
-            key, frame, runner = task
+            key, generation, frame, runner = task
             try:
                 result = runner(frame)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("FrameProcessor error for %s: %s",
                              key, exc, exc_info=True)
                 result = OverlayResult(frame, f"Processing error: {exc}", "--")
+            if not is_active_overlay_task(key, generation):
+                with self._lock:
+                    self._busy = False
+                continue
+            self.store_latest(key, generation, frame, result)
             with self._lock:
-                self._latest[key] = result
-            # Push directly to MJPEG stream - decouples video from Dash callbacks
-            MJPEG_STREAM.add_frame(result.vis)
+                self._busy = False
 
 
 class RawFrameStore:
@@ -212,11 +335,31 @@ def _format_fps(capture_fps: float, stream_fps: float) -> str:
     return f"FPS — capture: {cap_text}, stream: {stream_text}"
 
 
+def _empty_overlay_payload(
+    key: Optional[str] = None,
+    generation: Optional[int] = None,
+) -> dict[str, Any]:
+    """Return the stable empty overlay JSON shape."""
+    return {
+        "key": key,
+        "generation": generation,
+        "frame_width": 0,
+        "frame_height": 0,
+        "updated_at": 0.0,
+        "status": "No overlay applied.",
+        "metric": "--",
+        "primitives": [],
+        "has_targets": False,
+        "stale": False,
+    }
+
+
 # Global streaming instances
 MJPEG_STREAM = MotionJPEGStream()
 FRAME_PROCESSOR = FrameProcessor()
 RAW_STREAM = RawFrameStore()
 _ACTIVE_OVERLAY_TASK: Optional[OverlayTask] = None
+_ACTIVE_OVERLAY_GENERATION = 0
 _OVERLAY_TASK_LOCK = threading.Lock()
 _STREAM_LIFECYCLE_LOCK = threading.RLock()
 
@@ -228,15 +371,32 @@ def _publish_raw_frame(frame: np.ndarray) -> None:
 
 def set_active_overlay_task(task: Optional[OverlayTask]) -> None:
     """Set the currently active overlay task for camera-frame processing."""
-    global _ACTIVE_OVERLAY_TASK
+    global _ACTIVE_OVERLAY_TASK, _ACTIVE_OVERLAY_GENERATION
     with _OVERLAY_TASK_LOCK:
+        old_key = None if _ACTIVE_OVERLAY_TASK is None else _ACTIVE_OVERLAY_TASK.key
+        new_key = None if task is None else task.key
+        if old_key != new_key:
+            _ACTIVE_OVERLAY_GENERATION += 1
+            FRAME_PROCESSOR.clear()
         _ACTIVE_OVERLAY_TASK = task
 
 
-def get_active_overlay_task() -> Optional[OverlayTask]:
-    """Get the currently active overlay task."""
+def get_active_overlay_task() -> Optional[OverlayTaskSnapshot]:
+    """Get the currently active overlay task snapshot."""
     with _OVERLAY_TASK_LOCK:
-        return _ACTIVE_OVERLAY_TASK
+        if _ACTIVE_OVERLAY_TASK is None:
+            return None
+        return OverlayTaskSnapshot(_ACTIVE_OVERLAY_TASK, _ACTIVE_OVERLAY_GENERATION)
+
+
+def is_active_overlay_task(key: str, generation: int) -> bool:
+    """Return whether an overlay result still belongs to the active task."""
+    with _OVERLAY_TASK_LOCK:
+        return (
+            _ACTIVE_OVERLAY_TASK is not None
+            and _ACTIVE_OVERLAY_TASK.key == key
+            and _ACTIVE_OVERLAY_GENERATION == generation
+        )
 
 
 def process_camera_frame(frame: np.ndarray) -> None:
@@ -247,14 +407,7 @@ def process_camera_frame(frame: np.ndarray) -> None:
         MJPEG_STREAM.add_frame(frame)
         return
     FRAME_PROCESSOR.submit(task, frame)
-    latest_overlay = FRAME_PROCESSOR.get_latest(task.key)
-    if latest_overlay is None:
-        MJPEG_STREAM.add_frame(frame)
-    else:
-        # Repeat the latest annotated frame while the worker computes the next
-        # overlay. This keeps stream cadence up without alternating raw/overlay
-        # frames, which looks like flashing in the browser.
-        MJPEG_STREAM.add_frame(latest_overlay.vis)
+    MJPEG_STREAM.add_frame(frame)
 
 
 def _is_retryable_camera_error(exc: Exception) -> bool:
@@ -302,7 +455,7 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
                     StreamConfig(
                         resolution=resolution,
                         fps=fps_value,
-                        lock_af=lock_af,
+                        lock_af=False,
                         enable_depth=enable_depth,
                         fast_depth=fast_depth,
                     ),
@@ -310,11 +463,15 @@ def start_camera_stream(width: Optional[float], height: Optional[float], fps: Op
                 )
                 stream.start()
                 SESSION.camera_stream = stream
+                focus_suffix = ""
+                if lock_af:
+                    focus_position = stream.refocus_and_lock(AUTOFOCUS_SETTLE_S)
+                    focus_suffix = f" Focus locked at lens position {focus_position}."
 
                 device_id = stream.device_id() or "unknown"
                 return (
                     f"Camera stream running ({resolution[0]}x{resolution[1]} @ "
-                    f"{fps_value:.1f} FPS, MXID {device_id})."
+                    f"{fps_value:.1f} FPS, MXID {device_id}).{focus_suffix}"
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc

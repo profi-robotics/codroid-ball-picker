@@ -271,17 +271,22 @@ def register_pick_place_callbacks(app: Dash) -> None:
                 )
                 return pose
 
-            # Get target label from settings
-            target_label = SETTINGS.auto_target_label
+            target_labels = SESSION.auto_config.get(
+                "target_labels",
+                [SETTINGS.auto_target_label],
+            )
+            if not target_labels:
+                target_labels = [SETTINGS.auto_target_label]
 
             # Filter detections by target label
             def filter_by_label(detections):
                 """Filter detections to only include the target label."""
-                return [d for d in detections if d.get("label") == target_label]
+                return [d for d in detections if d.get("label") in target_labels]
 
             filtered_detections = filter_by_label(SESSION.detections)
             if not filtered_detections:
-                return t("No objects with label '{label}' detected.", label=target_label), drop_text
+                labels_text = ", ".join(target_labels)
+                return t("No objects with label '{label}' detected.", label=labels_text), drop_text
 
             from app.codroid_picker.target_planner import (
                 plan_pick_strategy,

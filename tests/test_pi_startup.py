@@ -203,11 +203,13 @@ def test_initial_layout_defers_tab_content_and_hardware_init() -> None:
 
     assert "monitor-detection-trend" not in ids
     assert "monitor-cycle-trend" not in ids
-    assert "run-detection" not in ids
+    assert "pick-label-add" not in ids
     assert "calibration-stepper" not in ids
     assert "main-tab-content" in ids
     assert "sidebar-toggle" in ids
+    assert "sidebar-resizer" in ids
     assert "sidebar-visibility" in ids
+    assert "footer-refocus-lock" in ids
     assert "model-load-state" in ids
     assert "monitoring-graph-interval" in ids
     assert "application-ui-interval" in ids
@@ -227,7 +229,7 @@ def test_lazy_layout_mounts_application_tab_and_enables_application_interval() -
 
     assert "application-tabs" in ids
     assert "compute-workspace" in ids
-    assert "run-detection" in ids
+    assert "pick-label-add" in ids
     assert app_disabled is False
     assert calibration_disabled is True
     assert monitoring_disabled is True
@@ -265,14 +267,22 @@ def test_lazy_layout_mounts_monitoring_tab_and_enables_monitoring_interval() -> 
 
 
 def test_sidebar_layout_state_collapses_controls_and_expands_camera() -> None:
-    sidebar_style, camera_span, label = sidebar_layout_state(True)
+    sidebar_style, resizer_style, camera_span, label, grid_class = sidebar_layout_state(
+        True
+    )
 
     assert sidebar_style == {"display": "none"}
+    assert resizer_style == {"display": "none"}
     assert camera_span == {"base": 12, "md": 12, "lg": 12}
     assert label == "Show controls"
+    assert grid_class == "layout-grid sidebar-collapsed"
 
-    sidebar_style, camera_span, label = sidebar_layout_state(False)
+    sidebar_style, resizer_style, camera_span, label, grid_class = sidebar_layout_state(
+        False
+    )
 
     assert sidebar_style == {}
+    assert resizer_style == {}
     assert camera_span == {"base": 12, "md": 8, "lg": 9}
     assert label == "Hide controls"
+    assert grid_class == "layout-grid"

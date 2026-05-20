@@ -37,6 +37,7 @@ class UISession:
     active_model_path: Optional[Path] = None
     yolo_model: Optional[object] = None
     model_loaded: bool = False
+    model_labels: list[str] = field(default_factory=list)
     detections: list[dict] = field(default_factory=list)
     last_detection_error: Optional[str] = None
     auto_task: Optional[object] = None
@@ -50,6 +51,7 @@ class UISession:
     auto_config: dict = field(
         default_factory=lambda: {
             "target_label": SETTINGS.auto_target_label,
+            "target_labels": list(SETTINGS.auto_target_labels),
             "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
             "approach_mm": SETTINGS.auto_approach_mm,
             "pick_mm": SETTINGS.auto_pick_mm,
@@ -118,6 +120,9 @@ class UISession:
     detection_iou: float = 0.45
     detection_max: int = 10
     detection_classes: Optional[str] = None
+    pick_label_confidences: dict[str, float] = field(
+        default_factory=lambda: {SETTINGS.auto_target_label: 0.1}
+    )
     monitor_detection_history: Deque[dict] = field(default_factory=lambda: deque(maxlen=90))
     detection_inference_total: int = 0
     detection_inference_last_log_ts: float = 0.0
@@ -169,6 +174,7 @@ def _refresh_session_auto_config_defaults() -> None:
     SESSION.auto_config.update(
         {
             "target_label": SETTINGS.auto_target_label,
+            "target_labels": list(SETTINGS.auto_target_labels),
             "drop_ignore_radius_mm": SETTINGS.auto_drop_ignore_radius_mm,
             "approach_mm": SETTINGS.auto_approach_mm,
             "pick_mm": SETTINGS.auto_pick_mm,

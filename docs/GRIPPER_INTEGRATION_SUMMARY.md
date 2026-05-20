@@ -41,7 +41,6 @@ Multiple enhancements:
 - Added `gripper: Optional[TwoFG7Gripper]` field
 
 **UI Components:**
-- **Header:** Added "Gripper: off" badge (id: `header-gripper-badge`)
 - **Setup Drawer:** Added OnRobot 2FG7 configuration section with:
   - Compute Box IP input (`gripper-cb-ip`)
   - Enable toggle (`gripper-enable`)
@@ -52,7 +51,7 @@ Multiple enhancements:
 **Callbacks:**
 - Added `_handle_gripper()` callback for connection management and testing
   - Inputs: `gripper-test` clicks, `gripper-enable` state, `gripper-cb-ip` value
-  - Outputs: status text, device info card, header badge text/color
+  - Outputs: status text, device info card, connection state
   - Features: connection validation, live status monitoring, grip detection
   
 - Updated `_handle_pick_place()` gripper control:
@@ -96,7 +95,6 @@ export ONROBOT_T_INDEX="0"
 7. Observe:
    - Status text shows connection result
    - Device info card displays current width, force, and grip state
-   - Header badge updates: "Gripper: online" (teal) or "Gripper: error" (red/yellow)
 
 ### Operation Phase
 
@@ -147,12 +145,12 @@ export ONROBOT_T_INDEX="0"
 ## Error Handling
 
 **No Gripper Detected:**
-- Yellow badge: "Gripper: error"
+- Setup status reports a gripper error
 - Alert displayed with troubleshooting suggestions
 - Possible causes: wrong IP, wrong tool index, gripper not powered
 
 **Connection Timeout:**
-- Red badge: "Gripper: error"
+- Setup status reports a gripper connection error
 - Status text: "Failed to connect to Compute Box"
 - Possible causes: network routing, firewall, Compute Box offline
 

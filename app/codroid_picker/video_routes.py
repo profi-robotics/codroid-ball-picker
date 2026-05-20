@@ -11,8 +11,10 @@ import time
 from typing import TYPE_CHECKING
 
 import cv2
+from flask import jsonify
 
 from app.codroid_picker.app_instance import registry
+from app.codroid_picker.streaming import FRAME_PROCESSOR
 from app.codroid_picker.utils import placeholder_frame
 
 if TYPE_CHECKING:
@@ -25,8 +27,9 @@ def register_video_routes(app: "Dash") -> None:
     """Register Flask video streaming routes with the Dash app.
 
     Provides:
-    - /video_feed: Motion JPEG stream for fullscreen playback
-    - /camera_frame.jpg: Latest camera frame with overlays
+    - /video_feed: Raw Motion JPEG stream for fullscreen playback
+    - /overlay_state.json: Latest overlay primitives for browser rendering
+    - /camera_frame.jpg: Latest streamed camera frame
     - /raw_camera_frame.jpg: Latest raw camera frame without overlays
     """
     @app.server.route("/video_feed")
@@ -64,7 +67,7 @@ def register_video_routes(app: "Dash") -> None:
 
     @app.server.route("/camera_frame.jpg")
     def camera_frame():
-        """Get the latest camera frame as a JPEG image."""
+        """Get the latest streamed camera frame as a JPEG image."""
         frame_data = registry().mjpeg_stream.get_frame()
         if not frame_data:
             # Return placeholder as JPEG bytes
@@ -101,3 +104,8 @@ def register_video_routes(app: "Dash") -> None:
             buffer.tobytes(),
             mimetype='image/jpeg'
         )
+
+    @app.server.route("/overlay_state.json")
+    def overlay_state():
+        """Return the latest browser-rendered overlay state."""
+        return jsonify(FRAME_PROCESSOR.get_active_state_payload())
