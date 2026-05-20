@@ -39,6 +39,7 @@ services:
       - DOCKER_API_VERSION=1.40
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${CODROID_DOCKER_CONFIG:-/home/university/.docker/config.json}:/config.json:ro
     command:
       [
         "--interval",
