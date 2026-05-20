@@ -544,7 +544,6 @@ def register_camera_callbacks(app: Dash) -> None:
                     height,
                     fps,
                     bool(lock_af),
-                    enable_depth_override=True,
                 )
                 SESSION.camera_last_error_message = None
                 SESSION.camera_last_error_key = None
