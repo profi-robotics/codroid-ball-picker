@@ -260,8 +260,27 @@ def register_auto_operation_callbacks(app: Dash) -> None:
                 )
 
         elif trigger_id == "auto-stop":
+            active_program = registry.active_program
+            active_api = (
+                active_program.robot_api
+                if active_program and active_program.robot_api
+                else None
+            )
             if registry.stop():
                 active_name = registry.active_program_name or "auto"
+                if active_api is not None:
+                    try:
+                        await active_api.stop_command()
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.debug("Auto stop command failed: %s", exc)
+                    try:
+                        await active_api.stop_auto_socket_project()
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.debug("Auto socket stop failed: %s", exc)
+                    try:
+                        await active_api.set_manual_mode()
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning("Auto stop failed to set Manual mode: %s", exc)
                 return (
                     {
                         "running": False,

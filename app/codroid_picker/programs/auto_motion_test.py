@@ -26,8 +26,8 @@ from app.codroid_picker.programs.base import (
     RobotProgram,
 )
 from app.codroid_picker.robot_motion import (
-    ensure_coordinate_active,
     move_auto_socket_cartesian_target,
+    select_coordinate_and_wait_for_posture,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -104,22 +104,21 @@ class AutoMotionTestProgram(RobotProgram):
             session,
             coordinate_id=coordinate_id,
         )
-        await self._apply_current_speed(robot_api)
         loop_targets, orientation, poscfg = self._build_current_pose_targets(
             robot_api,
             session,
             coordinate_id=coordinate_id,
         )
 
-        self.update_message("Auto motion test: switching controller to Auto mode.")
-        await robot_api.set_auto_mode()
-        await self._select_coordinate_and_wait_for_posture(
-            robot_api,
-            session,
-            coordinate_id=coordinate_id,
-        )
-
         try:
+            self.update_message("Auto motion test: switching controller to Auto mode.")
+            await robot_api.set_auto_mode()
+            await self._apply_auto_speed(robot_api)
+            await self._select_coordinate_and_wait_for_posture(
+                robot_api,
+                session,
+                coordinate_id=coordinate_id,
+            )
             auto_socket_config = self._build_auto_socket_config(settings, robot_api)
             if not hasattr(robot_api, "auto_socket_mode"):
                 raise RuntimeError(
@@ -276,44 +275,12 @@ class AutoMotionTestProgram(RobotProgram):
         coordinate_id: int,
     ) -> None:
         """Select the motion coordinate and wait for a fresh pose in that frame."""
-        initial_posture = session.position_snapshot()
-        initial_timestamp = float(getattr(initial_posture, "timestamp", 0.0) or 0.0)
-
-        await ensure_coordinate_active(robot_api, coordinate_id)
-        deadline = time.monotonic() + MOTION_TEST_COORDINATE_TIMEOUT_S
-        matched_coordinate = False
-        resent = False
-
-        while time.monotonic() < deadline:
-            status = session.robot_status_snapshot()
-            current_id = None
-            if isinstance(status, dict):
-                current_id = status.get("CoordinateId")
-            try:
-                matched_coordinate = int(current_id) == int(coordinate_id)
-            except (TypeError, ValueError):
-                matched_coordinate = False
-
-            posture = session.position_snapshot()
-            posture_timestamp = float(getattr(posture, "timestamp", 0.0) or 0.0)
-            fresh_posture = (
-                posture_timestamp <= 0.0
-                or initial_timestamp <= 0.0
-                or posture_timestamp > initial_timestamp
-            )
-            if matched_coordinate and fresh_posture:
-                await asyncio.sleep(MOTION_TEST_COORDINATE_SETTLE_S)
-                return
-
-            if not resent and time.monotonic() > deadline - (
-                MOTION_TEST_COORDINATE_TIMEOUT_S / 2.0
-            ):
-                await robot_api.set_current_coordinate_id(coordinate_id)
-                resent = True
-            await asyncio.sleep(0.1)
-
-        raise RuntimeError(
-            f"Failed to confirm CoordinateId {coordinate_id} with fresh posture."
+        await select_coordinate_and_wait_for_posture(
+            robot_api,
+            session,
+            coordinate_id=coordinate_id,
+            timeout_s=MOTION_TEST_COORDINATE_TIMEOUT_S,
+            settle_s=MOTION_TEST_COORDINATE_SETTLE_S,
         )
 
     async def _apply_current_speed(self, robot_api: "CodroidAPI") -> None:
@@ -323,6 +290,14 @@ class AutoMotionTestProgram(RobotProgram):
         speed_rate = float(np.clip(SESSION.robot_speed_rate, 0.05, 1.0))
         await robot_api.set_manual_move_rate(speed_rate)
         SESSION.robot_speed_rate = speed_rate
+        SESSION.robot_speed_last_set = time.time()
+
+    async def _apply_auto_speed(self, robot_api: "CodroidAPI") -> None:
+        """Apply full robot speed for auto-socket motion."""
+        from app.codroid_picker.session import SESSION
+
+        await robot_api.set_manual_move_rate(1.0)
+        SESSION.robot_speed_rate = 1.0
         SESSION.robot_speed_last_set = time.time()
 
     async def _stream_target(

@@ -12,6 +12,8 @@ from app.settings import SETTINGS
 
 ROBOT_CONNECT_TIMEOUT_S = 10.0
 ROBOT_STALE_PROBE_RESET_S = ROBOT_CONNECT_TIMEOUT_S + 5.0
+ROBOT_STARTUP_COORDINATE_ID = 5
+ROBOT_STARTUP_INIT_TIMEOUT_S = 8.0
 
 
 def _control_state_payload(
@@ -41,6 +43,23 @@ async def _release_robot_ownership(
         registry.stop()
     session = codroid_picker_module._get_robot_session()
     return await session.release_control(resolved_uri, power_off=True, wait_closed_s=2.0)
+
+
+async def _initialize_robot_after_connect(
+    codroid_picker_module,
+    resolved_uri: str,
+) -> None:
+    """Power on the acquired robot and leave it ready for manual operation."""
+
+    async def _initialize(api) -> None:
+        await api.power_on()
+        await api.set_manual_mode()
+        await api.set_current_coordinate_id(ROBOT_STARTUP_COORDINATE_ID)
+
+    await asyncio.wait_for(
+        codroid_picker_module._with_robot_api(resolved_uri, _initialize),
+        timeout=ROBOT_STARTUP_INIT_TIMEOUT_S,
+    )
 
 
 def _resolve_trigger_id() -> str:
@@ -223,6 +242,10 @@ def register_connection_callbacks(app: Dash) -> None:
             await asyncio.wait_for(
                 session.acquire_control(resolved_uri),
                 timeout=ROBOT_CONNECT_TIMEOUT_S,
+            )
+            await _initialize_robot_after_connect(
+                codroid_picker_module,
+                resolved_uri,
             )
             target = session.resolve_robot_target(resolved_uri)
             host = target.get("host", t("unknown"))

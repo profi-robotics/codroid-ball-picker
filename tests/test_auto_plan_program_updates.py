@@ -79,6 +79,9 @@ class _FakeRobotAPI:
     async def set_auto_mode(self) -> None:
         self.calls.append("set_auto_mode")
 
+    async def set_manual_move_rate(self, rate: float) -> None:
+        self.calls.append(f"set_manual_move_rate:{rate}")
+
     async def set_manual_mode(self) -> None:
         self.calls.append("set_manual_mode")
 
@@ -118,6 +121,10 @@ class _FailingAutoSocketRobotAPI(_FakeRobotAPI):
         raise RuntimeError("socket unavailable")
 
 
+async def _select_coordinate(robot_api, _session, *, coordinate_id: int, **_kwargs):
+    await robot_api.set_current_coordinate_id(coordinate_id)
+
+
 class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._snapshot = {
@@ -155,8 +162,8 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
             patch("app.codroid_picker.programs.auto_pick_place.registry", return_value=fake_registry),
             patch("app.codroid_picker.programs.auto_pick_place.ensure_operation_active"),
             patch(
-                "app.codroid_picker.programs.auto_pick_place.ensure_coordinate_active",
-                new=AsyncMock(return_value=None),
+                "app.codroid_picker.programs.auto_pick_place.select_coordinate_and_wait_for_posture",
+                new=AsyncMock(side_effect=_select_coordinate),
             ),
             patch(
                 "app.codroid_picker.programs.auto_pick_place.plan_pick_strategy",
@@ -212,8 +219,8 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.codroid_picker.programs.auto_pick_place.registry", return_value=fake_registry),
             patch(
-                "app.codroid_picker.programs.auto_pick_place.ensure_coordinate_active",
-                new=AsyncMock(return_value=None),
+                "app.codroid_picker.programs.auto_pick_place.select_coordinate_and_wait_for_posture",
+                new=AsyncMock(side_effect=_select_coordinate),
             ),
             patch.object(program, "_execute_pick", new=AsyncMock()) as pick_mock,
             patch.object(program, "_execute_drop", new=AsyncMock()) as drop_mock,
@@ -229,7 +236,9 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [
                 "power_on",
+                "set_current_coordinate_id:5",
                 "set_auto_mode",
+                "set_manual_move_rate:1.0",
                 "set_current_coordinate_id:5",
                 "_local_source_ip_for:192.168.101.100",
                 "auto_socket_mode",

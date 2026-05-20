@@ -6,6 +6,7 @@ from unittest import mock
 
 from app.codroid_picker.robot_callbacks.connection import (
     _control_state_payload,
+    _initialize_robot_after_connect,
     _release_robot_ownership,
 )
 from app.codroid_picker.robot_utils import _robot_control_released
@@ -53,6 +54,36 @@ class RobotControlReleaseTests(unittest.IsolatedAsyncioTestCase):
             ["registry_stop", "release_control:ws://robot/:True:2.0"],
         )
         self.assertEqual(result["mode"], "released")
+
+    async def test_initialize_robot_after_connect_powers_manual_coord5(self) -> None:
+        calls: list[str] = []
+
+        class _FakeAPI:
+            async def power_on(self) -> None:
+                calls.append("power_on")
+
+            async def set_manual_mode(self) -> None:
+                calls.append("set_manual_mode")
+
+            async def set_current_coordinate_id(self, coordinate_id: int) -> None:
+                calls.append(f"set_current_coordinate_id:{coordinate_id}")
+
+        class _FakeModule:
+            async def _with_robot_api(self, uri: str, action) -> None:
+                calls.append(f"_with_robot_api:{uri}")
+                await action(_FakeAPI())
+
+        await _initialize_robot_after_connect(_FakeModule(), "ws://robot/")
+
+        self.assertEqual(
+            calls,
+            [
+                "_with_robot_api:ws://robot/",
+                "power_on",
+                "set_manual_mode",
+                "set_current_coordinate_id:5",
+            ],
+        )
 
     async def test_release_robot_ownership_closes_even_when_api_fails(self) -> None:
         calls: list[str] = []

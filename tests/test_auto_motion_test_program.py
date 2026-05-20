@@ -6,6 +6,8 @@ import asyncio
 import types
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
+
 from app.codroid_picker.programs.auto_motion_test import AutoMotionTestProgram
 from app.codroid_picker.programs.auto_pick_place import AutoPickPlaceProgram
 from app.codroid_picker.robot_motion import move_auto_socket_cartesian_target
@@ -21,6 +23,27 @@ class _FakeRobotAPI:
 
     def build_poscfg(self, *, mode: int) -> dict:
         return {"mode": mode}
+
+
+class _FakeAutoModeRobotAPI(_FakeRobotAPI):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[str] = []
+
+    async def power_on(self) -> None:
+        self.calls.append("power_on")
+
+    async def set_auto_mode(self) -> None:
+        self.calls.append("set_auto_mode")
+
+    async def set_manual_move_rate(self, rate: float) -> None:
+        self.calls.append(f"set_manual_move_rate:{rate}")
+
+    async def set_manual_mode(self) -> None:
+        self.calls.append("set_manual_mode")
+
+    async def stop_auto_socket_project(self) -> None:
+        self.calls.append("stop_auto_socket_project")
 
 
 class _FakeMoveRobotAPI:
@@ -84,6 +107,9 @@ class _FakeMovingSession:
     def position_snapshot(self):
         return self.current_pose
 
+    def robot_status_snapshot(self):
+        return {"CoordinateId": 0}
+
 
 class _FakeMoveRegistry:
     def __init__(self, session: _FakeMovingSession) -> None:
@@ -133,6 +159,45 @@ def test_auto_socket_config_sets_controller_callback_host() -> None:
     assert config.connect_on_enter
 
 
+def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
+    program = AutoMotionTestProgram()
+    robot_api = _FakeAutoModeRobotAPI()
+    fake_registry = types.SimpleNamespace(
+        settings=types.SimpleNamespace(),
+        robot_coordinate_id=5,
+        get_or_create_robot_session=lambda: object(),
+    )
+
+    with (
+        patch(
+            "app.codroid_picker.programs.auto_motion_test.registry",
+            return_value=fake_registry,
+        ),
+        patch.object(
+            program,
+            "_select_coordinate_and_wait_for_posture",
+            new=AsyncMock(side_effect=[None, RuntimeError("coordinate stale")]),
+        ),
+        patch.object(program, "_apply_current_speed", new=AsyncMock(return_value=None)),
+        patch.object(
+            program,
+            "_build_current_pose_targets",
+            return_value=([], (0.0, 0.0, 0.0), {}),
+        ),
+    ):
+        result = asyncio.run(program.execute(robot_api))
+
+    assert result.status.name == "ERROR"
+    assert "coordinate stale" in result.message
+    assert robot_api.calls == [
+        "power_on",
+        "set_auto_mode",
+        "set_manual_move_rate:1.0",
+        "stop_auto_socket_project",
+        "set_manual_mode",
+    ]
+
+
 def test_auto_socket_move_uses_cartesian_target_api() -> None:
     session = _FakeMovingSession()
     fake_registry = _FakeMoveRegistry(session)
@@ -163,6 +228,53 @@ def test_auto_socket_move_uses_cartesian_target_api() -> None:
     move_call = robot_api.calls[-1]
     assert move_call[0] == "move_to_cartesian_target_linear"
     assert move_call[1]["coord"]["datavar"]["value"] == 5
+
+
+def test_auto_socket_move_accepts_base_posture_for_coord5_target() -> None:
+    session = _FakeMovingSession()
+    session.current_pose = types.SimpleNamespace(
+        x=-350.0,
+        y=-30.0,
+        z=364.0,
+        a=0.0,
+        b=0.0,
+        c=0.0,
+    )
+    fake_registry = _FakeMoveRegistry(session)
+    robot_api = _FakeMoveRobotAPI(session)
+    target = {
+        "x": 107.0,
+        "y": -311.0,
+        "z": -194.0,
+        "a": 0.0,
+        "b": 0.0,
+        "c": 0.0,
+    }
+
+    async def _move_without_posture_change(_cpos):
+        robot_api.calls.append(("move_to_cartesian_target_linear", _cpos))
+
+    robot_api.move_to_cartesian_target_linear = _move_without_posture_change
+
+    with (
+        patch("app.codroid_picker.robot_motion.registry", return_value=fake_registry),
+        patch(
+            "app.codroid_picker.transforms._base_to_coord5",
+            return_value=np.array([107.0, -311.0, -194.0]),
+        ),
+    ):
+        asyncio.run(
+            move_auto_socket_cartesian_target(
+                robot_api,
+                target,
+                label="test_coord5_move",
+                coordinate_id=5,
+                timeout_s=0.1,
+                settle_s=0.0,
+            )
+        )
+
+    assert ("set_current_coordinate_id", 5) in robot_api.calls
 
 
 def test_auto_pick_fixed_move_delegates_to_shared_auto_socket_helper() -> None:

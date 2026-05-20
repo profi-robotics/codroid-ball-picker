@@ -32,10 +32,10 @@ from app.codroid_picker.robot_motion import (
     move_linear_follow_target,
     move_auto_socket_cartesian_target,
     command_gripper,
-    ensure_coordinate_active,
     log_move_target,
     resolve_gripper_close_width,
     resolve_gripper_limits,
+    select_coordinate_and_wait_for_posture,
 )
 from app.codroid_picker.pick_place_helpers import (
     build_drop_poses,
@@ -55,6 +55,7 @@ from app.codroid_picker.auto_plan_state import (
     publish_auto_plan_snapshot,
     update_auto_plan_snapshot,
 )
+from app.codroid_picker.session import SESSION
 
 LOGGER = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ class AutoPickPlaceProgram(RobotProgram):
         clear_auto_plan_snapshot()
 
         settings = registry().settings
+        session = registry().get_or_create_robot_session()
         coordinate_id = registry().robot_coordinate_id
         workspace_def = SESSION.workspace_definition
 
@@ -222,10 +224,9 @@ class AutoPickPlaceProgram(RobotProgram):
             LOGGER.warning(f"Auto: Power on failed: {exc}, continuing anyway")
             sys.stdout.flush()
 
-        # Skip the sleep and data refresh - go straight to coordinate system
-        LOGGER.info(
-            "Auto: Skipping sleep and session refresh, proceeding to coordinate setup")
-        sys.stdout.flush()
+        # Match the standalone auto-mode test: let power/mode transitions settle
+        # and verify a fresh posture in the selected coordinate frame.
+        await asyncio.sleep(0.5)
 
         # Ensure coordinate system is active
         self.update_message("Setting up coordinate system...")
@@ -233,22 +234,30 @@ class AutoPickPlaceProgram(RobotProgram):
         sys.stdout.flush()
 
         try:
-            await asyncio.wait_for(ensure_coordinate_active(robot_api, coordinate_id), timeout=2.0)
+            await select_coordinate_and_wait_for_posture(
+                robot_api,
+                session,
+                coordinate_id=coordinate_id,
+            )
             LOGGER.info("Auto: Coordinate system setup complete")
             sys.stdout.flush()
-        except asyncio.TimeoutError:
-            LOGGER.warning(
-                "Auto: Coordinate system setup timed out, continuing anyway")
-            sys.stdout.flush()
         except Exception as exc:
-            LOGGER.warning(
-                f"Auto: Coordinate system setup failed: {exc}, continuing anyway")
-            sys.stdout.flush()
+            LOGGER.exception("Auto: failed to confirm coordinate system")
+            message = f"Coordinate system setup failed: {exc}"
+            update_auto_plan_snapshot(stage="error", message=message)
+            await self._restore_manual_mode(robot_api)
+            return ProgramResult(status=ProgramStatus.ERROR, message=message)
 
         try:
             self.update_message("Switching controller to Auto mode...")
             await robot_api.set_auto_mode()
-            await robot_api.set_current_coordinate_id(coordinate_id)
+            await self._apply_auto_speed(robot_api)
+            await select_coordinate_and_wait_for_posture(
+                robot_api,
+                session,
+                coordinate_id=coordinate_id,
+            )
+            await asyncio.sleep(0.5)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Auto: failed to switch controller to Auto mode")
             message = f"Auto mode setup failed: {exc}"
@@ -270,7 +279,11 @@ class AutoPickPlaceProgram(RobotProgram):
                 LOGGER.debug("Auto: no active project stopped before socket start: %s", exc)
             auto_socket_context = robot_api.auto_socket_mode(auto_socket_config)
             backend = await auto_socket_context.__aenter__()
-            await robot_api.set_current_coordinate_id(coordinate_id)
+            await select_coordinate_and_wait_for_posture(
+                robot_api,
+                session,
+                coordinate_id=coordinate_id,
+            )
             project_info = getattr(backend, "project_info", None)
             LOGGER.info(
                 "Auto: auto-socket project=%s task=%s run_label=%s socket=%s:%s",
@@ -353,18 +366,29 @@ class AutoPickPlaceProgram(RobotProgram):
     @staticmethod
     async def _cleanup_failed_auto_socket_start(robot_api: "CodroidAPI") -> None:
         """Best-effort cleanup after socket project startup fails."""
-        try:
-            await robot_api.stop_auto_socket_project()
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Auto: failed to stop auto-socket project after setup error: %s",
-                exc,
-            )
         await AutoPickPlaceProgram._restore_manual_mode(robot_api)
+
+    @staticmethod
+    async def _apply_auto_speed(robot_api: "CodroidAPI") -> None:
+        """Run auto-socket motion at full controller speed."""
+        SESSION.robot_speed_rate = 1.0
+        SESSION.robot_speed_last_set = time.time()
+        await robot_api.set_manual_move_rate(1.0)
 
     @staticmethod
     async def _restore_manual_mode(robot_api: "CodroidAPI") -> None:
         """Best-effort return from controller Auto mode after auto operation."""
+        try:
+            await robot_api.stop_command()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Auto: stop_command before Manual mode failed: %s", exc)
+        try:
+            await robot_api.stop_auto_socket_project()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug(
+                "Auto: stop_auto_socket_project before Manual mode failed: %s",
+                exc,
+            )
         try:
             await robot_api.set_manual_mode()
         except Exception as exc:  # noqa: BLE001

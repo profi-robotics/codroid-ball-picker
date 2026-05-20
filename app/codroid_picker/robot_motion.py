@@ -744,6 +744,62 @@ def _auto_socket_backend_connected(robot_api: "CodroidAPI") -> bool | None:
     return not writer.is_closing()
 
 
+def _status_coordinate_id(session: "RobotSession") -> int | None:
+    """Return the reported robot coordinate ID, if available."""
+    try:
+        status = session.robot_status_snapshot()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(status, dict):
+        return None
+    try:
+        return int(status.get("CoordinateId"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _auto_socket_posture_xyz_candidates(
+    session: "RobotSession",
+    *,
+    target_coordinate_id: int,
+) -> list[tuple[str, tuple[float, float, float]]]:
+    """Return current posture candidates in the target coordinate frame.
+
+    The controller can report RobotPosture in base coordinates while an
+    auto-socket project is active, even though the target frame is Coord5.
+    Comparing both the raw posture and its base-to-Coord5 transform prevents
+    false timeouts after a valid auto-mode move.
+    """
+    posture = session.position_snapshot()
+    raw_xyz = (
+        float(posture.x),
+        float(posture.y),
+        float(posture.z),
+    )
+    candidates = [("reported", raw_xyz)]
+    if int(target_coordinate_id) != int(registry().robot_coordinate_id):
+        return candidates
+
+    try:
+        from app.codroid_picker.transforms import _base_to_coord5
+
+        coord5_xyz = _base_to_coord5(np.array(raw_xyz, dtype=np.float64))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("Auto socket posture frame conversion failed: %s", exc)
+        return candidates
+    if coord5_xyz is None:
+        return candidates
+
+    converted_xyz = (
+        float(coord5_xyz[0]),
+        float(coord5_xyz[1]),
+        float(coord5_xyz[2]),
+    )
+    if converted_xyz != raw_xyz:
+        candidates.append(("base_to_coord5", converted_xyz))
+    return candidates
+
+
 async def move_auto_socket_cartesian_target(
     robot_api: "CodroidAPI",
     target_pose: dict,
@@ -820,23 +876,30 @@ async def move_auto_socket_cartesian_target(
     deadline = time.monotonic() + max(timeout_s, 0.1)
     settle_since: Optional[float] = None
     last_xyz: tuple[float, float, float] | None = None
+    last_xyz_frame = "unavailable"
 
     while time.monotonic() < deadline:
         if active_check is not None:
             active_check()
 
-        posture = session.position_snapshot()
         if session.posture_seen():
-            last_xyz = (
-                float(posture.x),
-                float(posture.y),
-                float(posture.z),
+            candidates = _auto_socket_posture_xyz_candidates(
+                session,
+                target_coordinate_id=int(coordinate_id),
             )
-            within_target = (
-                abs(last_xyz[0] - target_xyz[0]) <= tolerance_mm
-                and abs(last_xyz[1] - target_xyz[1]) <= tolerance_mm
-                and abs(last_xyz[2] - target_xyz[2]) <= z_tolerance_mm
-            )
+            last_xyz_frame, last_xyz = candidates[0]
+            within_target = False
+            for frame, candidate_xyz in candidates:
+                candidate_within_target = (
+                    abs(candidate_xyz[0] - target_xyz[0]) <= tolerance_mm
+                    and abs(candidate_xyz[1] - target_xyz[1]) <= tolerance_mm
+                    and abs(candidate_xyz[2] - target_xyz[2]) <= z_tolerance_mm
+                )
+                if candidate_within_target:
+                    last_xyz_frame = frame
+                    last_xyz = candidate_xyz
+                    within_target = True
+                    break
             if within_target:
                 if settle_s <= 0:
                     break
@@ -853,6 +916,8 @@ async def move_auto_socket_cartesian_target(
             "Auto socket move did not reach "
             f"{label} within {timeout_s:.1f}s "
             f"(coord={coordinate_id}, current_xyz={last_xyz}, "
+            f"current_frame={last_xyz_frame}, "
+            f"reported_coordinate={_status_coordinate_id(session)}, "
             "target_xyz="
             f"({target_xyz[0]:.2f}, {target_xyz[1]:.2f}, {target_xyz[2]:.2f}), "
             f"tolerance_xy={tolerance_mm:.1f}mm, "
@@ -888,6 +953,53 @@ async def ensure_coordinate_active(
             return
 
     await robot_api.set_current_coordinate_id(coordinate_id)
+
+
+async def select_coordinate_and_wait_for_posture(
+    robot_api: "CodroidAPI",
+    session: "RobotSession",
+    *,
+    coordinate_id: int,
+    timeout_s: float = 5.0,
+    settle_s: float = 2.0,
+) -> None:
+    """Select a coordinate ID and wait for status plus a fresh posture sample."""
+    initial_posture = session.position_snapshot()
+    initial_timestamp = float(getattr(initial_posture, "timestamp", 0.0) or 0.0)
+
+    await ensure_coordinate_active(robot_api, coordinate_id)
+    deadline = time.monotonic() + max(float(timeout_s), 0.1)
+    resent = False
+
+    while time.monotonic() < deadline:
+        status = session.robot_status_snapshot()
+        current_id = status.get("CoordinateId") if isinstance(status, dict) else None
+        try:
+            matched_coordinate = int(current_id) == int(coordinate_id)
+        except (TypeError, ValueError):
+            matched_coordinate = False
+
+        posture = session.position_snapshot()
+        posture_timestamp = float(getattr(posture, "timestamp", 0.0) or 0.0)
+        fresh_posture = (
+            posture_timestamp <= 0.0
+            or initial_timestamp <= 0.0
+            or posture_timestamp > initial_timestamp
+        )
+        if matched_coordinate and fresh_posture:
+            await asyncio.sleep(max(float(settle_s), 0.0))
+            return
+
+        if not resent and time.monotonic() > deadline - (
+            max(float(timeout_s), 0.1) / 2.0
+        ):
+            await robot_api.set_current_coordinate_id(coordinate_id)
+            resent = True
+        await asyncio.sleep(0.1)
+
+    raise RuntimeError(
+        f"Failed to confirm CoordinateId {coordinate_id} with fresh posture."
+    )
 
 
 def log_move_target(
