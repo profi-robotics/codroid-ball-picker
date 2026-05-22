@@ -23,7 +23,6 @@ from app.codroid_picker.app_instance import registry
 from app.codroid_picker.programs.auto_mode import apply_selected_auto_speed
 from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.programs.auto_mode import restore_manual_mode
-from app.codroid_picker.programs.auto_mode import robot_speed_move_token
 from app.codroid_picker.programs.base import (
     ProgramResult,
     ProgramStatus,
@@ -230,7 +229,7 @@ class AutoMotionTestProgram(RobotProgram):
             connect_on_enter=True,
             accept_timeout_s=25.0,
             read_timeout_ms=10000,
-            move_speed=robot_speed_move_token(),
+            move_speed="V100",
             move_acc="ACC100",
         )
 
@@ -293,7 +292,7 @@ class AutoMotionTestProgram(RobotProgram):
         from app.codroid_picker.session import SESSION
 
         speed_rate = float(np.clip(SESSION.robot_speed_rate, 0.05, 1.0))
-        await robot_api.set_manual_move_rate(speed_rate)
+        await robot_api.set_speed_multiplier(speed_rate)
         SESSION.robot_speed_rate = speed_rate
         SESSION.robot_speed_last_set = time.time()
 

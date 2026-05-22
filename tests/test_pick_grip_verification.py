@@ -82,6 +82,9 @@ class _FakeRobotAPI:
     async def set_manual_move_rate(self, rate: float) -> None:
         self.calls.append(f"set_manual_move_rate:{rate}")
 
+    async def set_speed_multiplier(self, rate: float) -> None:
+        self.calls.append(f"set_speed_multiplier:{rate}")
+
     async def set_manual_mode(self) -> None:
         self.calls.append("set_manual_mode")
 

@@ -107,11 +107,11 @@ def register_controls_callbacks(app: Dash) -> None:
             }, no_update
 
         async def _set_speed(api: codroid_picker_module.CodroidAPI) -> None:
-            await api.set_manual_move_rate(rate)
+            await api.set_speed_multiplier(rate)
 
         try:
             if active_api is not None:
-                await active_api.set_manual_move_rate(rate)
+                await active_api.set_speed_multiplier(rate)
             else:
                 await codroid_picker_module._with_robot_api(
                     robot_uri or codroid_picker_module.DEFAULT_ROBOT_URI, _set_speed

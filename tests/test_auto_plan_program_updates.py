@@ -82,6 +82,9 @@ class _FakeRobotAPI:
     async def set_manual_move_rate(self, rate: float) -> None:
         self.calls.append(f"set_manual_move_rate:{rate}")
 
+    async def set_speed_multiplier(self, rate: float) -> None:
+        self.calls.append(f"set_speed_multiplier:{rate}")
+
     async def set_manual_mode(self) -> None:
         self.calls.append("set_manual_mode")
 
@@ -202,7 +205,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(socket_context.config.project_socket_host, "192.168.101.110")
         self.assertEqual(socket_context.config.accept_timeout_s, 25.0)
         self.assertEqual(socket_context.config.read_timeout_ms, 120000)
-        self.assertEqual(socket_context.config.move_speed, "V65")
+        self.assertEqual(socket_context.config.move_speed, "V100")
         self.assertEqual(socket_context.config.move_acc, "ACC100")
         self.assertTrue(socket_context.config.install_project)
         self.assertTrue(socket_context.config.start_project)
@@ -240,7 +243,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
                 "power_on",
                 "set_current_coordinate_id:5",
                 "set_auto_mode",
-                "set_manual_move_rate:0.65",
+                "set_speed_multiplier:0.65",
                 "set_current_coordinate_id:5",
                 "_local_source_ip_for:192.168.101.100",
                 "auto_socket_mode",

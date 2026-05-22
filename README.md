@@ -117,8 +117,9 @@ camera, detection, and robot flows together. It provides:
 - An Auto Motion Test footer action that enters the same auto-socket motion
   mode as Auto Pick & Place, sends a small vertical move from the current
   robot pose, then returns to the starting pose.
-- The footer robot speed slider controls the manual move rate and the
-  auto-socket MoveL speed used by Auto Pick & Place and Auto Motion Test.
+- The footer robot speed slider controls the shared robot speed multiplier
+  (`moveRate` and `manualMoveRate`) used by Auto Pick & Place, Auto Motion
+  Test, and manual jogging.
 - A program safety banner (warning border) that highlights when robot motion
   sequences are running, plus pause/stop/reset controls and emergency stop /
   overspeed acknowledgment modals that pause active programs. The compact

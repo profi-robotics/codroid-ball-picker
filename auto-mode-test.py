@@ -18,12 +18,14 @@ PASSWORD = '123456'
 
 MOVE_DELTA_Z_MM = 35.0
 CYCLES = 4
+SPEED_PERCENTAGES = (10, 20, 50, 70, 100)
 REACH_TOLERANCE_MM = 3.0
 MOVE_TIMEOUT_S = 10.0
 AUTO_MODE_SETTLE_S = 0.5
 COORDINATE_ID = 5
 COORDINATE_SETTLE_S = 2.0
 COORDINATE_TIMEOUT_S = 5.0
+SPEED_SETTLE_TIMEOUT_S = 2.0
 
 POWER_KEYS = (
     'PowerOn',
@@ -43,12 +45,16 @@ class RobotStateSnapshot:
     power_on: bool | None
     mode: str | None
     coordinate_id: int | None
+    move_rate: float | None
+    manual_move_rate: float | None
 
     def summary(self):
         return {
             'power_on': self.power_on,
             'mode': self.mode or 'unknown',
             'coordinate_id': self.coordinate_id,
+            'move_rate': self.move_rate,
+            'manual_move_rate': self.manual_move_rate,
         }
 
 
@@ -175,11 +181,23 @@ def infer_coordinate_id(status):
         return None
 
 
+def infer_float_status(status, key):
+    value = (status or {}).get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def snapshot_robot_state(status):
     return RobotStateSnapshot(
         power_on=infer_power_on(status),
         mode=find_robot_mode(status or {}),
         coordinate_id=infer_coordinate_id(status),
+        move_rate=infer_float_status(status, 'moveRate'),
+        manual_move_rate=infer_float_status(status, 'manualMoveRate'),
     )
 
 
@@ -206,6 +224,33 @@ def make_target_from_pose(pose, z):
         float(pose['a']),
         float(pose['b']),
         float(pose['c']),
+    )
+
+
+def speed_rate(speed_percent):
+    return max(0.01, min(1.0, float(speed_percent) / 100.0))
+
+
+def build_auto_socket_config(
+    local_ip,
+    *,
+    install_project,
+    start_project,
+):
+    return AutoSocketConfig(
+        socket_role='server',
+        socket_bind_host='0.0.0.0',
+        socket_port=PORT,
+        project_socket_host=local_ip,
+        project_socket_port=PORT,
+        install_project=install_project,
+        start_project=start_project,
+        stop_project_on_exit=True,
+        connect_on_enter=True,
+        accept_timeout_s=25.0,
+        read_timeout_ms=10000,
+        move_speed='V100',
+        move_acc='ACC100',
     )
 
 
@@ -242,6 +287,19 @@ async def restore_coordinate(api, coordinate_id):
     )
 
 
+async def restore_move_rates(api, snapshot):
+    if snapshot.move_rate is not None:
+        await restore_step(
+            'set_auto_move_rate',
+            api.set_auto_move_rate(snapshot.move_rate),
+        )
+    if snapshot.manual_move_rate is not None:
+        await restore_step(
+            'set_manual_move_rate',
+            api.set_manual_move_rate(snapshot.manual_move_rate),
+        )
+
+
 async def restore_robot_state(api, snapshot):
     print('restore_state_start', snapshot.summary(), flush=True)
     await restore_step('clear_target_position', api.clear_target_position())
@@ -254,14 +312,17 @@ async def restore_robot_state(api, snapshot):
         await asyncio.sleep(AUTO_MODE_SETTLE_S)
         await restore_coordinate(api, snapshot.coordinate_id)
         await restore_mode(api, snapshot.mode)
+        await restore_move_rates(api, snapshot)
     elif snapshot.power_on is False:
         await restore_coordinate(api, snapshot.coordinate_id)
         await restore_mode(api, snapshot.mode)
+        await restore_move_rates(api, snapshot)
         await asyncio.sleep(0.2)
         await restore_step('power_off', api.power_off())
     else:
         await restore_coordinate(api, snapshot.coordinate_id)
         await restore_mode(api, snapshot.mode)
+        await restore_move_rates(api, snapshot)
 
     print('restore_state_done', snapshot.summary(), flush=True)
 
@@ -365,6 +426,45 @@ async def main():
             f'Failed to confirm CoordinateId {coordinate_id} with RobotPosture.'
         )
 
+    async def set_motion_speed_and_wait(speed_percent):
+        rate = speed_rate(speed_percent)
+        await api.set_speed_multiplier(rate)
+
+        deadline = time.monotonic() + SPEED_SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            move_rate = infer_float_status(latest_status, 'moveRate')
+            manual_move_rate = infer_float_status(latest_status, 'manualMoveRate')
+            if (
+                move_rate is not None
+                and abs(move_rate - rate) < 0.001
+                and manual_move_rate is not None
+                and abs(manual_move_rate - rate) < 0.001
+            ):
+                print(
+                    'speed_rate_confirmed',
+                    speed_percent,
+                    move_rate,
+                    manual_move_rate,
+                    flush=True,
+                )
+                return rate
+            await asyncio.sleep(0.1)
+
+        print(
+            'speed_rate_unconfirmed',
+            speed_percent,
+            rate,
+            {
+                'moveRate': infer_float_status(latest_status, 'moveRate'),
+                'manualMoveRate': infer_float_status(
+                    latest_status,
+                    'manualMoveRate',
+                ),
+            },
+            flush=True,
+        )
+        return rate
+
     await api.connect()
     task = asyncio.create_task(listener())
 
@@ -394,20 +494,10 @@ async def main():
             raise RuntimeError('No RobotPosture received; refusing motion test.')
 
         local_ip = api._local_source_ip_for(HOST)
-        config = AutoSocketConfig(
-            socket_role='server',
-            socket_bind_host='0.0.0.0',
-            socket_port=PORT,
-            project_socket_host=local_ip,
-            project_socket_port=PORT,
+        config = build_auto_socket_config(
+            local_ip,
             install_project=False,
             start_project=False,
-            stop_project_on_exit=True,
-            connect_on_enter=True,
-            accept_timeout_s=25.0,
-            read_timeout_ms=10000,
-            move_speed='V100',
-            move_acc='ACC100',
         )
 
         with contextlib.suppress(Exception):
@@ -446,6 +536,7 @@ async def main():
             flush=True,
         )
         print('cycles', CYCLES, flush=True)
+        print('speed_percentages', SPEED_PERCENTAGES, flush=True)
         print('motion_coordinate_id', COORDINATE_ID, flush=True)
 
         print('activate_auto_mode_start', flush=True)
@@ -457,23 +548,13 @@ async def main():
         await asyncio.sleep(AUTO_MODE_SETTLE_S)
         print('activate_auto_mode_done', flush=True)
 
-        run_config = AutoSocketConfig(
-            socket_role='server',
-            socket_bind_host='0.0.0.0',
-            socket_port=PORT,
-            project_socket_host=local_ip,
-            project_socket_port=PORT,
+        start = time.monotonic()
+
+        run_config = build_auto_socket_config(
+            local_ip,
             install_project=True,
             start_project=True,
-            stop_project_on_exit=True,
-            connect_on_enter=True,
-            accept_timeout_s=25.0,
-            read_timeout_ms=10000,
-            move_speed='V100',
-            move_acc='ACC100',
         )
-
-        start = time.monotonic()
 
         async with api.auto_socket_mode(run_config) as backend:
             print(
@@ -486,12 +567,35 @@ async def main():
 
             try:
                 await select_coordinate_and_wait(COORDINATE_ID)
-                print('socket_motion_coordinate_confirmed', COORDINATE_ID, flush=True)
-                for cycle in range(1, CYCLES + 1):
-                    print('cycle_start', cycle, flush=True)
-                    await move_and_wait(up_target, f'cycle_{cycle}_up_pose')
-                    await move_and_wait(base_target, f'cycle_{cycle}_base_pose')
-                    print('cycle_done', cycle, flush=True)
+                print(
+                    'socket_motion_coordinate_confirmed',
+                    COORDINATE_ID,
+                    flush=True,
+                )
+
+                for speed_percent in SPEED_PERCENTAGES:
+                    rate = await set_motion_speed_and_wait(speed_percent)
+                    print(
+                        'speed_start',
+                        speed_percent,
+                        rate,
+                        run_config.move_speed,
+                        flush=True,
+                    )
+                    for cycle in range(1, CYCLES + 1):
+                        print('cycle_start', speed_percent, cycle, flush=True)
+                        await move_and_wait(
+                            up_target,
+                            f'speed_{speed_percent}_cycle_{cycle}_up_pose',
+                        )
+                        await move_and_wait(
+                            base_target,
+                            f'speed_{speed_percent}_cycle_{cycle}_base_pose',
+                        )
+                        print('cycle_done', speed_percent, cycle, flush=True)
+
+                    print('speed_done', speed_percent, flush=True)
+                    await asyncio.sleep(0.5)
             finally:
                 await return_to_start_pose(base_target)
 

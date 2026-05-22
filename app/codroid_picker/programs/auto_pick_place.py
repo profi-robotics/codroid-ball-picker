@@ -58,7 +58,6 @@ from app.codroid_picker.auto_plan_state import (
 from app.codroid_picker.programs.auto_mode import apply_selected_auto_speed
 from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.programs.auto_mode import restore_manual_mode
-from app.codroid_picker.programs.auto_mode import robot_speed_move_token
 
 LOGGER = logging.getLogger(__name__)
 
@@ -361,7 +360,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 getattr(settings, "auto_socket_read_timeout_ms", 120000)
                 or 120000
             ),
-            move_speed=robot_speed_move_token(),
+            move_speed="V100",
             move_acc="ACC100",
         )
 

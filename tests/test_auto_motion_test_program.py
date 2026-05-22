@@ -14,7 +14,6 @@ from app.codroid_picker.programs.auto_mode import (
     controller_is_auto_mode,
     enter_controller_auto_mode,
     pause_auto_program_manual_mode,
-    robot_speed_move_token,
     restore_active_auto_program_manual_mode,
     restore_manual_mode,
     resume_auto_program_auto_mode,
@@ -49,6 +48,9 @@ class _FakeAutoModeRobotAPI(_FakeRobotAPI):
 
     async def set_manual_move_rate(self, rate: float) -> None:
         self.calls.append(f"set_manual_move_rate:{rate}")
+
+    async def set_speed_multiplier(self, rate: float) -> None:
+        self.calls.append(f"set_speed_multiplier:{rate}")
 
     async def set_manual_mode(self) -> None:
         self.calls.append("set_manual_mode")
@@ -209,7 +211,7 @@ def test_auto_socket_config_sets_controller_callback_host() -> None:
         assert config.project_socket_host == "192.168.101.110"
         assert config.project_socket_port == 19093
         assert config.accept_timeout_s == 25.0
-        assert config.move_speed == "V65"
+        assert config.move_speed == "V100"
         assert config.install_project
         assert config.start_project
         assert config.connect_on_enter
@@ -257,7 +259,7 @@ def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
         assert robot_api.calls == [
             "power_on",
             "set_auto_mode",
-            "set_manual_move_rate:0.55",
+            "set_speed_multiplier:0.55",
             "clear_target_position",
             "stop_command",
             "stop_auto_socket_project",
@@ -330,7 +332,7 @@ def test_auto_mode_helpers_apply_selected_speed_and_restore_manual() -> None:
         assert robot_api._auto_socket_backend is None
         assert SESSION.robot_speed_rate == 0.4
         assert robot_api.calls == [
-            "set_manual_move_rate:0.4",
+            "set_speed_multiplier:0.4",
             "clear_target_position",
             "stop_command",
             "stop_auto_socket_project",
@@ -338,12 +340,6 @@ def test_auto_mode_helpers_apply_selected_speed_and_restore_manual() -> None:
         ]
     finally:
         SESSION.robot_speed_rate = previous_speed_rate
-
-
-def test_robot_speed_move_token_uses_selected_rate() -> None:
-    assert robot_speed_move_token(0.65) == "V65"
-    assert robot_speed_move_token(0.0) == "V1"
-    assert robot_speed_move_token(1.5) == "V100"
 
 
 def test_restore_manual_detaches_socket_backend_before_controller_commands() -> None:
@@ -491,7 +487,7 @@ def test_resume_auto_program_switches_back_to_auto_mode() -> None:
         assert robot_api._auto_socket_backend is backend
         assert robot_api.calls == [
             "set_auto_mode",
-            "set_manual_move_rate:0.35",
+            "set_speed_multiplier:0.35",
         ]
     finally:
         SESSION.robot_speed_rate = previous_speed_rate
@@ -515,7 +511,7 @@ def test_enter_controller_auto_mode_applies_selected_speed() -> None:
         assert SESSION.robot_speed_rate == 0.45
         assert robot_api.calls == [
             "set_auto_mode",
-            "set_manual_move_rate:0.45",
+            "set_speed_multiplier:0.45",
         ]
     finally:
         SESSION.robot_speed_rate = previous_speed_rate

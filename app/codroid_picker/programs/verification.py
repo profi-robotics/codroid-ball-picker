@@ -301,7 +301,7 @@ class VerificationProgram(RobotProgram):
         target_speed_rate = 0.6
 
         async def _set_speed(rate: float) -> None:
-            await robot_api.set_manual_move_rate(rate)
+            await robot_api.set_speed_multiplier(rate)
             SESSION.robot_speed_rate = rate
             SESSION.robot_speed_last_set = time.time()
 

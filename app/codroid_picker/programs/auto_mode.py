@@ -32,16 +32,6 @@ def current_robot_speed_rate(*, minimum: float = 0.0) -> float:
     return clamp_robot_speed_rate(SESSION.robot_speed_rate, minimum=minimum)
 
 
-def robot_speed_move_token(rate: object | None = None) -> str:
-    """Return a Codroid Move speed token such as V65 for auto-socket projects."""
-    if rate is None:
-        speed_rate = current_robot_speed_rate(minimum=0.01)
-    else:
-        speed_rate = clamp_robot_speed_rate(rate, minimum=0.01)
-    speed_percent = int(round(speed_rate * 100))
-    return f"V{max(1, min(100, speed_percent))}"
-
-
 def _mode_key(key: object) -> bool:
     lowered = str(key).lower()
     return "mode" in lowered and "model" not in lowered
@@ -101,7 +91,7 @@ def controller_is_manual_mode(status_snapshot: object) -> bool:
 async def apply_selected_auto_speed(robot_api: "CodroidAPI") -> None:
     """Apply the UI-selected speed rate before auto-socket motion."""
     speed_rate = current_robot_speed_rate(minimum=0.01)
-    await robot_api.set_manual_move_rate(speed_rate)
+    await robot_api.set_speed_multiplier(speed_rate)
     SESSION.robot_speed_rate = speed_rate
     SESSION.robot_speed_last_set = time.time()
 

@@ -446,7 +446,7 @@ class PlateTestProgram(RobotProgram):
         await robot_api.power_on()
         await robot_api.set_current_coordinate_id(plate_test_coord_id)
         speed_rate = max(float(ui.SESSION.robot_speed_rate), 0.1)
-        await robot_api.set_manual_move_rate(speed_rate)
+        await robot_api.set_speed_multiplier(speed_rate)
         self._capture["robot_speed_rate"] = speed_rate
 
         def _travel_z(z_a: float, z_b: float) -> float:
