@@ -62,7 +62,7 @@ def register_controls_callbacks(app: Dash) -> None:
     ) -> Tuple[dict, float]:
         import app.codroid_picker as codroid_picker_module
         from app.codroid_picker.programs import get_registry
-        from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
+        from app.codroid_picker.programs.auto_mode import apply_selected_auto_speed
 
         if value is None:
             return no_update, no_update
@@ -75,20 +75,20 @@ def register_controls_callbacks(app: Dash) -> None:
             }, no_update
         rate = max(0.0, min(1.0, float(value) / 100.0))
         now = time.time()
+        codroid_picker_module.SESSION.robot_speed_rate = rate
 
         registry = get_registry()
         active_program = registry.active_program
         auto_api = _active_auto_control_api(active_program)
         if auto_api is not None:
-            await apply_full_auto_speed(auto_api)
+            await apply_selected_auto_speed(auto_api)
             return {
-                "status": "locked_auto",
-                "value": 100.0,
-                "rate": 1.0,
+                "status": "active_auto",
+                "value": value,
+                "rate": rate,
                 "updated": time.time(),
-            }, 100.0
+            }, no_update
 
-        codroid_picker_module.SESSION.robot_speed_rate = rate
         active_api = (
             active_program.robot_api
             if active_program and active_program.robot_api

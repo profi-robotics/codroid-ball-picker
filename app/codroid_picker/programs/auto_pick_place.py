@@ -55,9 +55,10 @@ from app.codroid_picker.auto_plan_state import (
     publish_auto_plan_snapshot,
     update_auto_plan_snapshot,
 )
-from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
+from app.codroid_picker.programs.auto_mode import apply_selected_auto_speed
 from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.programs.auto_mode import restore_manual_mode
+from app.codroid_picker.programs.auto_mode import robot_speed_move_token
 
 LOGGER = logging.getLogger(__name__)
 
@@ -360,7 +361,7 @@ class AutoPickPlaceProgram(RobotProgram):
                 getattr(settings, "auto_socket_read_timeout_ms", 120000)
                 or 120000
             ),
-            move_speed="V100",
+            move_speed=robot_speed_move_token(),
             move_acc="ACC100",
         )
 
@@ -371,12 +372,12 @@ class AutoPickPlaceProgram(RobotProgram):
 
     @staticmethod
     async def _apply_auto_speed(robot_api: "CodroidAPI") -> None:
-        """Run auto-socket motion at full controller speed."""
-        await apply_full_auto_speed(robot_api)
+        """Apply the selected speed for auto-socket motion."""
+        await apply_selected_auto_speed(robot_api)
 
     @staticmethod
     async def _enter_auto_mode(robot_api: "CodroidAPI") -> None:
-        """Switch to Auto mode with full robot speed."""
+        """Switch to Auto mode with the selected robot speed."""
         await enter_controller_auto_mode(robot_api)
 
     @staticmethod

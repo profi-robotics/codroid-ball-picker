@@ -319,7 +319,7 @@ def _build_robot_speed_block() -> dmc.Stack:
         min=0,
         max=100,
         step=5,
-        value=65,
+        value=25,
         labelAlwaysOn=False,
         size="xs",
         marks=[],

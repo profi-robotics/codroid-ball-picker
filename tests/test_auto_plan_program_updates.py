@@ -137,6 +137,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
             "auto_config": SESSION.auto_config,
             "auto_waiting_at_drop": SESSION.auto_waiting_at_drop,
             "robot_has_object": SESSION.robot_has_object,
+            "robot_speed_rate": SESSION.robot_speed_rate,
         }
         SESSION.workspace_definition = object()
         SESSION.drop_target_mm = (10.0, 10.0)
@@ -145,6 +146,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         SESSION.calibration_bundle = object()
         SESSION.auto_config = {}
         SESSION.auto_waiting_at_drop = False
+        SESSION.robot_speed_rate = 0.65
 
     def tearDown(self) -> None:
         for key, value in self._snapshot.items():
@@ -200,7 +202,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(socket_context.config.project_socket_host, "192.168.101.110")
         self.assertEqual(socket_context.config.accept_timeout_s, 25.0)
         self.assertEqual(socket_context.config.read_timeout_ms, 120000)
-        self.assertEqual(socket_context.config.move_speed, "V100")
+        self.assertEqual(socket_context.config.move_speed, "V65")
         self.assertEqual(socket_context.config.move_acc, "ACC100")
         self.assertTrue(socket_context.config.install_project)
         self.assertTrue(socket_context.config.start_project)
@@ -238,7 +240,7 @@ class AutoPlanProgramUpdateTests(unittest.IsolatedAsyncioTestCase):
                 "power_on",
                 "set_current_coordinate_id:5",
                 "set_auto_mode",
-                "set_manual_move_rate:1.0",
+                "set_manual_move_rate:0.65",
                 "set_current_coordinate_id:5",
                 "_local_source_ip_for:192.168.101.100",
                 "auto_socket_mode",

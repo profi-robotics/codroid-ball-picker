@@ -10,10 +10,11 @@ import numpy as np
 
 from app.codroid_picker.programs.auto_motion_test import AutoMotionTestProgram
 from app.codroid_picker.programs.auto_mode import (
-    apply_full_auto_speed,
+    apply_selected_auto_speed,
     controller_is_auto_mode,
     enter_controller_auto_mode,
     pause_auto_program_manual_mode,
+    robot_speed_move_token,
     restore_active_auto_program_manual_mode,
     restore_manual_mode,
     resume_auto_program_auto_mode,
@@ -196,21 +197,29 @@ def test_motion_test_uses_coordinate5_vertical_targets() -> None:
 
 
 def test_auto_socket_config_sets_controller_callback_host() -> None:
+    previous_speed_rate = SESSION.robot_speed_rate
+    SESSION.robot_speed_rate = 0.65
     config = AutoMotionTestProgram._build_auto_socket_config(
         types.SimpleNamespace(auto_socket_port=19093),
         _FakeRobotAPI(),
     )
 
-    assert config.socket_port == 19093
-    assert config.project_socket_host == "192.168.101.110"
-    assert config.project_socket_port == 19093
-    assert config.accept_timeout_s == 25.0
-    assert config.install_project
-    assert config.start_project
-    assert config.connect_on_enter
+    try:
+        assert config.socket_port == 19093
+        assert config.project_socket_host == "192.168.101.110"
+        assert config.project_socket_port == 19093
+        assert config.accept_timeout_s == 25.0
+        assert config.move_speed == "V65"
+        assert config.install_project
+        assert config.start_project
+        assert config.connect_on_enter
+    finally:
+        SESSION.robot_speed_rate = previous_speed_rate
 
 
 def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
+    previous_speed_rate = SESSION.robot_speed_rate
+    SESSION.robot_speed_rate = 0.55
     program = AutoMotionTestProgram()
     robot_api = _FakeAutoModeRobotAPI()
     fake_registry = types.SimpleNamespace(
@@ -242,17 +251,20 @@ def test_motion_test_restores_manual_when_post_auto_setup_fails() -> None:
     ):
         result = asyncio.run(program.execute(robot_api))
 
-    assert result.status.name == "ERROR"
-    assert "coordinate stale" in result.message
-    assert robot_api.calls == [
-        "power_on",
-        "set_auto_mode",
-        "set_manual_move_rate:1.0",
-        "clear_target_position",
-        "stop_command",
-        "stop_auto_socket_project",
-        "set_manual_mode",
-    ]
+    try:
+        assert result.status.name == "ERROR"
+        assert "coordinate stale" in result.message
+        assert robot_api.calls == [
+            "power_on",
+            "set_auto_mode",
+            "set_manual_move_rate:0.55",
+            "clear_target_position",
+            "stop_command",
+            "stop_auto_socket_project",
+            "set_manual_mode",
+        ]
+    finally:
+        SESSION.robot_speed_rate = previous_speed_rate
 
 
 def test_auto_socket_move_uses_cartesian_target_api() -> None:
@@ -287,7 +299,9 @@ def test_auto_socket_move_uses_cartesian_target_api() -> None:
     assert move_call[1]["coord"]["datavar"]["value"] == 5
 
 
-def test_auto_mode_helpers_apply_full_speed_and_restore_manual() -> None:
+def test_auto_mode_helpers_apply_selected_speed_and_restore_manual() -> None:
+    previous_speed_rate = SESSION.robot_speed_rate
+    SESSION.robot_speed_rate = 0.4
     robot_api = _FakeAutoModeRobotAPI()
     robot_api._auto_socket_backend = object()
     active_program = types.SimpleNamespace(
@@ -299,7 +313,7 @@ def test_auto_mode_helpers_apply_full_speed_and_restore_manual() -> None:
         "app.codroid_picker.programs.auto_mode._latest_controller_status",
         return_value={"ControllerMode": "MANUAL"},
     ):
-        asyncio.run(apply_full_auto_speed(robot_api))
+        asyncio.run(apply_selected_auto_speed(robot_api))
         restored = asyncio.run(
             restore_active_auto_program_manual_mode(
                 active_program,
@@ -311,16 +325,25 @@ def test_auto_mode_helpers_apply_full_speed_and_restore_manual() -> None:
             )
         )
 
-    assert restored
-    assert robot_api._auto_socket_backend is None
-    assert SESSION.robot_speed_rate == 1.0
-    assert robot_api.calls == [
-        "set_manual_move_rate:1.0",
-        "clear_target_position",
-        "stop_command",
-        "stop_auto_socket_project",
-        "set_manual_mode",
-    ]
+    try:
+        assert restored
+        assert robot_api._auto_socket_backend is None
+        assert SESSION.robot_speed_rate == 0.4
+        assert robot_api.calls == [
+            "set_manual_move_rate:0.4",
+            "clear_target_position",
+            "stop_command",
+            "stop_auto_socket_project",
+            "set_manual_mode",
+        ]
+    finally:
+        SESSION.robot_speed_rate = previous_speed_rate
+
+
+def test_robot_speed_move_token_uses_selected_rate() -> None:
+    assert robot_speed_move_token(0.65) == "V65"
+    assert robot_speed_move_token(0.0) == "V1"
+    assert robot_speed_move_token(1.5) == "V100"
 
 
 def test_restore_manual_detaches_socket_backend_before_controller_commands() -> None:
@@ -442,6 +465,8 @@ def test_pause_auto_program_switches_manual_without_closing_socket() -> None:
 
 
 def test_resume_auto_program_switches_back_to_auto_mode() -> None:
+    previous_speed_rate = SESSION.robot_speed_rate
+    SESSION.robot_speed_rate = 0.35
     robot_api = _FakeAutoModeRobotAPI()
     backend = _FakeAutoSocketBackend()
     robot_api._auto_socket_backend = backend
@@ -461,12 +486,15 @@ def test_resume_auto_program_switches_back_to_auto_mode() -> None:
         )
     )
 
-    assert resumed
-    assert robot_api._auto_socket_backend is backend
-    assert robot_api.calls == [
-        "set_auto_mode",
-        "set_manual_move_rate:1.0",
-    ]
+    try:
+        assert resumed
+        assert robot_api._auto_socket_backend is backend
+        assert robot_api.calls == [
+            "set_auto_mode",
+            "set_manual_move_rate:0.35",
+        ]
+    finally:
+        SESSION.robot_speed_rate = previous_speed_rate
 
 
 def test_controller_is_auto_mode_reads_nested_status_values() -> None:
@@ -476,16 +504,21 @@ def test_controller_is_auto_mode_reads_nested_status_values() -> None:
     assert not controller_is_auto_mode({"model": "auto-detection"})
 
 
-def test_enter_controller_auto_mode_forces_full_speed() -> None:
+def test_enter_controller_auto_mode_applies_selected_speed() -> None:
+    previous_speed_rate = SESSION.robot_speed_rate
+    SESSION.robot_speed_rate = 0.45
     robot_api = _FakeAutoModeRobotAPI()
 
     asyncio.run(enter_controller_auto_mode(robot_api))
 
-    assert SESSION.robot_speed_rate == 1.0
-    assert robot_api.calls == [
-        "set_auto_mode",
-        "set_manual_move_rate:1.0",
-    ]
+    try:
+        assert SESSION.robot_speed_rate == 0.45
+        assert robot_api.calls == [
+            "set_auto_mode",
+            "set_manual_move_rate:0.45",
+        ]
+    finally:
+        SESSION.robot_speed_rate = previous_speed_rate
 
 
 def test_auto_socket_move_accepts_base_posture_for_coord5_target() -> None:

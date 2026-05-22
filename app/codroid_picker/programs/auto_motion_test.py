@@ -20,9 +20,10 @@ if TYPE_CHECKING:
     from codroid_api import CodroidAPI
 
 from app.codroid_picker.app_instance import registry
-from app.codroid_picker.programs.auto_mode import apply_full_auto_speed
+from app.codroid_picker.programs.auto_mode import apply_selected_auto_speed
 from app.codroid_picker.programs.auto_mode import enter_controller_auto_mode
 from app.codroid_picker.programs.auto_mode import restore_manual_mode
+from app.codroid_picker.programs.auto_mode import robot_speed_move_token
 from app.codroid_picker.programs.base import (
     ProgramResult,
     ProgramStatus,
@@ -229,7 +230,7 @@ class AutoMotionTestProgram(RobotProgram):
             connect_on_enter=True,
             accept_timeout_s=25.0,
             read_timeout_ms=10000,
-            move_speed="V100",
+            move_speed=robot_speed_move_token(),
             move_acc="ACC100",
         )
 
@@ -297,11 +298,11 @@ class AutoMotionTestProgram(RobotProgram):
         SESSION.robot_speed_last_set = time.time()
 
     async def _apply_auto_speed(self, robot_api: "CodroidAPI") -> None:
-        """Apply full robot speed for auto-socket motion."""
-        await apply_full_auto_speed(robot_api)
+        """Apply the selected robot speed for auto-socket motion."""
+        await apply_selected_auto_speed(robot_api)
 
     async def _enter_auto_mode(self, robot_api: "CodroidAPI") -> None:
-        """Switch to Auto mode with full robot speed."""
+        """Switch to Auto mode with the selected robot speed."""
         await enter_controller_auto_mode(robot_api)
 
     async def _stream_target(

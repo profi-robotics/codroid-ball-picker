@@ -18,6 +18,30 @@ MANUAL_MODE_RETRIES = 3
 MANUAL_MODE_SETTLE_S = 0.4
 
 
+def clamp_robot_speed_rate(rate: object, *, minimum: float = 0.0) -> float:
+    """Clamp a robot speed rate to the controller's 0.0-1.0 range."""
+    try:
+        speed_rate = float(rate)
+    except (TypeError, ValueError):
+        speed_rate = float(SESSION.robot_speed_rate)
+    return max(float(minimum), min(1.0, speed_rate))
+
+
+def current_robot_speed_rate(*, minimum: float = 0.0) -> float:
+    """Return the current UI-selected robot speed rate."""
+    return clamp_robot_speed_rate(SESSION.robot_speed_rate, minimum=minimum)
+
+
+def robot_speed_move_token(rate: object | None = None) -> str:
+    """Return a Codroid Move speed token such as V65 for auto-socket projects."""
+    if rate is None:
+        speed_rate = current_robot_speed_rate(minimum=0.01)
+    else:
+        speed_rate = clamp_robot_speed_rate(rate, minimum=0.01)
+    speed_percent = int(round(speed_rate * 100))
+    return f"V{max(1, min(100, speed_percent))}"
+
+
 def _mode_key(key: object) -> bool:
     lowered = str(key).lower()
     return "mode" in lowered and "model" not in lowered
@@ -74,17 +98,18 @@ def controller_is_manual_mode(status_snapshot: object) -> bool:
     return find_controller_mode(status_snapshot or {}) == "manual"
 
 
-async def apply_full_auto_speed(robot_api: "CodroidAPI") -> None:
-    """Run auto-socket motion at full controller speed."""
-    await robot_api.set_manual_move_rate(1.0)
-    SESSION.robot_speed_rate = 1.0
+async def apply_selected_auto_speed(robot_api: "CodroidAPI") -> None:
+    """Apply the UI-selected speed rate before auto-socket motion."""
+    speed_rate = current_robot_speed_rate(minimum=0.01)
+    await robot_api.set_manual_move_rate(speed_rate)
+    SESSION.robot_speed_rate = speed_rate
     SESSION.robot_speed_last_set = time.time()
 
 
 async def enter_controller_auto_mode(robot_api: "CodroidAPI") -> None:
-    """Switch the controller to Auto mode and force 100% robot speed."""
+    """Switch the controller to Auto mode and apply the selected robot speed."""
     await robot_api.set_auto_mode()
-    await apply_full_auto_speed(robot_api)
+    await apply_selected_auto_speed(robot_api)
 
 
 def _latest_controller_status() -> object:
