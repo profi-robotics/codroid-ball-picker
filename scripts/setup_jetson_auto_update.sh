@@ -8,9 +8,10 @@ SERVICE_NAME="codroid-ball-picker-auto-update.service"
 TIMER_NAME="codroid-ball-picker-auto-update.timer"
 ENV_FILE="/etc/codroid-ball-picker-auto-update.env"
 INTERVAL="${AUTO_UPDATE_INTERVAL:-5min}"
-IMAGE_REF="${CODROID_IMAGE:-ghcr.io/profi-robotics/codroid-ball-picker:latest}"
+IMAGE_REF="ghcr.io/profi-robotics/codroid-ball-picker:latest"
 COMPOSE_SERVICE="${CODROID_COMPOSE_SERVICE:-ui}"
 CONTAINER_NAME="${CODROID_CONTAINER_NAME:-codroid-ui}"
+DOCKER_CONFIG_DIR="${DOCKER_CONFIG:-/home/university/.docker}"
 DOCKER_BIN=$(command -v docker || true)
 
 if ! command -v systemctl >/dev/null 2>&1; then
@@ -28,14 +29,14 @@ if [ -z "${DOCKER_BIN}" ]; then
   exit 1
 fi
 
-if [ ! -f "${ENV_FILE}" ]; then
+if [ ! -f "${ENV_FILE}" ] || grep -q '^CODROID_IMAGE=' "${ENV_FILE}"; then
   cat <<EOF | sudo tee "${ENV_FILE}" >/dev/null
 CODROID_IMAGE=${IMAGE_REF}
 CODROID_COMPOSE_SERVICE=${COMPOSE_SERVICE}
 CODROID_CONTAINER_NAME=${CONTAINER_NAME}
 EOF
 else
-  echo "Keeping existing ${ENV_FILE}; edit it to change the image or service name."
+  echo "Keeping existing ${ENV_FILE}; edit it to change the service name."
 fi
 
 cat <<EOF | sudo tee "/etc/systemd/system/${COMPOSE_SERVICE_NAME}" >/dev/null
@@ -50,6 +51,7 @@ Type=oneshot
 RemainAfterExit=true
 WorkingDirectory=${REPO_DIR}
 Environment=CODROID_COMPOSE_SERVICE=${COMPOSE_SERVICE}
+Environment=DOCKER_CONFIG=${DOCKER_CONFIG_DIR}
 EnvironmentFile=-${ENV_FILE}
 ExecStartPre=-${DOCKER_BIN} compose pull
 ExecStartPre=${REPO_DIR}/scripts/configure_depthai_usb.sh
@@ -70,6 +72,7 @@ Wants=${COMPOSE_SERVICE_NAME}
 [Service]
 Type=oneshot
 WorkingDirectory=${REPO_DIR}
+Environment=DOCKER_CONFIG=${DOCKER_CONFIG_DIR}
 EnvironmentFile=-${ENV_FILE}
 ExecStart=${REPO_DIR}/scripts/jetson_auto_update_check.sh
 EOF

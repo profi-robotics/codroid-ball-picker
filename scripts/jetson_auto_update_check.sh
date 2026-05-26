@@ -6,17 +6,22 @@ REPO_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 LOCK_FILE="/tmp/codroid-ball-picker-auto-update.lock"
 SERVICE_NAME="${CODROID_COMPOSE_SERVICE:-ui}"
 CONTAINER_NAME="${CODROID_CONTAINER_NAME:-codroid-ui}"
-IMAGE_REF="${CODROID_IMAGE:-ghcr.io/profi-robotics/codroid-ball-picker:latest}"
+IMAGE_REF="ghcr.io/profi-robotics/codroid-ball-picker:latest"
+DOCKER_CONFIG="${DOCKER_CONFIG:-/home/university/.docker}"
+export DOCKER_CONFIG
 
 log() {
   printf '[auto-update] %s\n' "$*"
 }
 
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"${LOCK_FILE}"
-  if ! flock -n 9; then
-    log "Another updater instance is running. Exiting."
-    exit 0
+  if { exec 9>"${LOCK_FILE}"; } 2>/dev/null; then
+    if ! flock -n 9; then
+      log "Another updater instance is running. Exiting."
+      exit 0
+    fi
+  else
+    log "Lock file ${LOCK_FILE} is not writable. Continuing without a lock."
   fi
 fi
 

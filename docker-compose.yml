@@ -1,6 +1,6 @@
 services:
   ui:
-    image: ${CODROID_IMAGE:-ghcr.io/profi-robotics/codroid-ball-picker:latest}
+    image: ghcr.io/profi-robotics/codroid-ball-picker:latest
     container_name: codroid-ui
     init: true
     restart: unless-stopped

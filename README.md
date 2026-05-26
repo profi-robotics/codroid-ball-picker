@@ -174,7 +174,7 @@ On the Jetson, `docker compose up -d` starts both `codroid-ui` and the
 `codroid-watchtower` updater. Docker restarts both containers on boot, and
 Watchtower pulls/recreates `codroid-ui` when CI publishes a new `latest` image.
 If systemd management is preferred, install `scripts/setup_jetson_auto_update.sh`
-once and pin or override the image via `/etc/codroid-ball-picker-auto-update.env`.
+once; the compose stack and updater track only the `latest` image.
 
 YOLO inference is part of the base dependency set. Run `uv sync` after pulling
 dependency changes so uploaded `.pt`/`.onnx` models can load.

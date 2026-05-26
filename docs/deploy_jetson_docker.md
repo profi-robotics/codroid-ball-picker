@@ -121,11 +121,12 @@ systemctl status codroid-ball-picker-auto-update.timer
 systemctl list-timers --all | grep codroid-ball-picker-auto-update
 ```
 
-The installer writes `/etc/codroid-ball-picker-auto-update.env` on first run.
-Edit that file if you need to pin a different image tag:
+The installer writes `/etc/codroid-ball-picker-auto-update.env` with the
+`latest` image reference. Do not pin deployment hosts to branch or release
+image tags; the compose stack and updater are intended to track `latest` only:
 
 ```bash
-CODROID_IMAGE=ghcr.io/profi-robotics/codroid-ball-picker:v0.1.4
+CODROID_IMAGE=ghcr.io/profi-robotics/codroid-ball-picker:latest
 CODROID_COMPOSE_SERVICE=ui
 CODROID_CONTAINER_NAME=codroid-ui
 ```
@@ -166,12 +167,8 @@ the Jetson host itself can reach the robot controller and OnRobot Compute Box.
 
 ## Environment Overrides
 
-The compose service defaults to `latest`, but can be overridden per command:
-
-```bash
-CODROID_IMAGE=ghcr.io/profi-robotics/codroid-ball-picker:sha-<commit> \
-  docker compose up -d
-```
+The compose service always uses
+`ghcr.io/profi-robotics/codroid-ball-picker:latest` for deployments.
 
 Application settings still come from the normal `CODROID_` environment prefix
 and persisted `data/app_settings.json`. Add deployment-specific variables to
