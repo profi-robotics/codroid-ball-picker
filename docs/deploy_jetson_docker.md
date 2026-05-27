@@ -57,6 +57,9 @@ The UI will be reachable on `http://<jetson-ip>:8050`. When Tailscale is
 enabled, use `http://<tailscale-ip>:8050`.
 The same command starts `codroid-watchtower`, which checks every 300 seconds by
 default. Override the interval with `CODROID_WATCHTOWER_INTERVAL_SECONDS`.
+The UI command runs through `run_codroid_picker_supervised.py`, which restarts
+the Dash app subprocess after unexpected native exits such as DepthAI/XLink
+aborts. A clean app exit still stops normally.
 
 Check logs:
 
@@ -183,6 +186,13 @@ and persisted `data/app_settings.json`. Add deployment-specific variables to
   `X_LINK_ERROR`, check `cat /sys/module/usbcore/parameters/usbfs_memory_mb`.
   If it is below `1000`, run `sudo scripts/configure_depthai_usb.sh` and
   recreate the UI container.
+- If the process exits after a native DepthAI line like
+  `dispatcherResponseServe:... no request for this response: XLINK_READ_REL_RESP`,
+  treat it as a native OAK-D/XLink link failure rather than a Dash callback
+  exception. The app supervisor should restart the Dash subprocess
+  automatically; Docker or systemd remains a second-level fallback. If the
+  failure repeats, keep `CODROID_DEPTHAI_MAX_USB_SPEED=high`, reduce camera
+  FPS/depth load, and check OAK-D cable, power, and temperature.
 - If CUDA is unavailable in the verification command, confirm the host is
   JetPack 6 / L4T R36.x and the NVIDIA runtime is configured for Docker.
 - If disk usage grows after many releases, the updater prunes dangling images

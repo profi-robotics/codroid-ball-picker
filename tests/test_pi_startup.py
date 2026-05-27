@@ -216,7 +216,7 @@ def test_initial_layout_defers_tab_content_and_hardware_init() -> None:
     assert "calibration-ui-interval" in ids
     assert "camera-interval" not in ids
     assert "auto-init" not in ids
-    assert {"ui-ready", "hardware-init"}.issubset(ids)
+    assert {"ui-ready", "hardware-init", "model-auto-load"}.issubset(ids)
 
 
 def test_lazy_layout_mounts_application_tab_and_enables_application_interval() -> None:

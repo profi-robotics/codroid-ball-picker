@@ -61,11 +61,11 @@ def register_model_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("model-load-state", "data"),
-        Input("hardware-init", "n_intervals"),
+        Input("model-auto-load", "n_intervals"),
         prevent_initial_call=False,
     )
     def _auto_load_model_after_first_paint(_n: int) -> dict:
-        """Auto-load the configured model after the first visible UI paint."""
+        """Auto-load the configured model after hardware startup has settled."""
         if (_n or 0) <= 0:
             return no_update
         import app.codroid_picker as codroid_picker_module

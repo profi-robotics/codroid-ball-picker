@@ -17,7 +17,7 @@ Jetson-only PyTorch wheels are selected only for Linux ARM Python 3.10 hosts.
 ## Run
 
 ```bash
-python run_codroid_picker.py --debug
+python run_codroid_picker_supervised.py --debug
 ```
 
 Configure robot, camera, and gripper endpoints through `CODROID_` environment

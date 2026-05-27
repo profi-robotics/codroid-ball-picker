@@ -166,7 +166,12 @@ class UISession:
     calibration_menu_open: bool = True
 
 
-CALIBRATION_PROGRESS = {"value": 0, "current_frame": 0, "max_frames": 0}
+CALIBRATION_PROGRESS = {
+    "value": 0,
+    "current_frame": 0,
+    "max_frames": 0,
+    "message": "",
+}
 
 SESSION = UISession()
 

@@ -176,7 +176,7 @@ def main():
         print("• Don't force-quit applications using the camera")
         
         print("\nYou can now run:")
-        print("  uv run run_codroid_picker.py --debug --host 0.0.0.0")
+        print("  uv run python run_codroid_picker_supervised.py --debug --host 0.0.0.0")
         
     else:
         print("\n❌ Recovery failed. Additional steps needed:")

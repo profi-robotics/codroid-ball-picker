@@ -768,6 +768,8 @@ def build_layout() -> dmc.MantineProvider:
                              n_intervals=0, max_intervals=1),
                 dcc.Interval(id="hardware-init", interval=900,
                              n_intervals=0, max_intervals=1),
+                dcc.Interval(id="model-auto-load", interval=5000,
+                             n_intervals=0, max_intervals=1),
                 dcc.Interval(id="robot-status-interval",
                              interval=1000, n_intervals=0),
                 dcc.Interval(

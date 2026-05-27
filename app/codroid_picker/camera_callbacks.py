@@ -297,8 +297,63 @@ def _capture_depth_snapshot_for_calibration(
     if stream is None or not stream.is_running():
         raise RuntimeError(t("Camera stream stopped before depth capture."))
 
-    depth_path = codroid_picker_module.capture_depth_snapshot(output_path)
-    return depth_path, False
+    config = getattr(stream, "config", None)
+    enable_depth = bool(getattr(config, "enable_depth", False))
+    resolution = getattr(config, "resolution", SETTINGS.camera_resolution)
+    fps = float(getattr(config, "fps", SETTINGS.camera_fps))
+    lock_af = bool(getattr(config, "lock_af", False))
+
+    if enable_depth:
+        try:
+            depth_path = codroid_picker_module.capture_depth_snapshot(output_path)
+            return depth_path, False
+        except RuntimeError as exc:
+            if "No depth frame available" not in str(exc):
+                raise
+            logging.warning(
+                "[CALIBRATE] Live depth capture timed out; "
+                "retrying with isolated depth pipeline."
+            )
+
+    CALIBRATION_PROGRESS["value"] = max(
+        int(CALIBRATION_PROGRESS.get("value", 0) or 0),
+        98,
+    )
+    CALIBRATION_PROGRESS["message"] = (
+        "Camera will restart to capture depth. "
+        "Please wait and do not refresh the browser."
+    )
+    stop_camera_stream(wait_for_release=True)
+    depth_path = codroid_picker_module.capture_depth_snapshot_isolated(
+        output_path,
+        resolution,
+        fps,
+        lock_af=lock_af,
+    )
+    CALIBRATION_PROGRESS["message"] = (
+        "Camera restarted. Finishing calibration..."
+    )
+    try:
+        status = start_camera_stream(
+            resolution[0],
+            resolution[1],
+            fps,
+            lock_af=lock_af,
+            enable_depth_override=enable_depth,
+        )
+        logging.info(
+            "[CALIBRATE] Restarted camera stream after isolated depth capture: %s",
+            status,
+        )
+        return depth_path, False
+    except Exception as exc:  # noqa: BLE001
+        logging.error(
+            "[CALIBRATE] Unable to restart camera stream after isolated "
+            "depth capture: %s",
+            exc,
+            exc_info=True,
+        )
+        return depth_path, True
 
 
 def _refresh_plate_status_throttled(frame, plate_path: Path) -> None:
@@ -842,6 +897,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 captured_frames = []
                 CALIBRATION_PROGRESS["max_frames"] = num_frames
                 CALIBRATION_PROGRESS["value"] = 1  # Start progress
+                CALIBRATION_PROGRESS["message"] = ""
                 for i in range(num_frames):
                     captured = codroid_picker_module.capture_color_frame(
                         output_path)
@@ -912,6 +968,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
+                CALIBRATION_PROGRESS["message"] = ""
                 # Advance to robot calibration step
                 return alert, {"progress": 0}, 1
             except Exception as exc:
@@ -926,6 +983,7 @@ def register_camera_callbacks(app: Dash) -> None:
                 # Reset progress tracker on error
                 CALIBRATION_PROGRESS["value"] = 0
                 CALIBRATION_PROGRESS["current_frame"] = 0
+                CALIBRATION_PROGRESS["message"] = ""
                 return alert, {"progress": 0}, (current_step or 0)
             finally:
                 SESSION.camera_calibration_in_progress = False
@@ -1231,10 +1289,23 @@ def register_camera_callbacks(app: Dash) -> None:
         progress = CALIBRATION_PROGRESS.get("value", 0)
         current_frame = CALIBRATION_PROGRESS.get("current_frame", 0)
         max_frames = CALIBRATION_PROGRESS.get("max_frames", 0)
+        message = CALIBRATION_PROGRESS.get("message", "")
 
         # Show progress bar and text only if capturing (1-99%)
         if progress > 0 and progress < 100:
-            text = t("Capturing images: {current}/{total}", current=current_frame, total=max_frames)
-            return progress, {"display": "block"}, text, {"display": "block", "marginBottom": "8px"}
+            if message:
+                text = t(str(message))
+            else:
+                text = t(
+                    "Capturing images: {current}/{total}",
+                    current=current_frame,
+                    total=max_frames,
+                )
+            return (
+                progress,
+                {"display": "block"},
+                text,
+                {"display": "block", "marginBottom": "8px"},
+            )
 
         return 0, {"display": "none"}, "", {"display": "none"}

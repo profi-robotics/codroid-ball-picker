@@ -9,7 +9,8 @@ robot motion commands.
 - `vision/` – camera calibration, marker detection, workspace mapping helpers.
 - `robot/` – WebSocket client, gripper control (OnRobot 2FG7), and command catalog extracted from browser traffic.
 - `app/` – orchestration logic that ties vision outputs to robot commands, now powering the Dash UI.
-- `run_codroid_picker.py` – entry point for the Dash-based bring-up console (camera, calibration, workspace, and robots all flow through this script).
+- `run_codroid_picker.py` – Dash app entry point used by the supervised runner.
+- `run_codroid_picker_supervised.py` – process supervisor for normal launches; restarts the Dash app after unexpected native exits.
 - `pyproject.toml` – project metadata and dependency manifest used by `uv`.
 - `scripts/capture_calibration_data.py` – CLI helper that streams an OAK-D, saves ChArUco board frames, and records a depth snapshot.
 - `docs/` – integration guides for gripper and other peripherals.
@@ -43,18 +44,18 @@ robot motion commands.
    ```
 5. Launch the Dash calibration console:
    ```bash
-   python run_codroid_picker.py --debug
+   python run_codroid_picker_supervised.py --debug
    ```
 Use the Setup drawer to review camera status, verify the robot connection, and work through the Calibration, Applications, and Monitoring tabs. The UI shell is rendered before camera, robot, gripper, or YOLO startup so Raspberry Pi Chromium clients get a fast first paint. By default, camera/robot/gripper and the remembered YOLO model auto-start after first paint; set `camera_auto_start`, `model_auto_load`, `robot_auto_connect_after_first_paint`, or `gripper_auto_connect_after_first_paint` to `false` in `data/app_settings.json` or via `CODROID_` environment overrides to keep hardware fully manual. Calibration assets are read/written under `data/` by default; once a workspace is computed the UI saves it to `data/workspace_definition.npz` and reloads it on restart. Runtime camera startup enables depth so camera calibration can capture the required depth snapshot from the live stream without stopping or restarting the DepthAI pipeline. Use **Refocus & lock** in the footer to let autofocus settle briefly, then freeze the current OAK-D lens position; starting the camera with **Lock autofocus** enabled uses the same settle-then-lock flow instead of a guessed focus value. Stability knobs: `CODROID_DEPTH_MAX_FPS` (default `10`), `CODROID_RGB_MAX_FPS` (default `30`), `CODROID_RGB_MAX_FPS_WITH_DEPTH` (default `15`), `CODROID_MJPEG_MAX_FPS` (default `30`), `CODROID_OVERLAY_MAX_FPS` (default `5`), `CODROID_OVERLAY_EMPTY_HOLD_S` (default `1.0`), and `CODROID_AUTOFOCUS_SETTLE_S` (default `1.5`). Color transport defaults to `NV12` (set `CODROID_COLOR_OUTPUT_FORMAT=bgr` to force BGR transport).
 The robot and gripper connections auto-start after first paint when enabled. Use **Test robot connection** or **Acquire robot control** in Setup to retry manually after a connection failure or after releasing robot control. Robot connection attempts show a loading state and time out after 10 seconds so a missing or unreachable controller does not leave the UI looking idle.
-YOLO models are remembered across restarts and loaded from `active_model`/`last_model` after the initial UI paint when `model_auto_load` is enabled. Open the Detection/Pick view and click **Load selected model** to retry manually after a load failure. After a model loads, the pick-label selector is populated from that model's labels; the default pick list contains `orange` at confidence `0.10`, and each selected label can use its own threshold.
+YOLO models are remembered across restarts and loaded from `active_model`/`last_model` a few seconds after the initial hardware startup tick when `model_auto_load` is enabled, so Torch/Ultralytics initialization does not compete with OAK-D camera bring-up. Open the Detection/Pick view and click **Load selected model** to retry manually after a load failure. After a model loads, the pick-label selector is populated from that model's labels; the default pick list contains `orange` at confidence `0.10`, and each selected label can use its own threshold.
 When you need to hand control back to the native robot console, use **Release robot control** in Setup. This sends a stop command, powers the robot off, and closes the websocket session, then keeps codroid-ball-picker in a released mode that does not auto-reconnect in the background. Use **Acquire robot control** (or **Test robot connection**) to reconnect from the UI.
 The Dash app supports UI localization for English (`en`) and Ukrainian (`uk`). Use the language selector in the header or in **Setup & Connections**. The selection is persisted to `data/app_settings.json` (`ui_language`) and applies immediately via automatic page refresh.
 
 For Jetson runtime FPS benchmarking, use the Jetson deployment flow below, then
 run without debug mode:
 ```bash
-python run_codroid_picker.py
+python run_codroid_picker_supervised.py
 ```
 The UI keeps Monitoring graphs lazy and uses lightweight styling/callbacks by default so slow browser clients stay responsive without reducing the configured camera or MJPEG FPS.
 
@@ -132,7 +133,7 @@ camera, detection, and robot flows together. It provides:
 
 Run it locally with:
 ```bash
-python run_codroid_picker.py --debug
+python run_codroid_picker_supervised.py --debug
 ```
 Then open `http://127.0.0.1:8050` in your browser. The UI defaults for robot
 connectivity follow the `codroid-api` settings (env `CODROID_HOST` and

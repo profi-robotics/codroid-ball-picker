@@ -82,6 +82,8 @@
   "Cannot reach the gripper control box. Check power and network.": "Немає доступу до блока керування схватом. Перевірте живлення та мережу.",
   "Capture the ChArUco board frames to calibrate the camera.": "Зробіть кадри дошки ChArUco для калібрування камери.",
   "Capturing images: {current}/{total}": "Захоплення зображень: {current}/{total}",
+  "Camera will restart to capture depth. Please wait and do not refresh the browser.": "Камера перезапуститься для захоплення глибини. Зачекайте й не оновлюйте сторінку.",
+  "Camera restarted. Finishing calibration...": "Камеру перезапущено. Завершуємо калібрування...",
   "ChArUco corners: --": "Кути ChArUco: --",
   "Class filter (comma IDs)": "Фільтр класів (ідентифікатори коми)",
   "Clear": "Очистити",

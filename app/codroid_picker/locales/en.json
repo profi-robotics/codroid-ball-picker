@@ -111,4 +111,6 @@
   ,"Auto operation stopped": "Auto operation stopped"
   ,"target": "target"
   ,"n/a": "n/a"
+  ,"Camera will restart to capture depth. Please wait and do not refresh the browser.": "Camera will restart to capture depth. Please wait and do not refresh the browser."
+  ,"Camera restarted. Finishing calibration...": "Camera restarted. Finishing calibration..."
 }

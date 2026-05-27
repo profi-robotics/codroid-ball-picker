@@ -5,6 +5,7 @@
 !codroid-ball-picker/uv.lock
 !codroid-ball-picker/README.md
 !codroid-ball-picker/run_codroid_picker.py
+!codroid-ball-picker/run_codroid_picker_supervised.py
 !codroid-ball-picker/app/
 !codroid-ball-picker/app/**
 !codroid-ball-picker/vision/

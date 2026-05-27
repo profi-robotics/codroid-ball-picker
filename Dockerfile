@@ -78,8 +78,13 @@ COPY codroid-ball-picker/vision ./vision
 COPY codroid-ball-picker/assets ./assets
 COPY codroid-ball-picker/data/markers ./data/markers
 COPY codroid-ball-picker/run_codroid_picker.py ./
+COPY codroid-ball-picker/run_codroid_picker_supervised.py ./
 
-RUN python -m compileall app vision run_codroid_picker.py && \
+RUN python -m compileall \
+      app \
+      vision \
+      run_codroid_picker.py \
+      run_codroid_picker_supervised.py && \
     python - <<'PY'
 import cv2
 import depthai
@@ -94,4 +99,11 @@ PY
 
 EXPOSE 8050
 
-CMD ["python", "run_codroid_picker.py", "--host", "0.0.0.0", "--port", "8050"]
+CMD [ \
+      "python", \
+      "run_codroid_picker_supervised.py", \
+      "--host", \
+      "0.0.0.0", \
+      "--port", \
+      "8050" \
+    ]
