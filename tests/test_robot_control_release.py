@@ -8,6 +8,8 @@ from app.codroid_picker.robot_callbacks.connection import (
     _control_state_payload,
     _initialize_robot_after_connect,
     _release_robot_ownership,
+    _reset_robot_retry_state,
+    _schedule_robot_retry,
 )
 from app.codroid_picker.robot_utils import _robot_control_released
 
@@ -31,6 +33,27 @@ class RobotControlReleaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_robot_control_released({"mode": "released"}))
         self.assertFalse(_robot_control_released({"mode": "acquired"}))
         self.assertFalse(_robot_control_released({"mode": "invalid"}))
+
+    def test_robot_retry_state_uses_bounded_backoff(self) -> None:
+        session = SimpleNamespace(
+            robot_connection_failures=0,
+            robot_next_probe_after=0.0,
+        )
+
+        with mock.patch("app.codroid_picker.robot_callbacks.connection.time") as time_mock:
+            time_mock.time.return_value = 100.0
+            _schedule_robot_retry(session)
+            self.assertEqual(session.robot_connection_failures, 1)
+            self.assertEqual(session.robot_next_probe_after, 103.0)
+
+            session.robot_connection_failures = 6
+            _schedule_robot_retry(session)
+            self.assertEqual(session.robot_connection_failures, 7)
+            self.assertEqual(session.robot_next_probe_after, 130.0)
+
+        _reset_robot_retry_state(session)
+        self.assertEqual(session.robot_connection_failures, 0)
+        self.assertEqual(session.robot_next_probe_after, 0.0)
 
     async def test_release_robot_ownership_stops_power_off_and_closes(self) -> None:
         calls: list[str] = []

@@ -14,6 +14,8 @@ ROBOT_CONNECT_TIMEOUT_S = 10.0
 ROBOT_STALE_PROBE_RESET_S = ROBOT_CONNECT_TIMEOUT_S + 5.0
 ROBOT_STARTUP_COORDINATE_ID = 5
 ROBOT_STARTUP_INIT_TIMEOUT_S = 8.0
+ROBOT_AUTO_RETRY_INITIAL_DELAY_S = 3.0
+ROBOT_AUTO_RETRY_MAX_DELAY_S = 30.0
 
 
 def _control_state_payload(
@@ -90,6 +92,29 @@ def _probe_stale(started_at: float) -> bool:
     return time.time() - started_at > ROBOT_STALE_PROBE_RESET_S
 
 
+def _reset_robot_retry_state(ui_session) -> None:
+    """Clear auto-retry counters after success or explicit release."""
+    ui_session.robot_connection_failures = 0
+    ui_session.robot_next_probe_after = 0.0
+
+
+def _schedule_robot_retry(ui_session) -> None:
+    """Schedule the next auto-connect retry with a small exponential backoff."""
+    failures = int(getattr(ui_session, "robot_connection_failures", 0)) + 1
+    ui_session.robot_connection_failures = failures
+    delay = min(
+        ROBOT_AUTO_RETRY_MAX_DELAY_S,
+        ROBOT_AUTO_RETRY_INITIAL_DELAY_S * (2 ** min(failures - 1, 4)),
+    )
+    ui_session.robot_next_probe_after = time.time() + delay
+
+
+def _auto_retry_due(ui_session) -> bool:
+    """Return True when the monitor tick may retry robot auto-connect."""
+    next_probe = float(getattr(ui_session, "robot_next_probe_after", 0.0) or 0.0)
+    return time.time() >= next_probe
+
+
 def register_connection_callbacks(app: Dash) -> None:
     """Register robot connection, gripper, and power management callbacks."""
 
@@ -158,6 +183,7 @@ def register_connection_callbacks(app: Dash) -> None:
                 ui_session.robot_last_connection_error = error
                 ui_session.robot_probe_inflight = False
                 ui_session.robot_last_probe_started_at = 0.0
+                _reset_robot_retry_state(ui_session)
                 return (
                     error,
                     {"status": "error", "message": error},
@@ -170,6 +196,7 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_last_connection_error = None
             ui_session.robot_probe_inflight = False
             ui_session.robot_last_probe_started_at = 0.0
+            _reset_robot_retry_state(ui_session)
             session.clear_position()
             codroid_picker_module._set_robot_guidance(
                 t("Robot calibration idle. Click 'Begin calibrating robot' to start."),
@@ -191,23 +218,46 @@ def register_connection_callbacks(app: Dash) -> None:
                 status = t("Robot connected to {host}:{port}.", host=target["host"], port=target["port"])
                 ui_session.robot_connection_attempted = True
                 ui_session.robot_last_connection_error = None
+                _reset_robot_retry_state(ui_session)
                 return (
                     status,
                     {"status": "online", "message": status},
                     _control_state_payload(mode="acquired"),
                 )
-            if not ui_session.robot_connection_attempted:
-                return no_update, no_update, no_update
-            status = (
-                ui_session.robot_last_connection_error
-                or t("Robot disconnected. Acquire control to reconnect.")
-            )
-            return (
-                status,
-                {"status": "error", "message": status},
-                _control_state_payload(mode="acquired"),
-            )
-        if trigger not in {"robot-acquire-control", "robot-test", *startup_triggers}:
+            if (
+                SETTINGS.robot_auto_connect_after_first_paint
+                and _auto_retry_due(ui_session)
+            ):
+                trigger = "robot-auto-retry"
+            else:
+                if not ui_session.robot_connection_attempted:
+                    return no_update, no_update, no_update
+                status = (
+                    ui_session.robot_last_connection_error
+                    or t("Robot disconnected. Acquire control to reconnect.")
+                )
+                return (
+                    status,
+                    {"status": "error", "message": status},
+                    _control_state_payload(mode="acquired"),
+                )
+        if trigger == "robot-acquire-control":
+            _reset_robot_retry_state(ui_session)
+        if trigger == "robot-test":
+            _reset_robot_retry_state(ui_session)
+        if trigger not in {
+            "robot-acquire-control",
+            "robot-test",
+            "robot-auto-retry",
+            *startup_triggers,
+        }:
+            return no_update, no_update, no_update
+        if (
+            trigger == "robot-auto-retry"
+            and not SETTINGS.robot_auto_connect_after_first_paint
+        ):
+            return no_update, no_update, no_update
+        if trigger == "robot-auto-retry" and not ui_session.robot_connection_attempted:
             return no_update, no_update, no_update
         if ui_session.robot_probe_inflight:
             if _probe_stale(ui_session.robot_last_probe_started_at):
@@ -243,6 +293,7 @@ def register_connection_callbacks(app: Dash) -> None:
             ui_session.robot_control_released_at = 0.0
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = None
+            _reset_robot_retry_state(ui_session)
             return (
                 status,
                 {"status": "online", "message": status},
@@ -255,6 +306,7 @@ def register_connection_callbacks(app: Dash) -> None:
             )
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = error
+            _schedule_robot_retry(ui_session)
             return (
                 error,
                 {"status": "error", "message": error},
@@ -264,6 +316,7 @@ def register_connection_callbacks(app: Dash) -> None:
             error = t("Robot connection failed: {error}", error=exc)
             ui_session.robot_connection_attempted = True
             ui_session.robot_last_connection_error = error
+            _schedule_robot_retry(ui_session)
             return (
                 error,
                 {"status": "error", "message": error},

@@ -108,6 +108,8 @@ class UISession:
     robot_last_connection_error: Optional[str] = None
     robot_probe_inflight: bool = False
     robot_last_probe_started_at: float = 0.0
+    robot_connection_failures: int = 0
+    robot_next_probe_after: float = 0.0
     robot_control_mode: str = "acquired"
     robot_control_released_at: float = 0.0
     last_pick_mm: Optional[Tuple[float, float]] = None
