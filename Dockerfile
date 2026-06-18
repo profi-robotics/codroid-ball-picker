@@ -77,12 +77,14 @@ COPY codroid-ball-picker/app ./app
 COPY codroid-ball-picker/vision ./vision
 COPY codroid-ball-picker/assets ./assets
 COPY codroid-ball-picker/data/markers ./data/markers
+COPY codroid-ball-picker/scripts/capture_depth_snapshot_once.py ./scripts/capture_depth_snapshot_once.py
 COPY codroid-ball-picker/run_codroid_picker.py ./
 COPY codroid-ball-picker/run_codroid_picker_supervised.py ./
 
 RUN python -m compileall \
       app \
       vision \
+      scripts/capture_depth_snapshot_once.py \
       run_codroid_picker.py \
       run_codroid_picker_supervised.py && \
     python - <<'PY'

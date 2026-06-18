@@ -6,6 +6,8 @@
 !codroid-ball-picker/README.md
 !codroid-ball-picker/run_codroid_picker.py
 !codroid-ball-picker/run_codroid_picker_supervised.py
+!codroid-ball-picker/scripts/
+!codroid-ball-picker/scripts/capture_depth_snapshot_once.py
 !codroid-ball-picker/app/
 !codroid-ball-picker/app/**
 !codroid-ball-picker/vision/

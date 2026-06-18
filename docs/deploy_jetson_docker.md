@@ -193,6 +193,10 @@ and persisted `data/app_settings.json`. Add deployment-specific variables to
   automatically; Docker or systemd remains a second-level fallback. If the
   failure repeats, keep `CODROID_DEPTHAI_MAX_USB_SPEED=high`, reduce camera
   FPS/depth load, and check OAK-D cable, power, and temperature.
+- If calibration reports
+  `Depth snapshot helper script not found: /app/scripts/capture_depth_snapshot_once.py`,
+  pull the latest UI image and recreate the container. The helper is shipped
+  inside the image and is used for isolated OAK-D depth capture.
 - If CUDA is unavailable in the verification command, confirm the host is
   JetPack 6 / L4T R36.x and the NVIDIA runtime is configured for Docker.
 - If disk usage grows after many releases, the updater prunes dangling images
